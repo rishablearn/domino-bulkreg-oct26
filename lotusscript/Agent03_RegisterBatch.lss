@@ -55,7 +55,7 @@ Sub Initialize
 	Dim db As NotesDatabase, u As BRUser
 	Dim bfile As String, bname As String, bdir As String, fh As Integer, txt As String
 	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
-	Dim nid() As String, gid() As String, hs() As String, ou() As String, po() As String, gr() As String, vs() As String, un() As String, mf() As String
+	Dim nid() As String, gid() As String, hs() As String, ou() As String, po() As String, gr() As String, vs() As String, un() As String, mf() As String, mn() As String
 	Dim n As Long, i As Long, seen List As String, srvCount List As Long, srvText As String, hk As String
 	Dim nExcluded As Long, maxRows As Long, pauseMs As Long, maxConsec As Long
 	Dim nOK As Long, nFail As Long, nSkip As Long, nConsec As Long, res As String, stopReason As String
@@ -109,11 +109,12 @@ Sub Initialize
 					Error 6005, "NoteID " & BR_CsvGet(parts, cols, "NoteID") & " is listed twice in the batch file"
 				End If
 				seen(BR_CsvGet(parts, cols, "NoteID")) = "1"
-				ReDim Preserve nid(n) As String, gid(n) As String, hs(n) As String, ou(n) As String, po(n) As String, gr(n) As String, vs(n) As String, un(n) As String, mf(n) As String
+				ReDim Preserve nid(n) As String, gid(n) As String, hs(n) As String, ou(n) As String, po(n) As String, gr(n) As String, vs(n) As String, un(n) As String, mf(n) As String, mn(n) As String
 				nid(n) = BR_CsvGet(parts, cols, "NoteID")
 				gid(n) = BR_CsvGet(parts, cols, "objectGUID")
 				un(n) = BR_CsvGet(parts, cols, "UNID")
 				mf(n) = BR_CsvGet(parts, cols, "MailFile")
+				mn(n) = BR_CsvGet(parts, cols, "MailFileNote")
 				hs(n) = BR_CsvGet(parts, cols, "HomeServer")
 				ou(n) = BR_CsvGet(parts, cols, "OrgUnit")
 				po(n) = BR_CsvGet(parts, cols, "Policy")
@@ -164,7 +165,7 @@ Sub Initialize
 	' ---------- register the approved rows ----------
 	Set db = BR_OpenDirectory()
 	For i = 0 To n - 1
-		res = RegisterOne(db, nid(i), un(i), gid(i), hs(i), mf(i), ou(i), po(i), gr(i), vs(i))
+		res = RegisterOne(db, nid(i), un(i), gid(i), hs(i), mf(i), mn(i), ou(i), po(i), gr(i), vs(i))
 		Select Case Left$(res, 2)
 		Case "OK"
 			nOK = nOK + 1: nConsec = 0
@@ -259,7 +260,7 @@ End Function
 ' Values come from the reviewed batch file. Every outcome writes an audit
 ' row (and a results row). Errors never stop the batch.
 '---------------------------------------------------------------------
-Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGuid As String, bHome As String, bMailFile As String, bOU As String, bPolicy As String, bGroups As String, bVault As String) As String
+Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGuid As String, bHome As String, bMailFile As String, bMailNote As String, bOU As String, bPolicy As String, bGroups As String, bVault As String) As String
 	Dim doc As NotesDocument, reg As NotesRegistration, u As BRUser
 	Dim t0 As Double, issues As String, userPwd As String, mailFile As String
 	Dim stage As String, emsg As String, homeCanon As String, nn As NotesName
@@ -294,6 +295,7 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 	End If
 	u.HomeServer = bHome: u.OrgUnit = bOU: u.Policy = bPolicy: u.Groups = bGroups: u.VaultServer = bVault
 	If bMailFile <> "" Then u.MailFile = BR_Path(bMailFile)
+	u.MailFileNote = bMailNote
 	u.MapRule = "batch " & gBatchID
 
 	' idempotency: fresh re-check (someone may have registered it meanwhile)

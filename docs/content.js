@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "2.3",
+  version: "2.4",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -36,11 +36,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 1.4.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 1.5.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["2.4", "Mail file **naming = last name** (configurable), **uniqueness** checked against all mail folders on the home server, Person documents, open batches and the batch itself (clash → smith2.nsf or ERROR), **numbered folders** mail1, mail2… with max 1000 mail files each. MailFileNote recorded in batch file, summary, results and audit."],
   ["2.3", "**Every registered user now gets a Domino mail file** on the home server (MailFile column in the batch, reviewable). CreateMailDb / PreserveMailSystem removed. Mail file settings (folder, template, ACL manager, quota, full-text index), existence checks before and after registration, and mail file status in Verify."],
   ["2.1", "Name formats: servers in canonical (CN=DominoADMail/O=Demo) or abbreviated (DominoADMail/Demo) form, both accepted by the code. **Organizational policies** (*/Demo, */Sales/Demo) supported alongside explicit policies (B8 Option B, OrgPolicyAssignsVault, '-' in the mapping). Consistent 'Demo' examples."],
   ["2.0", "Complete rewrite as a **from-scratch, step-by-step guide**. Every Domino object (vault, security settings, policy, roles, RA, tool database, agents) is created click by click. Agent names changed to `BulkReg\\NN - Name`, because `|` is the alias separator in Notes design names. Explicit policy names use the `*/name` form."],
@@ -147,7 +148,7 @@ tbl(["#", "Item", "Example", "Your value"], [
   ["9", "Policy type (organizational or explicit, see A4) and exact name(s)", "Explicit: */DirSync-Vault, or organizational: */Demo, */Sales/Demo", ""],
   ["10", "Optional organizational unit (OU) per group of users", "EMEA", ""],
   ["11", "Optional groups to add new users to", "BR-EMEA", ""],
-  ["11a", "Mail file folder on the home servers, and naming", "mail → mail\\jsmith.nsf", ""],
+  ["11a", "Mail file naming and folders (D3a)", "last name; mail1, mail2 … max 1000 each → mail1\\smith.nsf", ""],
   ["11b", "Mail template available on every home server", "the template your mail users use (e.g. mail12.ntf)", ""],
   ["11c", "Optional: Manager of new mail files, quota (MB)", "LocalDomainAdmins, 2048", ""],
   ["12", "Admin ID that will run BulkReg", "Admin User/Demo", ""],
@@ -363,7 +364,9 @@ tbl(["Key", "Enter", "From"], [
   ["OrgPolicyAssignsVault", "`1` if an organizational policy (`*/Demo`, `*/Sales/Demo`) assigns the vault, otherwise `0`", "B8"],
   ["VaultServer", "The vault server, e.g. `DominoVault/Demo` (as shown in the vault document)", "Worksheet 7"],
   ["BatchSize", "`500` or your value", "Worksheet 14"],
-  ["MailFileDir", "Folder for mail files on the home servers, normally `mail`", "Worksheet 11a"],
+  ["MailFileNaming", "`LASTNAME` (smith.nsf), `FIRSTINITIAL_LASTNAME` (jsmith.nsf) or `SHORTNAME`", "Worksheet 11a"],
+  ["MailFileCollision", "`SUFFIX` (smith2.nsf …) or `ERROR` (row excluded)", "Worksheet 11a"],
+  ["MailFolderMode / MailFolderPrefix / MailFilesPerFolder", "`NUMBERED` / `mail` / `1000` → mail1, mail2 … (or `SINGLE` with MailFileDir)", "Worksheet 11a"],
   ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default)", "Worksheet 11b"],
   ["MailACLManager / MailQuotaSizeLimit", "Optional: Manager of each new mail file; quota in MB (0 = none)", "Worksheet 11c"],
   ["LogServer / LogDb", "Leave empty unless you create the log database in B15", "B15"],
@@ -543,7 +546,7 @@ ol(
   "Optional, for a wave: in bulkreg.ini set `BatchServerFilter=<home server>` (one server only), or `ExtraSelection=<formula>`, for example `Department = \"Sales\"`. Save.",
   "Click **Actions > BulkReg > 02 - Build Batch**.",
   "Read the dialog: **Batch ID** (for example `BATCH-20261005-093000`), rows, Include=Y, WARN, ERROR, and users left for the next batch. Write the batch ID in the batch log (C9).",
-  "Open `C:\\BulkReg\\batches\\BATCH-<id>_summary.txt` in Notepad. Check the counts **per home server** and **per policy**."
+  "Open `C:\\BulkReg\\batches\\BATCH-<id>_summary.txt` in Notepad. Check the counts **per home server**, **per policy**, the **new mail files per server and folder**, and the **folder fill** (for example `dominoadmail/demo : mail2 : 412`)."
 );
 done("BATCH-<id>.csv and BATCH-<id>_summary.txt exist, and the counts look as expected.");
 
@@ -561,7 +564,7 @@ h3("Check every row");
 tbl(["Check", "How", "If wrong"], [
   ["Right people", "Read FullName and InternetAddress", "Set Include to `N`"],
   ["Right home server", "Read HomeServer (and MapRule)", "Correct HomeServer, or fix the mapping and rebuild"],
-  ["Right mail file name", "Read MailFile, for example `mail\\jsmith.nsf`. Rows whose mail file already exists are marked ERROR.", "Edit MailFile, for example `mail\\jsmith2.nsf`"],
+  ["Right mail file name and folder", "Read MailFile (e.g. `mail2\\smith.nsf`) and MailFileNote (why: naming rule, renamed because the name was taken, folder fill). Renamed rows show **WARN: mail file renamed**.", "Accept, or edit MailFile to a free name in a mail folder (Register Batch re-checks it)"],
   ["Right OU / policy / vault", "Read OrgUnit, Policy and VaultServer", "Correct the value in the row"],
   ["Warnings", "Filter Check = WARN and read Issues", "Accept them, or set Include to `N`"],
   ["Errors", "Check = ERROR rows already have Include=N", "Fix in AD and include them in a later batch"],
@@ -686,6 +689,7 @@ tbl(["Column", "Edit?", "Meaning"], [
   ["BatchID, Seq", "No", "Batch identifier, row number"],
   ["NoteID, UNID, objectGUID", "**Never**", "Identify the Person document and the AD user; checked by Agent 03"],
   ["FullName, FirstName, LastName, ShortName, InternetAddress", "No (fix in AD)", "User data"],
+  ["MailFileNote", "No", "How the mail file name and folder were chosen"],
   ["HomeServer, MailFile, OrgUnit, Policy, Groups, VaultServer", "**Yes**", "Values used for registration (MailFile is relative to the server data directory, e.g. mail\\jsmith.nsf)"],
   ["MapRule, Check, Issues", "No", "Where the values came from, and the validation result"],
 ], [3900, 1500, 3960]);
@@ -706,7 +710,9 @@ tbl(["Key", "Default", "Meaning"], [
   ["PauseMs / MaxConsecutiveErrors", "500 / 5", "Pause between users; circuit breaker"],
   ["DryRun", "1", "1 = simulate, 0 = live"],
   ["ExpirationDays / MinPasswordLength / InitialPasswordLength", "730 / 8 / 16", "Certificate validity; password strength (0–16); initial password length"],
-  ["MailFileDir / MailTemplate", "mail / (empty)", "Mail file folder on the home server; mail template (empty = registration default)"],
+  ["MailFileNaming / MailFileCollision", "LASTNAME / SUFFIX", "Mail file name rule; what to do when the name is taken"],
+  ["MailFolderMode / MailFolderPrefix / MailFilesPerFolder / MailFileDir", "NUMBERED / mail / 1000 / mail", "mail1, mail2 … with max files per folder; SINGLE uses MailFileDir"],
+  ["MailTemplate", "(empty)", "Mail template (empty = registration default)"],
   ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Optional mail file settings (quota in MB)"],
   ["CheckMailFileExists", "1", "Refuse users whose mail file already exists on the home server"],
   ["IDFileDir / PasswordDir / AuditDir / WritePasswordFile", "C:\\BulkReg\\… / 1", "Output folders; write passwords to a restricted file"],
@@ -714,23 +720,55 @@ tbl(["Key", "Default", "Meaning"], [
   ["LogLevel / LogServer / LogDb", "INFO / – / –", "Log detail; optional log database"],
 ], [3900, 2200, 3260]);
 
-h2("D3a Mail files");
-p("Every user BulkReg registers becomes a **Domino mail user**: registration creates a mail file on the user's **home server** and the Person document points to it (MailServer, MailFile, Mail system = Notes).");
-tbl(["Item", "How BulkReg handles it"], [
-  ["Location", "On the user's HomeServer (server_mapping.csv, reviewable in the batch)"],
-  ["Path", "`<MailFileDir>\\<ShortName>.nsf`, e.g. `mail\\jsmith.nsf`. Without a ShortName: first initial + last name. Editable per user in the batch (MailFile column)."],
-  ["Duplicates", "Build Batch marks a row ERROR if the same mail file appears twice in the batch for a server, or if the file **already exists** on the home server. Register Batch checks again just before registering. An existing mail file is never overwritten."],
-  ["Template", "`MailTemplate` (e.g. mail12.ntf), or the registration default when empty. It must exist on every home server (B4)."],
-  ["Access and size", "`MailACLManager` (optional extra Manager), `MailQuotaSizeLimit` / `MailQuotaWarningThreshold` in MB, `MailCreateFTIndex`"],
-  ["Check after registration", "Register Batch records MailFileStatus (MAILFILE_OK or MAILFILE_PENDING). Verify (C7) checks the mail file named in the Person document on the MailServer: MAILFILE_OK, MAILFILE_MISSING or NO_MAILFILE_IN_PERSON_DOC."],
+h2("D3a Mail files: naming, uniqueness and folders");
+p("Every user BulkReg registers becomes a **Domino mail user**: registration creates a mail file on the user's **home server** and the Person document points to it (MailServer, MailFile, Mail system = Notes). Agent 02 decides each mail file's **name** and **folder** while it builds the batch, and records the decision so you can review it before anything is created.");
+h3("1. Name = last name");
+tbl(["MailFileNaming", "John Smith", "Anna Müller", "Seán O'Brien"], [
+  ["`LASTNAME` (default)", "smith.nsf", "mueller.nsf", "obrien.nsf"],
+  ["`FIRSTINITIAL_LASTNAME`", "jsmith.nsf", "amueller.nsf", "sobrien.nsf"],
+  ["`SHORTNAME`", "<ShortName>.nsf (last name if empty)", "", ""],
+], [2600, 2300, 2200, 2260]);
+p("Names are lower case. Accents are converted (ä→ae, ö→oe, ü→ue, é→e, ß→ss…), and only a–z, 0–9, _ and - are kept.");
+h3("2. Uniqueness on each home server");
+p("A name counts as **taken** on a home server if it is found in any of these, checked in this order:");
+tbl(["Source", "How it is checked"], [
+  ["Files on the server", "Agent 02 reads the server's database list once per run and records every file in folders starting with the prefix (mail, mail1, mail2 …)"],
+  ["Person documents", "Every Person document with a MailFile (and its MailServer) in the Domino Directory"],
+  ["Open batches", "Mail files reserved by other OPEN batch files"],
+  ["This batch", "Rows already allocated earlier in the same batch"],
 ], [2400, 6960]);
+p("If the name is taken: with `MailFileCollision=SUFFIX` (default) the next free name is used (smith2.nsf, smith3.nsf …) and the row is marked **WARN: mail file renamed**. With `ERROR` the row gets Check=ERROR and Include=N. Uniqueness is per home server and across **all** its mail folders, so the same name is never used twice on one server. Agent 03 checks again just before registering that the exact file does not exist, so an existing mail file is never overwritten.");
+h3("3. Numbered folders: mail1, mail2 …");
+p("With `MailFolderMode=NUMBERED` (default), mail files go into numbered subfolders of the data directory: `mail1`, `mail2`, `mail3` …. Each holds at most `MailFilesPerFolder` (default **1000**). Files already in those folders are counted, per home server, and so are open batches. A folder is filled before the next one is used.");
+tbl(["Situation on DominoADMail/Demo", "Batch of 500 users gets"], [
+  ["mail1 has 980 mail files", "20 users → mail1 (now 1000), 480 users → mail2"],
+  ["mail1 and mail2 full, mail3 has 300", "500 users → mail3 (now 800)"],
+  ["No mail folders yet", "500 users → mail1"],
+], [4200, 5160]);
+p("With `MailFolderMode=SINGLE`, all mail files go into `MailFileDir` (for example `mail`).");
+h3("4. Where every decision is recorded");
+tbl(["Record", "Content"], [
+  ["Batch file (MailFile, MailFileNote)", "Path, plus e.g. `smith.nsf already used (file mail1\\smith.nsf) -> smith2.nsf; naming LASTNAME; folder mail2 412/1000`"],
+  ["Batch summary", "Naming and folder settings, new mail files per server and folder, folder fill after the batch"],
+  ["Build audit CSV / debug log", "One row per user (MailFile, MailFileNote), plus a server scan line (number of mail databases found)"],
+  ["Results and audit CSV of Register Batch", "MailFile, MailFileStatus (MAILFILE_OK / MAILFILE_PENDING), MailFileNote"],
+  ["Verify report", "MailFileStatus from the Person document and the server (MAILFILE_OK / MAILFILE_MISSING)"],
+], [3000, 6360]);
+h3("5. Other mail file settings");
+tbl(["Setting", "Effect"], [
+  ["MailTemplate", "Template for new mail files (empty = registration default). Must exist on every home server (B4)."],
+  ["MailACLManager", "Extra person or group with Manager access to every new mail file"],
+  ["MailQuotaSizeLimit / MailQuotaWarningThreshold", "Quota and warning threshold in MB (0 = none)"],
+  ["MailCreateFTIndex", "Create a full-text index for new mail files"],
+  ["CheckMailFileExists", "Direct check of the exact path (Build and Register Batch)"],
+], [3500, 5860]);
 h3("Example: one user before and after registration");
 tbl(["Person document field", "Before (DirSync)", "After BulkReg"], [
   ["Full name", "John Smith", "John Smith/Sales/Demo"],
   ["Certificate", "(empty)", "(present)"],
   ["Mail system", "Other Internet Mail", "Notes"],
   ["Mail server", "(empty or other)", "CN=DominoADMail/O=Demo"],
-  ["Mail file", "(empty)", "mail\\jsmith.nsf"],
+  ["Mail file", "(empty)", "mail2\\smith.nsf"],
   ["Internet address", "john.smith@demo.com", "john.smith@demo.com"],
 ], [2600, 3200, 3560]);
 warn("From now on, Domino delivers mail for these users to their **Domino mail file**. Before the first live batch, agree with the mail team how inbound Internet mail (MX / routing) reaches Domino for these addresses, and whether any existing mailbox content must be migrated. That is outside BulkReg. Also check that the DirSync field mapping (Directory Sync configuration, Synchronization tab) does not overwrite MailSystem, MailServer or MailFile after registration.");
@@ -738,7 +776,7 @@ warn("From now on, Domino delivers mail for these users to their **Domino mail f
 h2("D4 Outputs, audit and result codes");
 tbl(["Output", "Location", "Content"], [
   ["Batch files", "C:\\BulkReg\\batches\\", "D2"],
-  ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_audit.csv", "One row per user per action, including BatchID. **No passwords.**"],
+  ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_audit.csv", "One row per user per action, including BatchID, MailFile, MailFileStatus and MailFileNote. **No passwords.**"],
   ["Debug log", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_debug.log", "Every step, the approval line, and the batch file size and time"],
   ["Password file", "C:\\BulkReg\\secure\\BulkReg_InitialPasswords_<batch>_<run>.csv", "Initial passwords (delete in C8)"],
   ["Domino registration log", "log.nsf on the registration server", "Domino's own records"],
@@ -788,6 +826,8 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["ERROR: Policy looks like a server/canonical name", "A server name (CN=…/O=…) was put in the Policy column", "Put the policy name (*/Name) or `-`"],
   ["ERROR: Policy '*'", "The organization-wide policy was entered", "Leave Policy empty: `*` applies automatically"],
   ["ERROR: MailFile … already exists on …", "A mail file with that name is on the home server (another user, or a leftover)", "Edit MailFile in the batch (e.g. mail\\jsmith2.nsf), or remove the old file after checking it"],
+  ["WARN: mail file renamed", "The last-name file already exists on that server, in the directory or in an open batch", "Normal with SUFFIX. Review the new name, or edit MailFile"],
+  ["\"Could not scan <server>\" in the debug log", "No access to the server's database list", "Uniqueness then uses the directory and the direct file check. Fix access and rebuild for full checking."],
   ["MAILFILE_PENDING / MAILFILE_MISSING", "Mail file creation queued (Administration Process) or failed: template missing, no Create databases right, server unreachable", "Check admin4.nsf on the home server, B4 rights and template; re-run Verify"],
   ["Mail fields change after the next DirSync", "DirSync attribute mapping overwrites MailSystem / MailServer / MailFile", "Remove those fields from the DirSync mapping (Directory Sync configuration, Synchronization tab)"],
 ], [2900, 3300, 3160]);
@@ -819,6 +859,7 @@ tbl(["#", "Item", "How to confirm"], [
   ["2", "RegisterNewUser parameters follow HCL's ContactNoteID example and the 14.5 syntax", "Compiles and the pilot passes"],
   ["3", "UseCA=1 passes an empty certifier password", "The pilot registers successfully"],
   ["4", "PolicyName is passed as stored (`*/name`)", "Policy synopsis of the pilot users (C5)"],
+  ["5a", "Domino creating a new subfolder (mail2, mail3 …) when the first mail file is created in it", "Pilot with an empty folder. If not created, create the folders on the home servers first."],
   ["5", "Mail file creation through NotesRegistration (immediate or via the Administration Process) and the DirSync mapping of mail fields", "Mail file present after the pilot and Person document unchanged after the next DirSync"],
   ["6", "The Agent Log template file name differs between releases (alog4.ntf / alog.ntf)", "B15"],
   ["7", "bulkreg.ps1 was reviewed but not executed", "Run `bulkreg.cmd Check` once"],

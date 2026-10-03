@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 1.4.0
+' Script Library : BulkRegCommon            Version 1.5.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_ExportToBatchRegFile,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "1.4.0"
+Public Const BR_VERSION = "1.5.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -56,6 +56,7 @@ Public Type BRUser
 	MailSystemAfter As String
 	MailFile As String          ' Domino mail file to create, relative to the data dir (mail\jsmith.nsf)
 	MailFileStatus As String    ' MAILFILE_OK / MAILFILE_MISSING / ...
+	MailFileNote As String      ' how the name/folder was chosen (naming rule, collisions, folder fill)
 	HomeServer As String
 	OrgUnit As String
 	Policy As String
@@ -88,7 +89,7 @@ Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
 Public gBase As String
 Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes.ini
 ' columns of a batch file (BATCH-<id>.csv) written by Agent 02, read by Agents 03/04
-Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,OrgUnit,Policy,Groups,VaultServer,MapRule,Check,Issues"
+Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,MapRule,Check,Issues"
 
 '#####################################################################
 ' ### STEP C: paste everything from here to the END of the file AFTER the
@@ -449,26 +450,189 @@ End Sub
 ' MAIL FILES  - every registered user gets a Domino mail file on the
 '               home server: <MailFileDir>\<name>.nsf  (e.g. mail\jsmith.nsf)
 '=====================================================================
-' File name without folder/extension: ShortName, else first initial + last name
+' Base file name (no folder, no extension) according to MailFileNaming:
+'   LASTNAME (default)     Smith            -> smith
+'   FIRSTINITIAL_LASTNAME  John Smith       -> jsmith
+'   SHORTNAME              ShortName jsmith -> jsmith (falls back to LASTNAME)
+' Accented letters are transliterated (Müller -> mueller); only a-z 0-9 _ - are kept.
 Function BR_MailBase(u As BRUser) As String
 	Dim src As String, i As Integer, c As String, out As String
-	src = u.ShortName
-	If src = "" Then src = Left$(u.FirstName, 1) & u.LastName
+	Select Case UCase$(CfgS("MailFileNaming", "LASTNAME"))
+	Case "SHORTNAME"
+		src = u.ShortName
+		If src = "" Then src = u.LastName
+	Case "FIRSTINITIAL_LASTNAME"
+		src = Left$(u.FirstName, 1) & u.LastName
+	Case Else
+		src = u.LastName
+	End Select
+	src = BR_Translit(LCase$(src))
 	For i = 1 To Len(src)
 		c = Mid$(src, i, 1)
-		If c Like "[A-Za-z0-9_-]" Then out = out & c
+		If c Like "[a-z0-9_-]" Then out = out & c
 	Next
-	If out = "" Then out = "user" & u.NoteID
-	BR_MailBase = LCase$(out)
+	If out = "" Then out = "user" & LCase$(u.NoteID)
+	BR_MailBase = out
 End Function
 
+' Common Latin accents -> ASCII (input must be lower case)
+Function BR_Translit(s As String) As String
+	Dim r As String, i As Integer, code As Long
+	For i = 1 To Len(s)
+		code = Uni(Mid$(s, i, 1))
+		Select Case code
+		Case 224 To 227, 229: r = r & "a"
+		Case 228, 230: r = r & "ae"
+		Case 231: r = r & "c"
+		Case 232 To 235: r = r & "e"
+		Case 236 To 239: r = r & "i"
+		Case 241: r = r & "n"
+		Case 242 To 245, 248: r = r & "o"
+		Case 246, 339: r = r & "oe"
+		Case 249 To 251: r = r & "u"
+		Case 252: r = r & "ue"
+		Case 253, 255: r = r & "y"
+		Case 223: r = r & "ss"
+		Case Else: r = r & Mid$(s, i, 1)
+		End Select
+	Next
+	BR_Translit = r
+End Function
+
+' Simple default path (used before allocation, e.g. by Preflight and Export)
 Function BR_MailFilePath(u As BRUser) As String
+	Dim d As String
+	If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" Then
+		d = LCase$(CfgS("MailFolderPrefix", "mail")) & "1"
+	Else
+		d = BR_MailSingleDir()
+	End If
+	If d = "" Then BR_MailFilePath = BR_MailBase(u) & ".nsf" Else BR_MailFilePath = d & "\" & BR_MailBase(u) & ".nsf"
+End Function
+
+Function BR_MailSingleDir() As String
 	Dim d As String
 	d = Trim$(BR_Path(CfgS("MailFileDir", "mail")))
 	Do While Right$(d, 1) = "\"
 		d = Left$(d, Len(d) - 1)
 	Loop
-	If d = "" Then BR_MailFilePath = BR_MailBase(u) & ".nsf" Else BR_MailFilePath = d & "\" & BR_MailBase(u) & ".nsf"
+	BR_MailSingleDir = LCase$(d)
+End Function
+
+'---------------------------------------------------------------------
+' MAIL FILE ALLOCATION (Agent 02)  - unique names + numbered folders
+'   names  List: "<server>!!<basename>" -> where it is already used
+'   counts List: "<server>!!<folder>"   -> number of mail files in folder
+'   scanned List: "<server>"            -> server already scanned
+'---------------------------------------------------------------------
+' Reads every database on the home server once and records the names and
+' folder fill of all files under the mail folders (mail, mail1, mail2 ...).
+Sub BR_ScanServerMail(server As String, names List As String, counts List As Long, scanned List As String)
+	On Error GoTo ErrH
+	Dim sk As String, dbdir As NotesDbDirectory, d As NotesDatabase, fp As String
+	Dim folder As String, base As String, prefix As String, n As Long
+	sk = LCase$(BR_SrvAbbr(server))
+	If IsElement(scanned(sk)) Then Exit Sub
+	scanned(sk) = "1"
+	prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
+	BR_Log LVL_INFO, "Scanning mail folders on " & server & " ..."
+	Set dbdir = gSession.GetDbDirectory(server)
+	Set d = dbdir.GetFirstDatabase(DATABASE)
+	Do While Not (d Is Nothing)
+		fp = LCase$(BR_Path(d.FilePath))
+		If InStr(fp, "\") > 0 Then
+			folder = StrLeftBack(fp, "\")
+			base = StrRightBack(fp, "\")
+		Else
+			folder = ""
+			base = fp
+		End If
+		If Right$(base, 4) = ".nsf" Then base = Left$(base, Len(base) - 4)
+		If Left$(folder, Len(prefix)) = prefix Or folder = BR_MailSingleDir() Then
+			If Not IsElement(names(sk & "!!" & base)) Then names(sk & "!!" & base) = "file " & fp
+			If IsElement(counts(sk & "!!" & folder)) Then counts(sk & "!!" & folder) = counts(sk & "!!" & folder) + 1 Else counts(sk & "!!" & folder) = 1
+			n = n + 1
+		End If
+		Set d = dbdir.GetNextDatabase()
+	Loop
+	BR_Log LVL_INFO, "  " & n & " mail databases found on " & server
+	Exit Sub
+ErrH:
+	BR_Log LVL_WARN, "Could not scan " & server & " (" & Error$ & ") - uniqueness then relies on the directory and on direct file checks"
+	Exit Sub
+End Sub
+
+' Mail files already referenced by Person documents (MailServer + MailFile)
+Sub BR_ScanDirectoryMail(db As NotesDatabase, names List As String)
+	On Error GoTo ErrH
+	Dim col As NotesDocumentCollection, doc As NotesDocument, sk As String, fp As String, base As String
+	Set col = db.Search(|Form = "Person" & MailFile != ""|, Nothing, 0)
+	Set doc = col.GetFirstDocument()
+	Do While Not (doc Is Nothing)
+		sk = LCase$(BR_SrvAbbr(BR_Item(doc, "MailServer")))
+		fp = LCase$(BR_Path(BR_Item(doc, "MailFile")))
+		base = fp
+		If InStr(base, "\") > 0 Then base = StrRightBack(base, "\")
+		If Right$(base, 4) = ".nsf" Then base = Left$(base, Len(base) - 4)
+		If sk <> "" And base <> "" Then
+			If Not IsElement(names(sk & "!!" & base)) Then names(sk & "!!" & base) = "Person doc " & BR_Item(doc, "FullName")
+		End If
+		Set doc = col.GetNextDocument(doc)
+	Loop
+	BR_Log LVL_INFO, "Directory: " & col.Count & " Person documents with a mail file read for uniqueness"
+	Exit Sub
+ErrH:
+	BR_Log LVL_WARN, "Could not read mail files from the directory: " & Error$
+	Exit Sub
+End Sub
+
+' Chooses a unique name and a folder for u (u.HomeServer must be set), reserves
+' them, sets u.MailFile and u.MailFileNote. Returns "" or an "ERROR:..." issue.
+Function BR_AllocMailFile(u As BRUser, names List As String, counts List As Long) As String
+	Dim sk As String, base0 As String, base As String, n As Integer, folder As String
+	Dim prefix As String, limit As Long, k As Integer, fk As String, note As String
+	sk = LCase$(BR_SrvAbbr(u.HomeServer))
+	base0 = BR_MailBase(u)
+	base = base0
+	n = 1
+	Do While IsElement(names(sk & "!!" & base))
+		If UCase$(CfgS("MailFileCollision", "SUFFIX")) = "ERROR" Then
+			u.MailFileNote = "name " & base0 & ".nsf already used (" & names(sk & "!!" & base0) & ")"
+			BR_AllocMailFile = "ERROR:Mail file name " & base0 & ".nsf already used on " & u.HomeServer & " (" & names(sk & "!!" & base0) & "); "
+			Exit Function
+		End If
+		n = n + 1
+		base = base0 & CStr(n)
+		If n > 999 Then
+			BR_AllocMailFile = "ERROR:No free mail file name for " & base0 & "; "
+			Exit Function
+		End If
+	Loop
+	If base <> base0 Then note = base0 & ".nsf already used (" & names(sk & "!!" & base0) & ") -> " & base & ".nsf; "
+
+	If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" Then
+		prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
+		limit = CfgL("MailFilesPerFolder", 1000)
+		If limit < 1 Then limit = 1000
+		k = 1
+		Do While IsElement(counts(sk & "!!" & prefix & CStr(k)))
+			If counts(sk & "!!" & prefix & CStr(k)) < limit Then Exit Do
+			k = k + 1
+		Loop
+		folder = prefix & CStr(k)
+	Else
+		folder = BR_MailSingleDir()
+		limit = 0
+	End If
+	fk = sk & "!!" & folder
+	If IsElement(counts(fk)) Then counts(fk) = counts(fk) + 1 Else counts(fk) = 1
+	names(sk & "!!" & base) = "batch " & gBatchID & " (" & u.FullNameBefore & ")"
+	If folder = "" Then u.MailFile = base & ".nsf" Else u.MailFile = folder & "\" & base & ".nsf"
+	If limit > 0 Then
+		u.MailFileNote = note & "naming " & UCase$(CfgS("MailFileNaming", "LASTNAME")) & "; folder " & folder & " " & counts(fk) & "/" & limit
+	Else
+		u.MailFileNote = note & "naming " & UCase$(CfgS("MailFileNaming", "LASTNAME")) & "; folder " & BR_IIfStr(folder = "", "(data directory)", folder)
+	End If
 End Function
 
 ' True when a database already exists at <path> on <server> (and can be opened)
@@ -562,7 +726,7 @@ End Sub
 Function BR_AuditHeader() As String
 	BR_AuditHeader = "RunID,Timestamp,Tool,Operator,Mode,Action,Result,DurationSec,NoteID,UNID,objectGUID," & _
 	"FullNameBefore,FullNameAfter,InternetAddress,ShortName,HomeServer,OrgUnit,Policy,MapRule," & _
-	"MailSystemBefore,MailSystemAfter,VaultStatus,IDFile,Message,BatchID,MailFile,MailFileStatus"
+	"MailSystemBefore,MailSystemAfter,VaultStatus,IDFile,Message,BatchID,MailFile,MailFileStatus,MailFileNote"
 End Function
 
 Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, dur As Double, msg As String)
@@ -573,7 +737,7 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FullNameAfter) & "," & _
 	Q(u.InternetAddress) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & _
 	Q(u.MapRule) & "," & Q(u.MailSystemBefore) & "," & Q(u.MailSystemAfter) & "," & Q(u.VaultStatus) & "," & _
-	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(u.MailFile) & "," & Q(u.MailFileStatus)
+	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(u.MailFile) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote)
 	Call BR_AppendLine(gAuditFile, r)
 	If gResultsFile <> "" Then Call BR_AppendLine(gResultsFile, r)
 	Exit Sub
@@ -784,10 +948,11 @@ End Function
 
 ' NoteIDs listed (Include=Y) in batch files that are still OPEN -> excluded
 ' from new batches so one user is never in two pending batches.
-Sub BR_OpenBatchNoteIDs(ids List As String)
+Sub BR_OpenBatchNoteIDs(ids List As String, names List As String, counts List As Long)
 	On Error GoTo ErrH
 	Dim d As String, f As String, files List As String, fh As Integer, txt As String
 	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
+	Dim sk As String, mfp As String, base As String, folder As String
 	d = BR_BatchDir()
 	f = Dir$(d & "BATCH-*.csv")
 	Do While f <> ""
@@ -806,7 +971,23 @@ Sub BR_OpenBatchNoteIDs(ids List As String)
 					isFirst = False
 				ElseIf Trim$(txt) <> "" Then
 					parts = BR_CsvSplit(txt, delim)
-					If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then ids(BR_CsvGet(parts, cols, "NoteID")) = CStr(bf)
+					If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
+						ids(BR_CsvGet(parts, cols, "NoteID")) = CStr(bf)
+						' reserve this open batch's mail file name and folder slot
+						sk = LCase$(BR_SrvAbbr(BR_CsvGet(parts, cols, "HomeServer")))
+						mfp = LCase$(BR_Path(BR_CsvGet(parts, cols, "MailFile")))
+						If sk <> "" And mfp <> "" Then
+							folder = ""
+							base = mfp
+							If InStr(mfp, "\") > 0 Then
+								folder = StrLeftBack(mfp, "\")
+								base = StrRightBack(mfp, "\")
+							End If
+							If Right$(base, 4) = ".nsf" Then base = Left$(base, Len(base) - 4)
+							If Not IsElement(names(sk & "!!" & base)) Then names(sk & "!!" & base) = "open " & CStr(bf)
+							If IsElement(counts(sk & "!!" & folder)) Then counts(sk & "!!" & folder) = counts(sk & "!!" & folder) + 1 Else counts(sk & "!!" & folder) = 1
+						End If
+					End If
 				End If
 			Loop
 			Close #fh

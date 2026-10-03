@@ -1,7 +1,7 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
 BulkReg 1.3.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v2.3. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v2.4. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## What it does
 DirSync creates Person documents for AD users, but those users have no Notes ID and no Domino mail file. BulkReg turns them into **full Domino users** in **reviewed batches**, using HCL's `NotesRegistration.ContactNoteID`, which upgrades the existing Person document in place. For each user it:
@@ -11,7 +11,12 @@ DirSync creates Person documents for AD users, but those users have no Notes ID 
 
 Every action is audited.
 
-Mail settings live in `bulkreg.ini`: `MailFileDir` (default `mail`), `MailTemplate`, `MailACLManager`, `MailQuotaSizeLimit`, `MailCreateFTIndex` and `CheckMailFileExists`. Each user's mail file path is shown in the batch file (MailFile column) and can be edited before registering. An existing mail file is never overwritten.
+**Mail files (`bulkreg.ini`, guide D3a):**
+- **Name = last name** (`MailFileNaming=LASTNAME` → `smith.nsf`; `Müller` → `mueller.nsf`).
+- **Unique per home server.** A name is checked against all mail folders on the server, Person documents, open batches and the batch itself. A clash becomes `smith2.nsf` (`MailFileCollision=SUFFIX`), or the row is excluded (`ERROR`).
+- **Numbered folders** `mail1`, `mail2` … with at most `MailFilesPerFolder=1000` files each, counting files already there.
+- **Recorded everywhere:** every decision is written to the batch file (`MailFile`, `MailFileNote`), the batch summary (folder fill), and the audit and results CSVs (`MailFile`, `MailFileStatus`, `MailFileNote`).
+- **Optional settings:** `MailTemplate`, `MailACLManager`, `MailQuotaSizeLimit`, `MailCreateFTIndex`.
 
 ## You always know who is registered
 | Stage | Agent | Result |
