@@ -1,5 +1,6 @@
 '=====================================================================
-' Agent      : 03 | Register Batch (ID -> ID Vault)
+' Agent name : BulkReg\03 - Register Batch   (ID -> ID Vault)
+'              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -27,21 +28,31 @@
 '              DRYRUN <BatchDir>\BATCH-<id>_dryrun_<run>.csv (batch stays open)
 '              plus the usual audit CSV and debug log in AuditDir.
 '=====================================================================
+'#####################################################################
+' ### STEP A: paste the 3 lines below into (Options)
+'#####################################################################
 Option Public
 Option Declare
 Use "BulkRegCommon"
+'#####################################################################
+' ### STEP B: paste the lines below (module variables) into (Declarations)
+'#####################################################################
 
 Dim gCertPwd As String
 Dim gPwFile As String
 Dim gMode As String
 
+'#####################################################################
+' ### STEP C: select Initialize and REPLACE its content with the block below
+' ###         (from 'Sub Initialize' to its 'End Sub').
+'#####################################################################
 Sub Initialize
 	On Error GoTo ErrH
 	Dim ws As NotesUIWorkspace, ans As Variant
 	Dim db As NotesDatabase, u As BRUser
 	Dim bfile As String, bname As String, bdir As String, fh As Integer, txt As String
 	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
-	Dim nid() As String, gid() As String, hs() As String, ou() As String, po() As String, gr() As String, vs() As String
+	Dim nid() As String, gid() As String, hs() As String, ou() As String, po() As String, gr() As String, vs() As String, un() As String
 	Dim n As Long, i As Long, seen List As String, srvCount List As Long, srvText As String, hk As String
 	Dim nExcluded As Long, maxRows As Long, pauseMs As Long, maxConsec As Long
 	Dim nOK As Long, nFail As Long, nSkip As Long, nConsec As Long, res As String, stopReason As String
@@ -59,7 +70,7 @@ Sub Initialize
 	bfile = BR_NewestOpenBatch()
 	If bfile = "" Then
 		BR_Close "No open batch"
-		BR_Msg "There is no open batch file in " & bdir & Chr$(10) & "Run 02 | Build Batch first.", 48
+		BR_Msg "There is no open batch file in " & bdir & Chr$(10) & "Run Actions > BulkReg > 02 - Build Batch first.", 48
 		Exit Sub
 	End If
 	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Register batch (" & gMode & ")", "Batch file to register (reviewed):", bfile)
@@ -95,9 +106,10 @@ Sub Initialize
 					Error 6005, "NoteID " & BR_CsvGet(parts, cols, "NoteID") & " is listed twice in the batch file"
 				End If
 				seen(BR_CsvGet(parts, cols, "NoteID")) = "1"
-				ReDim Preserve nid(n) As String, gid(n) As String, hs(n) As String, ou(n) As String, po(n) As String, gr(n) As String, vs(n) As String
+				ReDim Preserve nid(n) As String, gid(n) As String, hs(n) As String, ou(n) As String, po(n) As String, gr(n) As String, vs(n) As String, un(n) As String
 				nid(n) = BR_CsvGet(parts, cols, "NoteID")
 				gid(n) = BR_CsvGet(parts, cols, "objectGUID")
+				un(n) = BR_CsvGet(parts, cols, "UNID")
 				hs(n) = BR_CsvGet(parts, cols, "HomeServer")
 				ou(n) = BR_CsvGet(parts, cols, "OrgUnit")
 				po(n) = BR_CsvGet(parts, cols, "Policy")
@@ -147,7 +159,7 @@ Sub Initialize
 	' ---------- register the approved rows ----------
 	Set db = BR_OpenDirectory()
 	For i = 0 To n - 1
-		res = RegisterOne(db, nid(i), gid(i), hs(i), ou(i), po(i), gr(i), vs(i))
+		res = RegisterOne(db, nid(i), un(i), gid(i), hs(i), ou(i), po(i), gr(i), vs(i))
 		Select Case Left$(res, 2)
 		Case "OK"
 			nOK = nOK + 1: nConsec = 0
@@ -169,7 +181,7 @@ Sub Initialize
 		For j = i + 1 To n - 1
 			u = blank
 			u.NoteID = nid(j): u.GUID = gid(j): u.HomeServer = hs(j): u.OrgUnit = ou(j): u.Policy = po(j)
-			Call BR_Audit(u, gMode, "REGISTER", "NOT_PROCESSED", 0, stopReason & " - will be offered again by the next 02 | Build Batch")
+			Call BR_Audit(u, gMode, "REGISTER", "NOT_PROCESSED", 0, stopReason & " - will be offered again by the next 02 - Build Batch")
 		Next
 	End If
 	If stopReason = "" Then stopReason = "All batch rows processed"
@@ -179,7 +191,7 @@ Sub Initialize
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Results: " & gResultsFile & Chr$(10) & "Log: " & gDebugFile & _
 	BR_IIfS(gPwFile <> "", Chr$(10) & "Passwords (restricted): " & gPwFile, "") & Chr$(10) & Chr$(10) & _
-	BR_IIfS(gMode = "LIVE", "Batch is now DONE. Run 04 | Verify next.", "Dry run only - the batch is still OPEN. Set DryRun=0 to register it."), _
+	BR_IIfS(gMode = "LIVE", "Batch is now DONE. Run Actions > BulkReg > 04 - Verify Registration and Vault next.", "Dry run only - the batch is still OPEN. Set DryRun=0 to register it."), _
 	CInt(BR_IIfS(nFail > 0, 48, 64))
 	Exit Sub
 ErrH:
@@ -189,6 +201,11 @@ ErrH:
 	BR_Msg "Run aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
 	Exit Sub
 End Sub
+'#####################################################################
+' ### STEP D: paste everything from here to the END of the file directly
+' ###         below 'End Sub' of Initialize. Designer creates one entry per
+' ###         Function / Sub automatically.
+'#####################################################################
 
 '---------------------------------------------------------------------
 ' Operator confirmation: summary per home server (Yes/No); for LIVE the
@@ -237,7 +254,7 @@ End Function
 ' Values come from the reviewed batch file. Every outcome writes an audit
 ' row (and a results row). Errors never stop the batch.
 '---------------------------------------------------------------------
-Function RegisterOne(db As NotesDatabase, noteID As String, bGuid As String, bHome As String, bOU As String, bPolicy As String, bGroups As String, bVault As String) As String
+Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGuid As String, bHome As String, bOU As String, bPolicy As String, bGroups As String, bVault As String) As String
 	Dim doc As NotesDocument, reg As NotesRegistration, u As BRUser
 	Dim t0 As Double, issues As String, userPwd As String, mailFile As String
 	Dim stage As String, emsg As String, homeCanon As String, nn As NotesName
@@ -245,7 +262,12 @@ Function RegisterOne(db As NotesDatabase, noteID As String, bGuid As String, bHo
 	On Error GoTo ErrH
 
 	stage = "load"
+	' NoteID first; UNID as fallback (Excel can mangle hex NoteIDs such as 1E2)
+	On Error Resume Next
 	Set doc = db.GetDocumentByID(noteID)
+	If doc Is Nothing And unid <> "" Then Set doc = db.GetDocumentByUNID(unid)
+	Err = 0
+	On Error GoTo ErrH
 	If doc Is Nothing Then
 		u.NoteID = noteID
 		Call BR_Audit(u, gMode, "REGISTER", "SKIPPED", BR_Elapsed(t0), "Document no longer exists")
@@ -345,7 +367,7 @@ Function RegisterOne(db As NotesDatabase, noteID As String, bGuid As String, bHo
 	' ---------- verify ----------
 	stage = "verify"
 	Delete doc
-	Set doc = db.GetDocumentByID(noteID)
+	Set doc = db.GetDocumentByID(u.NoteID)
 	If doc Is Nothing Then Error 4001, "Person document not found after registration"
 	u.FullNameAfter = BR_Item(doc, "FullName")
 	u.MailSystemAfter = BR_Item(doc, "MailSystem")

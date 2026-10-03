@@ -1,5 +1,6 @@
 '=====================================================================
-' Agent      : 02 | Build Batch (select + validate)        READ-ONLY on names.nsf
+' Agent name : BulkReg\02 - Build Batch   (select + validate; READ-ONLY on names.nsf)
+'              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -23,10 +24,17 @@
 ' Config: BatchSize (rows per batch, default 500), BatchServerFilter (only
 '         users mapped to that home server), ExtraSelection, BatchDir.
 '=====================================================================
+'#####################################################################
+' ### STEP A: paste the 3 lines below into (Options)
+'#####################################################################
 Option Public
 Option Declare
 Use "BulkRegCommon"
 
+'#####################################################################
+' ### STEP C: select Initialize and REPLACE its content with the block below
+' ###         (from 'Sub Initialize' to its 'End Sub').
+'#####################################################################
 Sub Initialize
 	On Error GoTo ErrH
 	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
@@ -135,14 +143,14 @@ Sub Initialize
 	End ForAll
 	Call BR_AppendLine(sumFile, "")
 	Call BR_AppendLine(sumFile, "Next: review " & gBatchID & ".csv (Include / HomeServer / OrgUnit / Policy / Groups),")
-	Call BR_AppendLine(sumFile, "      then run 03 | Register Batch and choose this file.")
+	Call BR_AppendLine(sumFile, "      then run Actions > BulkReg > 03 - Register Batch and choose this file.")
 
 	BR_Close "batch=" & gBatchID & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft
 	BR_Msg "Batch " & gBatchID & " created." & Chr$(10) & Chr$(10) & _
 	"Rows: " & nRows & "   Include=Y: " & nInc & "   WARN: " & nWarn & "   ERROR (Include=N): " & nErr & Chr$(10) & _
 	"Not selected - in open batch: " & nInOpen & ", other server: " & nOtherSrv & ", left for next batch: " & nLeft & Chr$(10) & Chr$(10) & _
 	"Review:  " & bfile & Chr$(10) & "Summary: " & sumFile & Chr$(10) & Chr$(10) & _
-	"Nothing has been registered. Run 03 | Register Batch after review.", BR_IIfInt(nErr > 0, 48, 64)
+	"Nothing has been registered. Run Actions > BulkReg > 03 - Register Batch after review.", BR_IIfInt(nErr > 0, 48, 64)
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Build Batch aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
@@ -150,6 +158,11 @@ ErrH:
 	BR_Msg "Build Batch aborted: " & Error$, 16
 	Exit Sub
 End Sub
+'#####################################################################
+' ### STEP D: paste everything from here to the END of the file directly
+' ###         below 'End Sub' of Initialize. Designer creates one entry per
+' ###         Function / Sub automatically.
+'#####################################################################
 
 Function BR_IIfInt(c As Boolean, a As Integer, b As Integer) As Integer
 	If c Then BR_IIfInt = a Else BR_IIfInt = b

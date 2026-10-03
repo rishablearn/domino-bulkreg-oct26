@@ -1,7 +1,7 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
 BulkReg 1.3.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-Full guide: `docs/BulkReg_Admin_Guide.docx` (or `.html`), v1.4.
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v2.0. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## What it does
 DirSync creates Person documents for AD users, but those users have no Notes ID. BulkReg registers them in **reviewed batches** using HCL's `NotesRegistration.ContactNoteID`, which upgrades the existing Person document in place. The ID is deposited in the **ID Vault** through an explicit policy. Each user is assigned to a **home server** across your Domino servers, and every action is audited.
@@ -9,12 +9,12 @@ DirSync creates Person documents for AD users, but those users have no Notes ID.
 ## You always know who is registered
 | Stage | Agent | Result |
 |---|---|---|
-| 1 Build | `02 \| Build Batch` | `C:\BulkReg\batches\BATCH-<id>.csv` (default 500 users) + `_summary.txt` (counts per home server and policy). Read-only. |
+| 1 Build | `BulkReg\02 - Build Batch` | `C:\BulkReg\batches\BATCH-<id>.csv` (default 500 users) + `_summary.txt` (counts per home server and policy). Read-only. |
 | 2 Review | You, in Excel | Set `Include=N` to skip users; correct HomeServer / OrgUnit / Policy / Groups / VaultServer. Save as CSV UTF-8. |
-| 3 Register | `03 \| Register Batch` | Registers **only** the Include=Y rows of the file you choose, after a per-server summary and you typing the **batch ID**. Writes `BATCH-<id>_results.csv`. |
-| 4 Verify | `04 \| Verify` | Registration and vault status for that batch (`_verify_<run>.csv`). |
+| 3 Register | `BulkReg\03 - Register Batch` | Registers **only** the Include=Y rows of the file you choose, after a per-server summary and you typing the **batch ID**. Writes `BATCH-<id>_results.csv`. |
+| 4 Verify | `BulkReg\04 - Verify Registration and Vault` | Registration and vault status for that batch (`_verify_<run>.csv`). |
 
-Agent 03 never searches names.nsf by itself. Each row's `objectGUID` must still match the Person document. A user in an OPEN batch is never selected into another batch.
+Explicit policy names are written as Domino stores them: `*/PolicyName`. Agent 03 never searches names.nsf by itself. Each row's `objectGUID` must still match the Person document. A user in an OPEN batch is never selected into another batch.
 
 ## Multiple servers
 - **Registration server:** one per Domino domain (the directory master). All registrations run against it.
@@ -27,7 +27,7 @@ Agent 03 never searches names.nsf by itself. Each row's `objectGUID` must still 
 
 ```
 MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer
-InternetAddress;*@emea.example.com;Mail02/ORG;EMEA;/ORG-DirSync-Vault-EMEA;BR-EMEA;VaultEMEA/ORG
+InternetAddress;*@emea.example.com;Mail02/ORG;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;VaultEMEA/ORG
 *;*;Mail01/ORG;;;;
 ```
 
@@ -37,13 +37,13 @@ InternetAddress;*@emea.example.com;Mail02/ORG;EMEA;/ORG-DirSync-Vault-EMEA;BR-EM
 | 1 | Prerequisites: rights on the registration server; CA (you are an RA) or certifier ID; every home server reachable; one explicit policy per group that assigns the vault; backups | Confirmed in the change ticket |
 | 2 | Folders `C:\BulkReg\{config,batches,ids,secure,audit,cert}`; restrict batches/ids/secure/cert (`bulkreg.cmd Init`) | Restricted |
 | 3 | Configure `bulkreg.ini` + `server_mapping.csv` | No `<PLACEHOLDER>`; DryRun=1 |
-| 4 | Build bulkreg.nsf: library + agents 01–05 (Action menu selection, Target None) | Compiles, signed |
-| 5 | `01 Preflight`: environment + candidates per home server | 0 environment errors; batch plan |
-| 6 | `02 Build Batch` → review `BATCH-<id>.csv` + summary | Reviewed file approved |
-| 7 | `03 Register Batch` with DryRun=1 | All rows WOULD_REGISTER |
+| 4 | Build bulkreg.nsf: library `BulkRegCommon` + 5 agents named `BulkReg\01 - Preflight Check` … `BulkReg\05 - Export to Registration Text File` (Shared, On event > Action menu selection, Target None). Do **not** use `\|` in agent names: it is the Notes alias separator. | Compiles, signed |
+| 5 | `01 - Preflight Check`: environment + candidates per home server | 0 environment errors; batch plan |
+| 6 | `02 - Build Batch` → review `BATCH-<id>.csv` + summary | Reviewed file approved |
+| 7 | `03 - Register Batch` with DryRun=1 | All rows WOULD_REGISTER |
 | 8 | Pilot batch of 2 users (once) | REGISTERED + IN_VAULT |
-| 9 | `03 Register Batch` with DryRun=0, type the batch ID | Batch DONE |
-| 10 | `04 Verify` (choose the batch); hand over passwords; `PurgeSecrets` | All IN_VAULT. **Repeat 6–10.** |
+| 9 | `03 - Register Batch` with DryRun=0, type the batch ID | Batch DONE |
+| 10 | `04 - Verify Registration and Vault` (choose the batch); hand over passwords; `PurgeSecrets` | All IN_VAULT. **Repeat 6–10.** |
 
 ## PowerShell helper (optional)
 `scripts\windows\bulkreg.cmd` with these commands: `Init`, `Check`, `Batches` (list OPEN/DONE batches), `DryRun On|Off`, `Status [file]`, `Tail`, `PurgeSecrets [-IncludeIds] [-Yes]`. Registration doesn't need it.

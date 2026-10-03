@@ -1,10 +1,11 @@
-// BulkReg guide v1.4 — single source for Word + Web.
-// Operating model: Windows Domino Administrator client; reviewed batches (build → review → register).
+// BulkReg Administrator Guide v2.0 — single source for Word + Web.
+// Assumes NOTHING exists yet. Every procedure: purpose, who/where, before you start,
+// numbered single-action steps with expected results, and a "Done when" check.
 const META = {
   title: "BulkReg Framework",
-  subtitle: "Bulk Registration of Directory Sync (Active Directory) Users in HCL Domino with ID Vault – reviewed batches across multiple servers, run from the Windows Domino Administrator Client",
-  docType: "Administrator, Operations & Audit Guide",
-  version: "1.4",
+  subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino with ID Vault, in reviewed batches across multiple servers, from the Windows Domino Administrator client",
+  docType: "Administrator Setup, Operations & Audit Guide",
+  version: "2.0",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -24,6 +25,8 @@ const note = (text) => C.push({ t: "note", text });
 const warn = (text) => C.push({ t: "warn", text });
 const done = (text) => C.push({ t: "done", text });
 const pb = () => C.push({ t: "pagebreak" });
+// procedure header: who / where / changes
+const meta = (who, where, changes) => p(`**Who:** ${who}   **Where:** ${where}   **Changes:** ${changes}`);
 
 // ================================================================ DOCUMENT CONTROL
 h1("Document Control");
@@ -32,14 +35,13 @@ tbl(["Item", "Value"], [
   ["Version", META.version + " (" + META.status + ")"],
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
-  ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg operations run from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 1.3.0 (BulkRegCommon library, Agents 01–05, optional PowerShell helper)"],
+  ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
+  ["Framework version", "BulkReg 1.3.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
-  ["1.0 – 1.2", "First release, multi-OS trial, step-by-step runbook"],
-  ["1.3", "Windows Domino Administrator client only"],
-  ["1.4", "**Reviewed batch workflow:** Agent 02 builds a batch file (default 500 users) that you review and approve, and Agent 03 registers only the approved rows. Adds multi-server guidance, a per-user vault server, and batch-scoped verification. Agents renumbered in run order."],
+  ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["2.0", "Complete rewrite as a **from-scratch, step-by-step guide**. Every Domino object (vault, security settings, policy, roles, RA, tool database, agents) is created click by click. Agent names changed to `BulkReg\\NN - Name`, because `|` is the alias separator in Notes design names. Explicit policy names use the `*/name` form."],
 ], [1200, 8160]);
 h3("Review and approval");
 tbl(["Role", "Name", "Decision / Date"], [
@@ -50,424 +52,760 @@ tbl(["Role", "Name", "Decision / Date"], [
 ], [3400, 3200, 2760]);
 pb();
 
-// ================================================================ 1 OVERVIEW
-h1("1. Overview");
-h2("1.1 What BulkReg does");
-p("Directory Sync (DirSync) copies Active Directory users into the Domino Directory as Person documents. These users have **no Notes ID**, no certificate and no mail file (Mail system: *Other Internet Mail*). BulkReg registers them **in reviewed batches**. Every user gets a certified Notes ID, the ID is placed in the **ID Vault**, and the user is assigned to the right **home server** among your Domino servers. Every action is logged and auditable.");
-p("BulkReg uses HCL's documented API for this case, `NotesRegistration.ContactNoteID`: *“Used to register users who have existing Person documents created by syncing Active Directory users into the Domino directory.”* The existing Person document is upgraded in place.");
-h2("1.2 You always know who will be registered");
-p("Registration never selects users on its own. It is a three-stage process:");
-tbl(["Stage", "Agent", "What happens", "Changes data?"], [
-  ["1 Build", "02 | Build Batch", "Selects the next batch (default 500) of unregistered DirSync users. Resolves each user's home server, OU, policy, groups and vault. Validates them and writes **BATCH-<id>.csv** plus a summary per server.", "No"],
-  ["2 Review", "You (Excel)", "Check the list. Set Include=N to leave someone out, or correct HomeServer / OrgUnit / Policy / Groups / VaultServer.", "No"],
-  ["3 Register", "03 | Register Batch", "Loads the batch file you choose. Shows the totals per home server. In LIVE mode you must **type the batch ID** to approve. It registers only rows with Include=Y, and only if the document's objectGUID still matches.", "**Yes**"],
-], [1100, 1900, 5060, 1300]);
-h2("1.3 Where it runs");
-tbl(["Item", "Value"], [
-  ["Operator workstation", "Windows PC with the **HCL Domino Administrator client**, signed in with the admin ID that registers users"],
-  ["How agents are started", "Open bulkreg.nsf → **Actions** menu → choose the agent"],
-  ["Domino servers", "Any supported OS. The registration server, the home servers and the vault servers are reached over the network from the client."],
-  ["Local files", "`C:\\BulkReg\\`: config, batch files, ID files, initial passwords, audit logs"],
-], [2500, 6860]);
-note("The library refuses to run on a server or in a non-Windows client. It stops with a message and changes nothing.");
-h2("1.4 The path you will follow");
-tbl(["Step", "What you do", "Agent", "Changes anything?"], [
-  ["1", "Confirm prerequisites", "–", "No"],
-  ["2", "Prepare C:\\BulkReg folders", "–", "Local folders"],
-  ["3", "Configure bulkreg.ini and server_mapping.csv (your servers)", "–", "Config files"],
-  ["4", "Build bulkreg.nsf (library + 5 agents)", "–", "New tool database"],
-  ["5", "Preflight: the whole picture, per home server", "01", "No"],
-  ["6", "Build a batch and review it", "02", "No (writes a batch file)"],
-  ["7", "Dry-run the batch", "03 (DryRun=1)", "No"],
-  ["8", "Pilot batch: 2 users", "02 → 03 → 04", "**Yes** – 2 users"],
-  ["9", "Register the reviewed batch", "03 (LIVE)", "**Yes**"],
-  ["10", "Verify the batch and close it. **Repeat 6–10** for the next batch.", "04", "Deletes temporary secrets"],
-], [700, 4900, 1700, 2060]);
-
-// ================================================================ 2 HOW IT WORKS
-h1("2. How BulkReg Works");
-h2("2.1 Components");
-tbl(["Component", "What it is", "Required?"], [
-  ["bulkreg.nsf", "Notes database you create. It holds the library and the agents.", "**Yes**"],
-  ["BulkRegCommon", "LotusScript library: config, mapping, batch files, logging, audit, vault check", "**Yes**"],
-  ["01 | Preflight Check", "Environment check, plus every candidate with a count per home server. Read-only.", "**Yes**"],
-  ["02 | Build Batch", "Selects, validates and writes the batch file for review. Read-only on names.nsf.", "**Yes**"],
-  ["03 | Register Batch", "Registers the approved rows of one batch file", "**Yes**"],
-  ["04 | Verify Registration + Vault", "Registration and vault status, for one batch or for all users. Read-only.", "**Yes**"],
-  ["05 | Export to Registration Text File", "HCL text-file format for the manual method (Appendix A)", "Optional"],
-  ["bulkreg.ini, server_mapping.csv", "Settings and multi-server rules (no secrets)", "**Yes**"],
-  ["bulkreg.ps1 / bulkreg.cmd", "PowerShell helper (chapter 15)", "Optional"],
-  ["BulkReg_AuditViewer.html", "Offline viewer for audit and results CSVs", "Optional"],
-], [3000, 4860, 1500]);
-h2("2.2 What Agent 03 does for each approved row");
-ol(
-  "Loads the Person document by NoteID and checks that its `objectGUID` equals the value in the batch file. If not, the row is skipped.",
-  "Re-checks that it has no Certificate. If it was registered in the meantime, the row is skipped (safe to re-run).",
-  "Uses the reviewed **HomeServer, OrgUnit, Policy, Groups, VaultServer** from the batch file and validates them.",
-  "Calls `RegisterNewUser` with `ContactNoteID`, passing the home server's canonical name. The explicit policy assigns the **ID Vault**, so the ID is deposited during registration.",
-  "Confirms the Certificate now exists. Puts back the original Mail system (*Other Internet Mail*) if that is configured.",
-  "Checks `IsIDInVault` on the row's vault server, then writes one row to `BATCH-<id>_results.csv` and to the audit log."
-);
-h2("2.3 Built-in safety controls");
-tbl(["Control", "Effect"], [
-  ["Reviewed batch only", "Agent 03 never searches names.nsf. It processes exactly the Include=Y rows of the batch file you choose."],
-  ["Batch approval", "Yes/No summary with totals per home server, then type the **batch ID** for LIVE runs"],
-  ["Identity check", "The objectGUID in the batch file must match the Person document, so an edited or stale row cannot hit the wrong user"],
-  ["No double booking", "A user in an OPEN batch is not selected into another batch"],
-  ["DryRun=1 by default", "Nothing changes until you deliberately set DryRun=0"],
-  ["MaxBatchRows / MaxConsecutiveErrors", "Rejects oversized batch files; stops after repeated failures"],
-  ["Idempotent", "The Certificate is re-checked per user, so a re-run never registers anyone twice"],
-  ["Windows client only", "Refuses to run on a server or a non-Windows client"],
-  ["No stored certifier password", "Masked prompt, held in memory only, never logged (or not needed with the CA)"],
-], [3000, 6360]);
+// ================================================================ HOW TO USE
+h1("How to Use This Guide");
+p("This guide assumes **nothing has been created yet**: no folders, no tool database, no policy, no vault assignment. Follow it from top to bottom the first time. After that you only repeat Part C for each batch.");
+tbl(["Part", "Contents", "When"], [
+  ["A – Understand", "What BulkReg does, how a batch works, everything you will create", "Read once (10 minutes)"],
+  ["B – One-time setup", "Procedures B1–B21: from an empty workstation to a tested tool", "Once"],
+  ["C – Run a batch", "Procedures C1–C9: build, review, dry-run, register, verify, close", "For every batch of users"],
+  ["D – Reference", "Multi-server design, file formats, settings, results, troubleshooting, security, glossary", "Look up as needed"],
+], [2000, 5000, 2360]);
+h2("Conventions");
+tbl(["You see", "Meaning"], [
+  ["**Bold**", "A button, tab, menu item or field you click or fill in"],
+  ["Menu > Item > Sub-item", "Click each item in turn"],
+  ["`C:\\BulkReg\\config`", "Text to type, a path, a file or a value, exactly as shown"],
+  ["`<Mail01/ORG>`", "A placeholder. Replace it, including the angle brackets, with your value from the worksheet (B1)."],
+  ["Result:", "What you should see after a step. If you see something else, stop and use chapter D6 (Troubleshooting)."],
+  ["Done when (green box)", "The check that the procedure is complete. Do not continue until it is true."],
+], [2600, 6760]);
 pb();
 
-// ================================================================ STEP 1
-h1("3. Step 1 – Confirm Prerequisites");
-p("**Who:** Domino administrator. **Where:** Domino Administrator client. **Changes:** none.");
-tbl(["#", "Check", "Why"], [
-  ["1", "DirSync is running and AD users appear as Person documents with an `objectGUID` item", "These are the users BulkReg registers"],
-  ["2", "Your admin ID has **Editor** access, or the [UserCreator] and [UserModifier] roles, in names.nsf on the **registration server**", "Needed to register users"],
-  ["3", "**Domino CA:** your admin ID is a Registration Authority for the CA-enabled certifier, **or** you have the certifier ID file and its password", "One of the two is required"],
-  ["4", "Every **home server** you will assign is in the domain and reachable from the admin workstation", "Users are spread across these servers"],
-  ["5", "The ID Vault (or vaults) exist, with replicas on the vault servers", "Target for the IDs"],
-  ["6", "One **explicit policy per target group** (for example per region) whose **Security Settings assign the right ID Vault**", "This is what puts each ID into the vault"],
-  ["7", "Recommended: the same Security Settings force a password change at first use", "Initial passwords are temporary"],
-  ["8", "Domino Administrator 14.x and Domino Designer are installed on the Windows workstation", "To build and run bulkreg.nsf"],
-  ["9", "A backup of names.nsf and of the ID Vault is in place", "Rollback is limited (chapter 19)"],
-], [500, 5800, 3060]);
-done("All nine checks are confirmed and recorded in the change ticket.");
+// ================================================================ PART A
+h1("Part A – Understand");
+h2("A1 What BulkReg does");
+p("Directory Sync (DirSync) copies Active Directory users into the Domino Directory (`names.nsf`) as **Person documents**. These users can be found in Domino, but they have **no Notes ID**, no certificate and no mail file (Mail system: *Other Internet Mail*).");
+p("BulkReg registers these users **in reviewed batches**. Each user gets a certified Notes ID, the ID is stored in the **ID Vault**, and the user is assigned to the right **home server**. Every step is logged for audit.");
+p("It uses HCL's documented API for this case, `NotesRegistration.ContactNoteID`: *“Used to register users who have existing Person documents created by syncing Active Directory users into the Domino directory.”* The existing Person document is upgraded in place, so no duplicate is created.");
+h2("A2 How a batch works: you always see who is registered");
+tbl(["Stage", "Tool", "What happens", "Changes Domino?"], [
+  ["1 Build", "Agent 02", "Picks the next batch (default 500) of unregistered DirSync users. Works out each user's home server, OU, policy, groups and vault. Validates them and writes a **batch file** (CSV) plus a summary.", "No"],
+  ["2 Review", "You, in Excel or Notepad", "Read the list. Exclude users (Include=N) or correct their server, OU, policy, groups or vault. Save the file.", "No"],
+  ["3 Dry run", "Agent 03, DryRun=1", "Simulates the batch and shows what would happen", "No"],
+  ["4 Register", "Agent 03, DryRun=0", "Shows totals per server. You type the batch ID to approve. Only the approved rows are registered.", "**Yes**"],
+  ["5 Verify", "Agent 04", "Checks every user of the batch: registered? ID in the vault?", "No"],
+], [1100, 1700, 5260, 1300]);
+h2("A3 Everything you will create in Part B");
+tbl(["Item", "Where", "Created in"], [
+  ["Planning worksheet (your values)", "Paper or a file", "B1"],
+  ["Directory roles for your admin ID", "names.nsf ACL on the registration server", "B4"],
+  ["Registration Authority entry (if you use the Domino CA)", "CA-enabled certifier", "B5"],
+  ["ID Vault (only if you do not have one yet)", "Vault server", "B6"],
+  ["Security Settings document (assigns the vault, password rules)", "names.nsf > Settings", "B7"],
+  ["Explicit policy (one per vault or region)", "names.nsf > Policies", "B8"],
+  ["Working folders", "`C:\\BulkReg\\` on the admin workstation", "B9"],
+  ["The BulkReg kit (code, templates, docs)", "`C:\\BulkReg-kit\\`", "B10"],
+  ["Configuration: bulkreg.ini, server_mapping.csv", "`C:\\BulkReg\\config\\`", "B11, B12"],
+  ["Tool database bulkreg.nsf (+ optional log database)", "Local Notes data directory", "B13–B15"],
+  ["Script library and 5 agents", "Inside bulkreg.nsf", "B17, B18"],
+], [4300, 3200, 1860]);
+pb();
 
-// ================================================================ STEP 2
-h1("4. Step 2 – Prepare Working Folders");
-p("**Who:** Windows administrator of the admin workstation. **Changes:** creates local folders.");
+// ================================================================ PART B
+h1("Part B – One-Time Setup (from nothing)");
+
+// ---------- B1
+h2("B1 Fill in the planning worksheet");
+meta("Domino administrator", "Anywhere", "nothing");
+p("Every later step uses these values. Collect them first and get the platform owner to confirm them.");
+tbl(["#", "Item", "Example", "Your value"], [
+  ["1", "Domino domain and organization", "ORG", ""],
+  ["2", "Registration server (holds the master Domino Directory)", "Admin01/ORG", ""],
+  ["3", "Home servers users will be assigned to (all of them)", "Mail01/ORG, Mail02/ORG, Mail03/ORG", ""],
+  ["4", "How users are split across home servers (department, email domain, location…)", "@emea.example.com → Mail02/ORG", ""],
+  ["5", "Certification method: Domino CA (recommended) or certifier ID file", "Domino CA", ""],
+  ["6", "CA-enabled certifier name (CA) or certifier ID file path", "OU=Users/O=ORG", ""],
+  ["7", "ID Vault name(s) and vault server(s)", "DirSyncVault on Vault01/ORG", ""],
+  ["8", "Security Settings document name(s)", "BulkReg-Vault-Security", ""],
+  ["9", "Explicit policy name(s), one per vault or region", "DirSync-Vault (stored as */DirSync-Vault)", ""],
+  ["10", "Optional organizational unit (OU) per group of users", "EMEA", ""],
+  ["11", "Optional groups to add new users to", "BR-EMEA", ""],
+  ["12", "Admin ID that will run BulkReg", "Admin User/ORG", ""],
+  ["13", "Windows admin workstation name", "ADMIN-PC01", ""],
+  ["14", "Batch size", "500", ""],
+  ["15", "Change ticket number", "CHG000123", ""],
+], [500, 4300, 2700, 1860]);
+done("Every row has a confirmed value (rows 10 and 11 may be empty).");
+
+// ---------- B2
+h2("B2 Check the admin workstation");
+meta("Windows administrator", "Admin workstation", "nothing");
+ol(
+  "Sign in to the Windows workstation from worksheet row 13.",
+  "Open **HCL Domino Administrator** from the Start menu. *Result:* it opens and asks for your admin ID password (worksheet row 12).",
+  "Click **Help > About HCL Domino Administrator**. *Result:* the version is 14.x.",
+  "Open **HCL Domino Designer** from the Start menu. *Result:* it opens with the same ID. Close it again.",
+  "Open **Windows PowerShell** and type `$PSVersionTable.PSVersion`, then press Enter. *Result:* version 5.1 or higher (only needed for the optional helper).",
+  "Check that **Microsoft Excel** or **Notepad** is available for reviewing batch files.",
+  "In Domino Administrator, click **File > Open Server**, type the registration server (worksheet row 2) and click **OK**. *Result:* the server opens without errors."
+);
+done("Domino Administrator 14.x and Designer open with the admin ID, and the registration server can be opened.");
+
+// ---------- B3
+h2("B3 Confirm that DirSync users exist");
+meta("Domino administrator", "Domino Administrator", "nothing");
+ol(
+  "In Domino Administrator, select the registration server in the server pane.",
+  "Click the **People & Groups** tab, then **Domino Directories > (your directory) > People**. *Result:* a list of Person documents.",
+  "Select a user you know was synchronized from Active Directory.",
+  "Click **File > Document Properties**, then the **Fields** tab (the second tab in the properties box).",
+  "In the left column, scroll to **objectGUID** and click it. *Result:* a value is shown on the right. This marks a DirSync Person document.",
+  "Scroll to **Certificate**. *Result:* the field is missing or empty. This means the user is not registered yet.",
+  "Scroll to **MailSystem** and **MailFile** and note their values, so you can compare them after the pilot."
+);
+done("At least one Person document has an objectGUID value and no Certificate.");
+
+// ---------- B4
+h2("B4 Give your admin ID directory access");
+meta("Domino administrator with Manager access to names.nsf", "Domino Administrator", "the names.nsf ACL on the registration server");
+p("HCL: UserCreator lets administrators create Person documents, and UserModifier lets them edit them. Editor access already allows editing.");
+ol(
+  "In Domino Administrator, select the **registration server** in the server pane.",
+  "Click the **Files** tab and select **names.nsf** (the Domino Directory).",
+  "In the Tools pane, choose **Database > Manage ACL**. *Result:* the Access Control List dialog opens.",
+  "If your admin ID (or a group it belongs to) is not listed, click **Add**, enter the name and click **OK**.",
+  "Select the entry and set **Access** to **Editor**.",
+  "Make sure **Create documents** and **Delete documents** are ticked. Registration creates and updates documents.",
+  "Click **Roles** and tick **[UserCreator]** and **[UserModifier]**. If you will create the policy yourself (B7, B8), also tick **[PolicyCreator]** and **[PolicyModifier]**.",
+  "Click **OK** to save the ACL.",
+  "Wait for the ACL change to reach the server you work on. It is immediate on the registration server itself."
+);
+done("Your admin ID has Editor access with [UserCreator] and [UserModifier] (and the Policy roles if needed) in names.nsf on the registration server.");
+
+// ---------- B5
+h2("B5 Set up certification");
+p("Choose **one** option (worksheet row 5). Option 1 (Domino CA) is recommended: no certifier password is needed during a run.");
+h3("Option 1 – Domino server-based CA: add your admin ID as a Registration Authority");
+meta("CA administrator", "Domino Administrator + server console of the CA server", "the CA certifier (RA list)");
+ol(
+  "Open the console of the server that hosts the CA: in Domino Administrator, select that server, click the **Server** tab, then **Server Console**.",
+  "Type `tell ca stat` and press Enter. *Result:* the CA process answers and lists its certifiers. If it is not running, type `load ca` first.",
+  "Type `tell ca quit` and press Enter (required before modifying the certifier).",
+  "Click the **Configuration** tab. In the Tools pane choose **Certification > Modify Certifier**.",
+  "Select the server that hosts the CA, then select the certifier from worksheet row 6.",
+  "In the Certifier dialog, add your admin ID (worksheet row 12) as a **Registration Authority (RA)** and click **OK**.",
+  "On the console type `tell adminp process all`, then `load ca`, then `tell ca refresh`, then `tell ca stat`. *Result:* the certifier is listed, with your RA change in place."
+);
+note("HCL reference: “Modifying a server-based CA” (Appendix C). The CA process must be restarted after a server restart unless `ca` is in the ServerTasks setting.");
+h3("Option 2 – Certifier ID file");
+ol(
+  "Obtain the certifier ID file and its password from the certifier owner, following your organisation's handover process.",
+  "Copy the file into `C:\\BulkReg\\cert\\` after you create the folders in B9. Do not put it anywhere else.",
+  "Write down its path for B11. **Never** write the password into a file. BulkReg asks for it in a masked dialog at run time."
+);
+done("Option 1: `tell ca stat` shows the certifier and your ID is an RA. Option 2: you have the certifier ID file and its owner has given you the password.");
+
+// ---------- B6
+h2("B6 Create the ID Vault (skip if you already have one)");
+meta("Domino administrator with Create databases access on the vault server and Editor access to names.nsf", "Domino Administrator", "creates the vault database and vault document");
+ol(
+  "In Domino Administrator, click the **Configuration** tab.",
+  "Choose **Tools > ID Vaults > Create**. *Result:* the ID vault wizard starts.",
+  "Enter the **vault name** from worksheet row 7. HCL: it cannot be the same as an organization or OU name, and it cannot be changed later.",
+  "Enter the **vault ID file location and password**. Back up this file and password according to your security policy.",
+  "Select the **vault primary server** from worksheet row 7.",
+  "Add at least one **vault administrator**.",
+  "Finish the wizard. *Result:* the vault document appears under **Configuration > Security > ID Vaults**.",
+  "If you need replicas on more vault servers, use **Tools > ID Vaults > Manage** as described in the HCL ID vault documentation."
+);
+done("The vault document exists, and the vault name and server are in the worksheet.");
+
+// ---------- B7
+h2("B7 Create the Security Settings document");
+meta("Domino administrator with [PolicyCreator]", "Domino Administrator", "creates one settings document in names.nsf");
+p("This document tells Domino to put each registered user's ID into the vault, and sets the password rules. Create one per vault if you have several.");
+ol(
+  "Click the **People & Groups** tab, then open the **Settings** view.",
+  "Click **Add Settings** and choose **Security**. *Result:* a new Security Settings document opens.",
+  "On the **Basics** tab, enter the **Name** from worksheet row 8 and a **Description**, for example: Assigns DirSync users to the ID vault.",
+  "Click the **ID Vault** tab. In **Assigned vault**, select the vault from worksheet row 7.",
+  "Leave **Enforce password change after password has been reset** set to **Yes** (default).",
+  "Click the **Password Management** tab and set your organisation's password rules (for example Required change interval and Allowed grace period).",
+  "To force a password change at first login: set **Use custom password policy for Notes clients** to **Yes**. Then, on the **Custom Password Policy** tab, enable **Change password on first Notes client use**. HCL: this works only if the policy is applied during user registration, which BulkReg does.",
+  "Click **Save & Close**."
+);
+done("The Security Settings document is listed in the Settings view, and its ID Vault tab shows your vault.");
+
+// ---------- B8
+h2("B8 Create the explicit policy");
+meta("Domino administrator with [PolicyCreator]", "Domino Administrator", "creates one policy document in names.nsf");
+ol(
+  "Click the **People & Groups** tab, then open the **Policies** view.",
+  "Click **Add Policy**. *Result:* a new Policy document opens.",
+  "In **Policy name**, type the name from worksheet row 9 **without** `*/`, for example `DirSync-Vault`.",
+  "Set **Policy type** to **Explicit**.",
+  "Enter a **Description**, for example: BulkReg – DirSync users, ID vault DirSyncVault.",
+  "In the **Security** settings field, select the Security Settings document from B7. Press **F9** if it is not listed.",
+  "Leave the other settings types empty unless your organisation requires them.",
+  "Click **Save & Close**.",
+  "Look at the Policies view. HCL: Domino stores an explicit policy as `*/policyname`, so the policy is listed as `*/DirSync-Vault`. **Copy this exact name into the worksheet.** You will use it in bulkreg.ini and server_mapping.csv.",
+  "Repeat B7 and B8 for every additional vault or region."
+);
+warn("BulkReg passes the policy name to `NotesRegistration.PolicyName`. Use the name exactly as the Policies view shows it (with `*/`). The pilot (C5) confirms it: Person document > **Policy synopsis** must show this policy.");
+done("Each explicit policy is listed in the Policies view, linked to a Security Settings document with the right vault, and its exact name is in the worksheet.");
+pb();
+
+// ---------- B9
+h2("B9 Create the working folders");
+meta("Windows administrator", "Admin workstation", "creates C:\\BulkReg and six subfolders");
 tbl(["Folder", "Holds", "Access"], [
-  ["C:\\BulkReg\\config", "bulkreg.ini, server_mapping.csv", "Admins"],
-  ["C:\\BulkReg\\batches", "Batch files, summaries, results (contain names and email addresses)", "**Restricted**"],
-  ["C:\\BulkReg\\ids", "ID files created during registration", "**Restricted**"],
-  ["C:\\BulkReg\\secure", "Initial-password files", "**Restricted**"],
-  ["C:\\BulkReg\\audit", "Audit CSVs, debug logs", "Admins and auditors (read)"],
-  ["C:\\BulkReg\\cert", "Certifier ID (only if you do not use the Domino CA)", "**Restricted**"],
-], [2200, 4600, 2560]);
-p("**Manual (elevated PowerShell):**");
+  ["`C:\\BulkReg\\config`", "bulkreg.ini, server_mapping.csv", "Admins"],
+  ["`C:\\BulkReg\\batches`", "Batch files, summaries, results (names and email addresses)", "**Restricted**"],
+  ["`C:\\BulkReg\\ids`", "ID files created during registration", "**Restricted**"],
+  ["`C:\\BulkReg\\secure`", "Initial-password files", "**Restricted**"],
+  ["`C:\\BulkReg\\audit`", "Audit CSVs, debug logs", "Admins and auditors (read)"],
+  ["`C:\\BulkReg\\cert`", "Certifier ID (only with B5 Option 2)", "**Restricted**"],
+], [2400, 4500, 2460]);
+h3("Steps (PowerShell)");
+ol(
+  "Click **Start**, type `PowerShell`, right-click **Windows PowerShell** and choose **Run as administrator**.",
+  "Copy the block below, paste it into the window and press **Enter**. *Result:* six `Directory` lines and `Successfully processed 1 files` four times."
+);
 code(`$b = 'C:\\BulkReg'
 'config','batches','ids','secure','audit','cert' | ForEach-Object { New-Item -ItemType Directory -Force "$b\\$_" }
 'batches','ids','secure','cert' | ForEach-Object {
   icacls "$b\\$_" /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' "\${env:USERDOMAIN}\\\${env:USERNAME}:(OI)(CI)F"
 }`);
-p("**Or with the helper:** `.\\scripts\\windows\\bulkreg.cmd Init` (elevated). This also copies the config templates.");
-done("All six folders exist, and batches, ids, secure and cert do not grant access to Everyone or Users.");
-
-// ================================================================ STEP 3
-h1("5. Step 3 – Configure (including your servers)");
-p("**Who:** Domino administrator. **Changes:** config files only.");
 ol(
-  "Copy `bulkreg.ini` and `server_mapping.csv` to `C:\\BulkReg\\config\\` (Init does this).",
-  "In bulkreg.ini replace every `<PLACEHOLDER>`: DirectoryServer, RegistrationServer, CertifierName (or CertifierIDFile), DefaultHomeServer, DefaultPolicy, VaultServer.",
-  "Leave `DryRun=1` and `BatchSize=500` (or your preferred batch size).",
-  "Describe your **server landscape** in server_mapping.csv (chapter 13): which users go to which home server, OU, policy and vault."
+  "To check, type `icacls C:\\BulkReg\\ids` and press Enter. *Result:* only BUILTIN\\Administrators, NT AUTHORITY\\SYSTEM and your account are listed."
 );
+note("Explorer alternative: create the folders, then for batches, ids, secure and cert open **Properties > Security > Advanced > Disable inheritance > Remove all inherited permissions**, and add only Administrators, SYSTEM and your account. Helper alternative: `bulkreg.cmd Init` after B10.");
+done("The six folders exist, and batches, ids, secure and cert list only Administrators, SYSTEM and your account.");
+
+// ---------- B10
+h2("B10 Put the BulkReg kit on the workstation");
+meta("Domino administrator", "Admin workstation", "creates C:\\BulkReg-kit");
+p("The **kit** (code, templates, documentation) lives in `C:\\BulkReg-kit`. It is kept separate from the working folder `C:\\BulkReg` so that data never ends up in Git.");
+h3("Option 1 – from the GitHub repository (Git for Windows installed)");
+ol(
+  "Open PowerShell (normal, not elevated).",
+  "Type `git clone https://github.com/<org-or-user>/<repo>.git C:\\BulkReg-kit` and press Enter. *Result:* `Cloning into 'C:\\BulkReg-kit'... done.`"
+);
+h3("Option 2 – from a ZIP or a share");
+ol(
+  "Copy the kit folder to `C:\\BulkReg-kit`.",
+  "Check that it contains the folders `config`, `lotusscript`, `scripts`, `tools` and `docs`."
+);
+p("Then copy the two templates into the working folder:");
+code(`Copy-Item C:\\BulkReg-kit\\config\\bulkreg.ini        C:\\BulkReg\\config\\
+Copy-Item C:\\BulkReg-kit\\config\\server_mapping.csv C:\\BulkReg\\config\\`);
+done("`C:\\BulkReg-kit\\lotusscript` contains 6 .lss files, and `C:\\BulkReg\\config` contains bulkreg.ini and server_mapping.csv.");
+
+// ---------- B11
+h2("B11 Fill in bulkreg.ini");
+meta("Domino administrator", "Notepad", "C:\\BulkReg\\config\\bulkreg.ini");
+ol(
+  "Open **Notepad** and choose **File > Open**. Set the file type to **All files**, open `C:\\BulkReg\\config\\bulkreg.ini`.",
+  "Change each line in the table below. Replace the whole placeholder, including `<` and `>`.",
+  "Do not change any other line yet.",
+  "Choose **File > Save**. Keep the encoding as **UTF-8**."
+);
+tbl(["Key", "Enter", "From"], [
+  ["DirectoryServer", "The registration server, e.g. `Admin01/ORG`", "Worksheet 2"],
+  ["RegistrationServer", "The same server", "Worksheet 2"],
+  ["UseCA", "`1` for the Domino CA, `0` for a certifier ID file", "Worksheet 5"],
+  ["CertifierName", "With UseCA=1: the CA certifier, e.g. `OU=Users/O=ORG`", "Worksheet 6"],
+  ["CertifierIDFile", "With UseCA=0: `C:\\BulkReg\\cert\\<file>.id`. With UseCA=1: leave the placeholder or clear it.", "B5 Option 2"],
+  ["DefaultHomeServer", "The home server for users that match no specific rule", "Worksheet 3"],
+  ["DefaultPolicy", "The explicit policy **exactly** as listed, e.g. `*/DirSync-Vault`", "Worksheet 9"],
+  ["VaultServer", "The vault server, e.g. `Vault01/ORG`", "Worksheet 7"],
+  ["BatchSize", "`500` or your value", "Worksheet 14"],
+  ["LogServer / LogDb", "Leave empty unless you create the log database in B15", "B15"],
+  ["DryRun", "Leave `1`", "–"],
+], [2300, 5100, 1960]);
+done("bulkreg.ini contains no `<` or `>` characters except in comment lines (starting with `#`), and DryRun=1.");
+
+// ---------- B12
+h2("B12 Fill in server_mapping.csv (your servers)");
+meta("Domino administrator", "Notepad", "C:\\BulkReg\\config\\server_mapping.csv");
+p("Each line is a **rule**: *if this Person document field matches this pattern, use this home server, OU, policy, groups and vault*. Rules are checked top-down; the **first match wins**. The last rule `*;*` catches everyone else.");
+tbl(["Column", "Meaning", "Example"], [
+  ["MatchField", "Person document field to test (any field: Department, InternetAddress, Location, CompanyName…). `*` = any.", "`InternetAddress`"],
+  ["MatchPattern", "Pattern, not case-sensitive. `*` = any text, `?` = one character.", "`*@emea.example.com`"],
+  ["HomeServer", "Home server for matching users (empty = DefaultHomeServer)", "`Mail02/ORG`"],
+  ["OrgUnit", "OU added to the Notes name (empty = DefaultOrgUnit)", "`EMEA`"],
+  ["Policy", "Explicit policy, exactly as listed (empty = DefaultPolicy)", "`*/DirSync-Vault-EMEA`"],
+  ["Groups", "Comma-separated groups (empty = DefaultGroups)", "`BR-EMEA`"],
+  ["VaultServer", "Vault server for the vault check (empty = VaultServer)", "`VaultEMEA/ORG`"],
+], [2100, 4900, 2360]);
+ol(
+  "Open `C:\\BulkReg\\config\\server_mapping.csv` in **Notepad** (do not use Excel for this file).",
+  "Keep line 1 (the header) unchanged. Lines starting with `#` are comments.",
+  "Delete the example rules and write one rule per user group from worksheet row 4, most specific first.",
+  "Make the last line the catch-all: `*;*;<DefaultHomeServer>;;;;`.",
+  "Separate columns with a **semicolon** `;`. Leave a column empty but keep its semicolon.",
+  "Save with **File > Save** (UTF-8)."
+);
+p("Worked example for three servers:");
 code(`MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer
-Department;Finance*;Mail01/ORG;Finance;/ORG-DirSync-Vault;BR-Finance;
-InternetAddress;*@emea.example.com;Mail02/ORG;EMEA;/ORG-DirSync-Vault-EMEA;BR-EMEA;VaultEMEA/ORG
-InternetAddress;*@apac.example.com;Mail03/ORG;APAC;/ORG-DirSync-Vault-APAC;BR-APAC;VaultAPAC/ORG
+InternetAddress;*@emea.example.com;Mail02/ORG;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;VaultEMEA/ORG
+InternetAddress;*@apac.example.com;Mail03/ORG;APAC;*/DirSync-Vault-APAC;BR-APAC;VaultAPAC/ORG
+Department;Finance*;Mail01/ORG;Finance;*/DirSync-Vault;BR-Finance;
 *;*;Mail01/ORG;;;;`);
-p("Optional: `bulkreg.cmd Check` reports leftover placeholders, a missing certifier and loose folder permissions.");
-done("No `<PLACEHOLDER>` remains. Every server in server_mapping.csv exists. DryRun=1.");
+done("Every rule names an existing server and policy from the worksheet, and the last rule is the catch-all.");
 pb();
 
-// ================================================================ STEP 4
-h1("6. Step 4 – Build the Tool Database (bulkreg.nsf)");
-p("**Who:** Domino administrator with Domino Designer. **Changes:** creates one local database.");
+// ---------- B13
+h2("B13 Create the tool database bulkreg.nsf");
+meta("Domino administrator", "Domino Administrator (or Notes client)", "creates a local database");
 ol(
-  "Create a blank local database **bulkreg.nsf** on the admin workstation. Set its ACL to administrators only.",
-  "Optional: create **bulkreg_log.nsf** from the Agent Log template (`alog4.ntf`) for central logging.",
-  "In Designer create a **LotusScript library** named exactly `BulkRegCommon` and paste in `BulkRegCommon.lss`.",
-  "Create five LotusScript agents and paste in the matching file. For each one set **Trigger: Action menu selection** and **Target: None**, and keep `Option Public`, `Option Declare` and `Use \"BulkRegCommon\"` in (Options)."
+  "Choose **File > Application > New**. *Result:* the New Application dialog opens.",
+  "In **Server**, keep **Local**.",
+  "In **Title**, type `BulkReg Tool`.",
+  "In **File Name**, type `bulkreg.nsf`.",
+  "In the template list, select **-Blank-**.",
+  "Click **OK**. *Result:* an empty database opens. Close it."
 );
-tbl(["Agent name (exactly)", "Source file"], [
-  ["01 | Preflight Check", "Agent01_Preflight.lss"],
-  ["02 | Build Batch", "Agent02_BuildBatch.lss"],
-  ["03 | Register Batch", "Agent03_RegisterBatch.lss"],
-  ["04 | Verify Registration + Vault", "Agent04_VerifyVaultStatus.lss"],
-  ["05 | Export to Registration Text File", "Agent05_ExportToBatchRegFile.lss (optional)"],
-], [4200, 5160]);
-p("Save, check for compile errors, and sign the database with the admin ID. **To start an agent:** open bulkreg.nsf → **Actions** → choose the agent. The first time, enter `C:\\BulkReg\\config\\bulkreg.ini`; the path is remembered.");
-done("The library and all five agents compile, the database is signed, and they appear in the Actions menu.");
+done("bulkreg.nsf exists in your local Notes data directory.");
 
-// ================================================================ STEP 5
-h1("7. Step 5 – Preflight (Agent 01)");
-p("**Changes:** none. Gives you the whole picture before you build any batch.");
+// ---------- B14
+h2("B14 Restrict access to bulkreg.nsf");
 ol(
-  "Run **01 | Preflight Check**.",
-  "Read the summary: environment PASS/FAIL, OK / WARN / ERROR per user, and **candidates per home server**.",
-  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_audit.csv`. Fix data ERRORs in AD and let DirSync re-sync. Correct server_mapping.csv if users land on the wrong server.",
-  "Use the per-server counts to plan batches: for example, one wave per home server (BatchServerFilter) or mixed batches of 500."
+  "Select the bulkreg.nsf icon (or open the database) and choose **File > Application > Access Control**.",
+  "Set **-Default-** to **No Access**. Set **Anonymous** to **No Access** (add it if missing).",
+  "Make sure your admin ID (or admin group) has **Manager** access.",
+  "Click **OK**."
 );
-done("Environment errors = 0. You know how many users go to each home server, and you have a batch plan.");
+done("Only administrators have access to bulkreg.nsf.");
 
-// ================================================================ STEP 6
-h1("8. Step 6 – Build a Batch and Review It (Agent 02)");
-p("**Changes:** none in Domino. Writes the batch file you will approve.");
+// ---------- B15
+h2("B15 Optional: create a central log database");
+p("Skip this unless you want BulkReg events in a Notes database as well as in the audit files.");
 ol(
-  "Optional: set `BatchServerFilter=Mail02/ORG` to build a batch for one home server only, or use `ExtraSelection` to limit it to a department or wave.",
-  "Run **02 | Build Batch**. It reports the batch ID, for example `BATCH-20261005-093000`.",
-  "Open `C:\\BulkReg\\batches\\BATCH-<id>_summary.txt`: rows, Include=Y, ERRORs, users per home server and per policy, and how many users are left for the next batch.",
-  "Open `BATCH-<id>.csv` in Excel and review it (chapter 14 explains every column):",
-  "Leave a user out by setting **Include=N**. Change **HomeServer / OrgUnit / Policy / Groups / VaultServer** if needed. Do **not** change NoteID or objectGUID.",
-  "Save as **CSV UTF-8 (Comma delimited)**, keeping the same file name. Attach the reviewed file to the change ticket as the approval record."
+  "Choose **File > Application > New**. In **Server**, select the server that will hold the log (for example the registration server).",
+  "In **Title**, type `BulkReg Log`. In **File Name**, type `bulkreg_log.nsf`.",
+  "Tick **Show advanced templates** and select the **Agent Log** template (file alog4.ntf; some releases list alog.ntf). Click **OK**.",
+  "In bulkreg.ini set `LogServer=<that server>` and `LogDb=bulkreg_log.nsf`. Save."
 );
-note("Rows with Check=ERROR are written with Include=N. Users in this batch will not be picked by the next Build Batch until this batch is DONE. To discard a batch you will not run, move its file out of the batches folder.");
-done("You have reviewed every Include=Y row, and the reviewed BATCH-<id>.csv is approved in the change ticket.");
+done("bulkreg_log.nsf exists and bulkreg.ini points to it, or LogDb is empty.");
 
-// ================================================================ STEP 7
-h1("9. Step 7 – Dry-Run the Batch (Agent 03, DryRun=1)");
-p("**Changes:** none.");
+// ---------- B16 / B17
+h2("B16 Open bulkreg.nsf in Domino Designer");
 ol(
-  "Confirm `DryRun=1`. Run **03 | Register Batch** and accept the proposed batch file (the newest open batch) or enter another path.",
-  "Check the dialog: number of users, number excluded, and **users per home server**. Answer **Yes**.",
-  "Open `BATCH-<id>_dryrun_<run>.csv`. Every approved user shows **WOULD_REGISTER**. Any SKIPPED or FAILED_VALIDATION rows need fixing (edit the batch file, or rebuild it)."
+  "Start **HCL Domino Designer**.",
+  "Choose **File > Open > HCL Notes Application**, select **Local**, choose `bulkreg.nsf` and click **Open**. *Result:* BulkReg Tool appears in the **Applications Navigator** on the left.",
+  "Expand **BulkReg Tool**, then expand **Code**."
+);
+h2("B17 Create the script library BulkRegCommon");
+meta("Domino administrator", "Domino Designer", "adds a script library to bulkreg.nsf");
+ol(
+  "Under **Code**, double-click **Script Libraries**. Click **New LotusScript Library**.",
+  "Type the name `BulkRegCommon` exactly (no spaces) and click **OK**. *Result:* the LotusScript editor opens, with **(Options)**, **(Declarations)**, **Initialize** and **Terminate** in the outline.",
+  "Open `C:\\BulkReg-kit\\lotusscript\\BulkRegCommon.lss` in **Notepad**. The file contains three marked blocks: **STEP A**, **STEP B** and **STEP C**.",
+  "**STEP A:** in Designer, select **(Options)**. Copy the two lines below the STEP A marker (`Option Public` and `Option Declare`) and paste them there, replacing what is there.",
+  "**STEP B:** select **(Declarations)**. Copy everything between the STEP B and STEP C markers and paste it there.",
+  "**STEP C:** click at the end of the last line in (Declarations), press **Enter** twice, then copy everything from the STEP C marker to the end of the file and paste it. *Result:* the outline now lists the functions (BR_Init, BR_Log …) as separate entries.",
+  "Press **Ctrl+S** to save. *Result:* no error dialog. If a compile error appears, Designer shows the line. Check that each block went to the right place."
+);
+done("BulkRegCommon saves without errors, and its outline shows (Options), (Declarations) and the BR_… functions.");
+
+// ---------- B18
+h2("B18 Create the five agents");
+meta("Domino administrator", "Domino Designer", "adds 5 agents to bulkreg.nsf");
+warn("Type the names exactly as shown. The backslash `\\` creates the **Actions > BulkReg** submenu. Do **not** use `|` in agent names: Notes treats it as the separator between a name and its alias.");
+tbl(["Agent name (type exactly)", "Source file in C:\\BulkReg-kit\\lotusscript", "Blocks in the file"], [
+  ["`BulkReg\\01 - Preflight Check`", "Agent01_Preflight.lss", "A, C, D"],
+  ["`BulkReg\\02 - Build Batch`", "Agent02_BuildBatch.lss", "A, C, D"],
+  ["`BulkReg\\03 - Register Batch`", "Agent03_RegisterBatch.lss", "A, B, C, D"],
+  ["`BulkReg\\04 - Verify Registration and Vault`", "Agent04_VerifyVaultStatus.lss", "A, B, C, D"],
+  ["`BulkReg\\05 - Export to Registration Text File`", "Agent05_ExportToBatchRegFile.lss (optional)", "A, C"],
+], [3600, 3700, 2060]);
+p("Do the following for **each** agent in the table:");
+ol(
+  "Under **Code**, double-click **Agents**, then click **New Agent**.",
+  "In **Name**, type the agent name from the table.",
+  "Under **Type**, select **LotusScript**. Make sure the agent is **Shared** (HCL: private agents do not appear on the Actions menu). Click **OK**. *Result:* the agent's properties box and the LotusScript editor open.",
+  "In the properties box, **Basics** tab: under **Runtime**, choose **On event** and then **Action menu selection**. Set **Target** to **None**.",
+  "Open the source file in Notepad.",
+  "**STEP A:** select **(Options)** in the agent outline and paste the three lines under the STEP A marker (`Option Public`, `Option Declare`, `Use \"BulkRegCommon\"`).",
+  "**STEP B** (only Agents 03 and 04): select **(Declarations)** and paste the `Dim` lines under the STEP B marker.",
+  "**STEP C:** select **Initialize**, select all its text (Ctrl+A), and paste the block under the STEP C marker, from `Sub Initialize` to its `End Sub`.",
+  "**STEP D** (if present): click after the final `End Sub` of Initialize, press Enter twice, and paste everything from the STEP D marker to the end of the file. *Result:* the extra subs and functions appear as separate entries in the outline.",
+  "Press **Ctrl+S**. *Result:* it saves without a compile error. HCL: saving also signs the agent with your current ID.",
+  "Close the agent and repeat for the next row."
+);
+done("All five agents are listed under Code > Agents with the exact names, trigger 'Action menu selection', target 'None', and they save without errors.");
+pb();
+
+// ---------- B19
+h2("B19 Sign the whole database");
+meta("Domino administrator", "Domino Administrator", "re-signs every design element with your admin ID");
+ol(
+  "In Domino Administrator, select **Local** in the server pane.",
+  "Click the **Files** tab and select `bulkreg.nsf`.",
+  "In the Tools pane choose **Database > Sign**.",
+  "Select **Active User's ID** and **All design documents**.",
+  "Click **OK**. *Result:* a confirmation that the database was signed."
+);
+done("bulkreg.nsf is signed with the admin ID that will run it.");
+
+// ---------- B20
+h2("B20 First start and the security alert");
+ol(
+  "In Domino Administrator (or Notes), open `bulkreg.nsf` (**File > Open > HCL Notes Application > Local > bulkreg.nsf**).",
+  "Click **Actions > BulkReg**. *Result:* the five agents appear in the submenu, in number order.",
+  "Click **01 - Preflight Check**.",
+  "If an **Execution Security Alert** appears, read the signer. It must be your admin ID. Choose **Execute the action this one time**, or trust the signer if your ECL policy allows it.",
+  "When asked for the **Path to bulkreg.ini**, type `C:\\BulkReg\\config\\bulkreg.ini` and click **OK**. The path is remembered for later runs."
+);
+done("Preflight starts without a security block and accepts the config path.");
+
+// ---------- B21
+h2("B21 Smoke test");
+ol(
+  "Let Preflight finish. *Result:* a dialog showing Environment errors, candidate counts (OK / WARN / ERROR) and **candidates per home server**.",
+  "Open `C:\\BulkReg\\audit`. *Result:* a file `BulkReg_Preflight_<date-time>_audit.csv` and a `_debug.log`.",
+  "If Environment errors is not 0, open the debug log, find the lines marked `FAIL`, fix the cause (D6), and run Preflight again."
+);
+done("Preflight reports 0 environment errors. **Setup is complete.** Continue with Part C.");
+pb();
+
+// ================================================================ PART C
+h1("Part C – Run a Batch (repeat for every batch)");
+p("Do C1–C9 in order. Record each batch in the batch log (C9). The first time, include C5 (pilot).");
+
+h2("C1 Preflight: see the whole picture");
+meta("Domino administrator", "bulkreg.nsf", "nothing");
+ol(
+  "Open `bulkreg.nsf` and click **Actions > BulkReg > 01 - Preflight Check**. Confirm the config path.",
+  "Note the totals: candidates, OK / WARN / ERROR, and **candidates per home server**.",
+  "Open the newest `C:\\BulkReg\\audit\\BulkReg_Preflight_*_audit.csv` (D4 lists the columns).",
+  "For each **ERROR** row, read the Message column. Fix the cause in Active Directory, for example a missing last name or a duplicate email address, and let DirSync synchronise.",
+  "If a user lands on the wrong server (HomeServer / MapRule columns), correct server_mapping.csv (B12) and run Preflight again."
+);
+done("0 environment errors, and every user lands on the intended home server.");
+
+h2("C2 Build a batch");
+meta("Domino administrator", "bulkreg.nsf", "writes a batch file; nothing in Domino");
+ol(
+  "Optional, for a wave: in bulkreg.ini set `BatchServerFilter=<home server>` (one server only), or `ExtraSelection=<formula>`, for example `Department = \"Sales\"`. Save.",
+  "Click **Actions > BulkReg > 02 - Build Batch**.",
+  "Read the dialog: **Batch ID** (for example `BATCH-20261005-093000`), rows, Include=Y, WARN, ERROR, and users left for the next batch. Write the batch ID in the batch log (C9).",
+  "Open `C:\\BulkReg\\batches\\BATCH-<id>_summary.txt` in Notepad. Check the counts **per home server** and **per policy**."
+);
+done("BATCH-<id>.csv and BATCH-<id>_summary.txt exist, and the counts look as expected.");
+
+h2("C3 Review the batch file");
+meta("Domino administrator (and a second reviewer if your change process requires one)", "Excel or Notepad", "the batch file only");
+warn("Excel can change values. It may turn a NoteID such as `1E2` into a number. Always open the file as **text**, as described below, or use Notepad. BulkReg also re-checks every user's objectGUID and falls back to the UNID, so a damaged NoteID cannot hit the wrong user.");
+h3("Open in Excel as text");
+ol(
+  "Start Excel with a blank workbook. Choose **Data > Get Data > From File > From Text/CSV**.",
+  "Select `C:\\BulkReg\\batches\\BATCH-<id>.csv` and click **Import**.",
+  "Set **File Origin** to **65001: Unicode (UTF-8)** and **Delimiter** to **Comma**. Click **Transform Data**.",
+  "In the editor, press **Ctrl+A** to select all columns, then choose **Data Type > Text** (**Replace current** if asked). Click **Close & Load**."
+);
+h3("Check every row");
+tbl(["Check", "How", "If wrong"], [
+  ["Right people", "Read FullName and InternetAddress", "Set Include to `N`"],
+  ["Right home server", "Read HomeServer (and MapRule)", "Correct HomeServer, or fix the mapping and rebuild"],
+  ["Right OU / policy / vault", "Read OrgUnit, Policy and VaultServer", "Correct the value in the row"],
+  ["Warnings", "Filter Check = WARN and read Issues", "Accept them, or set Include to `N`"],
+  ["Errors", "Check = ERROR rows already have Include=N", "Fix in AD and include them in a later batch"],
+], [2200, 3700, 3460]);
+h3("Save");
+ol(
+  "Choose **File > Save As**, select **CSV UTF-8 (Comma delimited) (*.csv)**, keep the **same file name** and folder, and click **Save**. Confirm **Replace**.",
+  "Close Excel. Do not keep the file open while Agent 03 runs.",
+  "Attach the reviewed `BATCH-<id>.csv` and `_summary.txt` to the change ticket (worksheet row 15) as the approval record."
+);
+note("Notepad alternative for small edits: open the CSV in Notepad and change only the first value of a line, `\"Y\"` to `\"N\"`. Never add or remove columns or rows.");
+done("Every Include=Y row has been reviewed, the file is saved under its original name, and it is attached to the change ticket.");
+pb();
+
+h2("C4 Dry-run the batch");
+meta("Domino administrator", "bulkreg.nsf", "nothing in Domino (writes a dry-run report)");
+ol(
+  "Confirm `DryRun=1` in bulkreg.ini.",
+  "Click **Actions > BulkReg > 03 - Register Batch**.",
+  "In **Batch file to register**, accept the proposed path (the newest open batch) or type the path of your batch. Click **OK**.",
+  "Read the summary: users to register, users excluded, **users per home server**, registration server, certification. Click **Yes**.",
+  "Wait for the end dialog. Open `C:\\BulkReg\\batches\\BATCH-<id>_dryrun_<run>.csv`.",
+  "Check that every row shows **WOULD_REGISTER**. For SKIPPED or FAILED_VALIDATION rows, read the Message column, then correct the batch row or rebuild the batch (C2)."
 );
 done("All approved rows show WOULD_REGISTER. The batch is still OPEN.");
 
-// ================================================================ STEP 8
-h1("10. Step 8 – Pilot Batch (2 Users)");
-p("**Changes:** registers 2 users. Do this once, before the first real batch.");
+h2("C5 Pilot: 2 users (first batch only)");
+meta("Domino administrator", "bulkreg.nsf + Domino Administrator", "**registers 2 users**");
 ol(
-  "Set `ExtraSelection=ShortName = \"pilot1\" : \"pilot2\"` and run **02 | Build Batch**. Alternatively, set Include=N on all rows except two in a normal batch.",
-  "Set `DryRun=0`. Run **03 | Register Batch**, answer Yes, type the **batch ID**, and enter the certifier password if UseCA=0.",
-  "Check both users by hand: Certificate and hierarchical name, correct home server, Mail system still Other Internet Mail. The user can download the ID from the vault and log in.",
-  "Run **04 | Verify** and choose the pilot batch file. Then clear ExtraSelection and set DryRun=1 again."
+  "In bulkreg.ini set `ExtraSelection=ShortName = \"<pilot1>\" : \"<pilot2>\"`, using two real test users. Save.",
+  "Run **02 - Build Batch**. *Result:* a batch with 2 rows. Review it (C3).",
+  "Set `DryRun=0` in bulkreg.ini. Save.",
+  "Run **03 - Register Batch**, choose the pilot batch, click **Yes**, type the **batch ID** exactly when asked, and enter the certifier password if UseCA=0.",
+  "Read the end dialog: ok=2. Open `BATCH-<id>_results.csv`. *Result:* both rows REGISTERED with VaultStatus IN_VAULT.",
+  "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), hierarchical full name, correct home server, **MailSystem** unchanged (compare with B3), and **Policy synopsis** showing your explicit policy.",
+  "On a test PC, set up Notes for one pilot user: the ID must download from the vault, and the user must be asked to change the password.",
+  "Run **04 - Verify Registration and Vault** and choose the pilot batch. *Result:* 2 × REGISTERED, IN_VAULT.",
+  "Set `DryRun=1` and clear `ExtraSelection=` in bulkreg.ini. Save."
 );
-done("Both pilot users are REGISTERED and IN_VAULT, and the manual checks pass.");
+done("Both pilot users pass every check. Record the result in the change ticket. You may now run real batches.");
 
-// ================================================================ STEP 9
-h1("11. Step 9 – Register the Reviewed Batch (Agent 03, LIVE)");
-p("**Changes:** registers the approved users.");
+h2("C6 Register the reviewed batch (LIVE)");
+meta("Domino administrator", "bulkreg.nsf", "**registers the approved users**");
 ol(
-  "Set `DryRun=0`. Run **03 | Register Batch** and choose the reviewed BATCH-<id>.csv.",
-  "Check the totals per home server. Answer **Yes** and type the **batch ID** exactly.",
-  "Watch progress in the status bar, or with `bulkreg.cmd Tail`. Keep the client open and the PC awake.",
-  "At the end, read the summary: ok / failed / skipped. Results are in `BATCH-<id>_results.csv`, and the batch is now **DONE**.",
-  "Set `DryRun=1` again."
+  "Confirm that C3 (review) and C4 (dry run) are done for this batch.",
+  "Set `DryRun=0` in bulkreg.ini. Save.",
+  "Click **Actions > BulkReg > 03 - Register Batch** and choose the reviewed batch file.",
+  "Check the summary per home server against the batch summary. Click **Yes**.",
+  "Type the **batch ID** exactly (for example `BATCH-20261005-093000`) and click **OK**. Enter the certifier password if UseCA=0.",
+  "Keep Domino Administrator open and the PC awake while it runs. The status bar shows progress (`ok / fail / skip`). The optional `bulkreg.cmd Tail` shows the log live.",
+  "Read the end dialog: ok / failed / skipped, plus the paths of the results file and the password file.",
+  "Set `DryRun=1` in bulkreg.ini. Save."
 );
-note("If the circuit breaker stops the run, the remaining rows are recorded as NOT_PROCESSED and the batch is still marked DONE. Those users (and any FAILED ones) are offered again by the next Build Batch once the cause is fixed.");
-done("The batch is DONE, and every row in BATCH-<id>_results.csv has a result.");
+note("If it stops with **Circuit breaker**, the remaining rows are recorded as NOT_PROCESSED and the batch is DONE. Fix the cause (D6). The unregistered users are offered again by the next Build Batch.");
+done("BATCH-<id>_results.csv exists and has one row per approved user. DryRun is back to 1.");
 
-// ================================================================ STEP 10
-h1("12. Step 10 – Verify the Batch and Close (Agent 04)");
+h2("C7 Verify the batch");
+meta("Domino administrator", "bulkreg.nsf", "nothing");
 ol(
-  "Run **04 | Verify Registration + Vault** and choose the batch file (the default is the newest batch). The report is `BATCH-<id>_verify_<run>.csv`.",
-  "Every row should be REGISTERED with IN_VAULT. For NOT_IN_VAULT, check the policy and vault, then run Verify again later (replication).",
-  "Hand over initial passwords (`C:\\BulkReg\\secure\\BulkReg_InitialPasswords_<batch>_<run>.csv`) through an approved secure channel.",
-  "Delete secrets **only after** Verify shows IN_VAULT: `bulkreg.cmd PurgeSecrets -IncludeIds -Yes`, or delete the files manually.",
-  "Archive the batch, results, verify and audit files with the change record.",
-  "**Next batch:** go back to Step 6."
+  "Click **Actions > BulkReg > 04 - Verify Registration and Vault**.",
+  "Accept the proposed batch file (the newest batch) or type the batch path. Leave it empty to verify all DirSync users.",
+  "Read the summary and open `BATCH-<id>_verify_<run>.csv`.",
+  "**REGISTERED + IN_VAULT:** done. **NOT_IN_VAULT:** check the user's policy synopsis and vault, then run Verify again later (replication). **UNREGISTERED** or **NOT_FOUND:** see D6."
 );
-done("The batch's users are IN_VAULT, the secrets are deleted, and the records are archived.");
+done("Every registered user of the batch is IN_VAULT, or the exceptions are logged in the change ticket.");
+
+h2("C8 Hand over and clean up");
+meta("Domino administrator", "Admin workstation", "**deletes temporary secrets**");
+ol(
+  "Open `C:\\BulkReg\\secure\\BulkReg_InitialPasswords_<batch>_<run>.csv`. Deliver each user's initial password through your approved secure channel. Users must change it at first use (B7).",
+  "Only after C7 shows IN_VAULT for these users: delete the password file and the ID files of the batch.",
+  "With the helper: `C:\\BulkReg-kit\\scripts\\windows\\bulkreg.cmd PurgeSecrets -IncludeIds` lists the files; add `-Yes` to delete them.",
+  "Manually: delete `C:\\BulkReg\\secure\\BulkReg_InitialPasswords_*.csv` and `C:\\BulkReg\\ids\\*.id`, then empty the Recycle Bin.",
+  "Attach `BATCH-<id>_results.csv` and `_verify_*.csv` to the change ticket.",
+  "Check that bulkreg.ini has `DryRun=1`."
+);
+done("The users have their passwords, the secrets are deleted, the evidence is in the ticket, and DryRun=1.");
+
+h2("C9 Next batch and the batch log");
+p("Go back to **C1** (or straight to C2 if nothing changed). Keep a log like this in the change ticket:");
+tbl(["Batch ID", "Built", "Include=Y", "Dry run OK", "Registered", "Failed", "In vault", "Secrets deleted", "Ticket"], [
+  ["BATCH-…", "", "", "", "", "", "", "", ""],
+  ["", "", "", "", "", "", "", "", ""],
+], [1600, 900, 900, 900, 1000, 800, 900, 1200, 1160]);
+p("`bulkreg.cmd Batches` lists all batch files with their state (OPEN / DONE).");
 pb();
 
-// ================================================================ 13 MULTI-SERVER
-h1("13. Registering Across Multiple Servers");
-h2("13.1 How the servers fit together");
+// ================================================================ PART D
+h1("Part D – Reference");
+
+h2("D1 Registering across multiple servers");
 tbl(["Role", "How many", "What BulkReg does with it"], [
-  ["Registration server", "One per Domino domain (normally the admin server, which holds the Domino Directory master)", "All registrations run against it (`RegistrationServer`). The Person documents are updated there and replicate to the other servers."],
-  ["Home servers", "Any number", "Each user gets one, from server_mapping.csv, reviewable in the batch file. It is passed to RegisterNewUser as the canonical name and becomes the user's home/mail server."],
-  ["ID Vault servers", "One or more vaults, each with replicas", "The **policy** decides which vault receives the ID. `VaultServer` (default or per mapping rule) is only where BulkReg *checks* IsIDInVault."],
-  ["Policies", "One per target group", "Map users to the explicit policy whose Security Settings assign the right vault (and other settings for that group)"],
-], [2000, 2700, 4660]);
-h2("13.2 Plan the mapping");
-ol(
-  "List your home servers and which users belong on each (by department, email domain, location or company).",
-  "Write one rule per group in server_mapping.csv, most specific first, with the catch-all last.",
-  "Run Preflight (01). Check the *candidates per home server* counts and the MapRule column in the audit CSV.",
-  "Adjust the rules until every user lands on the intended server, OU and policy."
-);
-h2("13.3 Batch strategies");
-tbl(["Strategy", "How", "When to use"], [
-  ["Mixed batches", "BatchSize=500, no BatchServerFilter. Agent 03 shows users per server before you approve.", "Servers are similar and all are ready"],
-  ["One server per wave", "`BatchServerFilter=Mail02/ORG`, then Build → Review → Register. Repeat per server.", "Servers go live on different dates, or are owned by different teams"],
-  ["Department or region waves", "`ExtraSelection=Department = \"Sales\"` (any @formula)", "Business-driven rollout"],
-  ["Per-row override", "Edit HomeServer / Policy / VaultServer in the batch file", "Exceptions: individual users who need a different server"],
-], [2200, 4300, 2860]);
-h2("13.4 Multiple Domino domains or directories");
-p("BulkReg works within **one Domino Directory** per configuration. If you have several domains, use one config file per domain (`DirectoryServer`, `RegistrationServer`, certifier, mapping). Keep them as separate files, for example `bulkreg-emea.ini`, and enter the matching path when an agent starts.");
-pb();
+  ["Registration server", "One per Domino domain (holds the master Domino Directory)", "All registrations run against it (`RegistrationServer`). Person documents are updated there and replicate to all servers."],
+  ["Home servers", "Any number", "Assigned per user by server_mapping.csv, reviewable per row in the batch. Passed to RegisterNewUser in canonical form (CN=…/O=…); this becomes the user's home/mail server."],
+  ["ID Vault(s)", "One or more, each with replicas", "The **explicit policy** (its Security Settings) decides which vault receives the ID. `VaultServer` is only where BulkReg checks IsIDInVault."],
+  ["Policies", "One per vault or group", "Map each user group to the policy for its vault and settings"],
+], [2000, 2600, 4760]);
+h3("Batch strategies");
+tbl(["Strategy", "Setting", "Use when"], [
+  ["Mixed batches", "BatchSize=500, no filter", "All servers are ready"],
+  ["One server per wave", "`BatchServerFilter=Mail02/ORG`", "Servers go live on different dates, or are owned by different teams"],
+  ["Department or region waves", "`ExtraSelection=Department = \"Sales\"`", "Business-driven rollout"],
+  ["Individual exceptions", "Edit HomeServer / Policy / VaultServer in the batch row", "A few users need a different server"],
+], [2400, 3500, 3460]);
+p("**Several Domino domains:** use one config file per domain (for example `bulkreg-emea.ini`), each with its own servers, certifier and mapping, and enter the matching path when an agent starts.");
 
-// ================================================================ 14 BATCH FILE
-h1("14. Batch File Reference");
-h2("14.1 Files in C:\\BulkReg\\batches");
-tbl(["File", "Written by", "Purpose"], [
-  ["BATCH-<id>.csv", "02 Build Batch", "The list you review and approve. Edit only Include, HomeServer, OrgUnit, Policy, Groups, VaultServer."],
-  ["BATCH-<id>_summary.txt", "02", "Totals: rows, Include=Y, ERRORs, per home server, per policy, users left for the next batch"],
-  ["BATCH-<id>_dryrun_<run>.csv", "03 (DryRun=1)", "Simulation result. The batch stays OPEN."],
-  ["BATCH-<id>_results.csv", "03 (LIVE)", "One row per approved user. Its existence marks the batch **DONE**."],
-  ["BATCH-<id>_verify_<run>.csv", "04", "Registration and vault status of the batch's users"],
+h2("D2 Batch files and states");
+tbl(["File in C:\\BulkReg\\batches", "Written by", "Purpose"], [
+  ["BATCH-<id>.csv", "02", "The list you review and approve"],
+  ["BATCH-<id>_summary.txt", "02", "Totals per home server and policy; users left for later"],
+  ["BATCH-<id>_dryrun_<run>.csv", "03 (DryRun=1)", "Simulation; the batch stays OPEN"],
+  ["BATCH-<id>_results.csv", "03 (LIVE)", "One row per approved user; marks the batch **DONE**"],
+  ["BATCH-<id>_verify_<run>.csv", "04", "Registration and vault status"],
 ], [3200, 1700, 4460]);
-h2("14.2 Batch states");
 tbl(["State", "Meaning", "Effect"], [
-  ["OPEN", "No _results.csv yet", "Its users are not selected into new batches. Agent 03 offers the newest open batch by default."],
-  ["DONE", "_results.csv exists (LIVE run finished or stopped)", "Agent 03 refuses to run it again. Unregistered users from it are offered by the next Build Batch."],
-], [1300, 3600, 4460]);
-p("`bulkreg.cmd Batches` lists every batch file with its rows, Include=Y count and state.");
-h2("14.3 Columns");
-tbl(["Column", "Editable?", "Meaning"], [
-  ["Include", "**Yes** (Y/N)", "Only Y rows are registered"],
-  ["BatchID, Seq", "No", "Batch identifier and row number"],
-  ["NoteID, UNID, objectGUID", "**No**", "Identify the Person document and the AD user. Agent 03 checks that the objectGUID still matches."],
-  ["FullName, FirstName, LastName, ShortName, InternetAddress", "No (fix in AD)", "User data from the Person document"],
-  ["HomeServer", "**Yes**", "Target home server (abbreviated form, for example Mail02/ORG)"],
-  ["OrgUnit, Policy, Groups", "**Yes**", "OU for the Notes name, explicit policy (assigns the vault), comma-separated groups"],
-  ["VaultServer", "**Yes**", "Vault server used for the IsIDInVault check (empty = default)"],
-  ["MapRule", "No", "The mapping rule that produced the values"],
-  ["Check, Issues", "No", "OK / WARN / ERROR and the reasons"],
-], [3700, 1500, 4160]);
-warn("Excel: save as **CSV UTF-8 (Comma delimited)**. Semicolon-delimited files from some locales are also accepted. Do not sort away or delete the header row. Do not add rows by hand; build a new batch instead.");
-pb();
+  ["OPEN", "No _results.csv yet", "Its users are not picked by new batches. Agent 03 proposes the newest open batch."],
+  ["DONE", "_results.csv exists", "Cannot be run again. Its unregistered users are picked by the next batch."],
+], [1300, 3200, 4860]);
+h3("Batch file columns");
+tbl(["Column", "Edit?", "Meaning"], [
+  ["Include", "**Yes**", "Y = register, N = skip"],
+  ["BatchID, Seq", "No", "Batch identifier, row number"],
+  ["NoteID, UNID, objectGUID", "**Never**", "Identify the Person document and the AD user; checked by Agent 03"],
+  ["FullName, FirstName, LastName, ShortName, InternetAddress", "No (fix in AD)", "User data"],
+  ["HomeServer, OrgUnit, Policy, Groups, VaultServer", "**Yes**", "Values used for registration"],
+  ["MapRule, Check, Issues", "No", "Where the values came from, and the validation result"],
+], [3900, 1500, 3960]);
 
-// ================================================================ 15 HELPER
-h1("15. PowerShell Helper (optional)");
-p("You do not need it to register users. `scripts\\windows\\bulkreg.cmd` (which runs bulkreg.ps1) speeds up the Windows file tasks around a run, and never touches names.nsf.");
-tbl(["Command", "Does", "Manual equivalent"], [
-  ["Init", "Creates C:\\BulkReg folders including batches, restricts access, copies templates", "Step 2 commands"],
-  ["Check", "Flags placeholders, a missing certifier, loose ACLs, whether the client is running", "Read bulkreg.ini, check permissions"],
-  ["Batches", "Lists batch files with rows, Include=Y and state (OPEN / DONE)", "Look in C:\\BulkReg\\batches"],
-  ["DryRun On|Off", "Sets DryRun=1/0, keeps a .bak copy and shows the diff", "Edit bulkreg.ini"],
-  ["Status [file]", "Totals by Result plus rows that need attention (audit or _results.csv)", "Audit Viewer or Excel"],
-  ["Tail", "Follows the newest debug log during a run", "Open the .log in Notepad"],
-  ["PurgeSecrets [-IncludeIds] [-Yes]", "Lists, then (with -Yes) deletes password files and ID files", "Delete the files in secure and ids"],
-], [2600, 4200, 2560]);
-
-// ================================================================ 16 CONFIG
-h1("16. Configuration Reference (bulkreg.ini)");
+h2("D3 bulkreg.ini – all settings");
 tbl(["Key", "Default", "Meaning"], [
   ["BaseDir", "C:\\BulkReg\\", "Base for default paths"],
   ["DirectoryServer / DirectoryFile", "– / names.nsf", "Directory that DirSync writes into"],
-  ["RegistrationServer / RegistrationLog", "– / log.nsf", "Server that performs registration; Domino registration log"],
-  ["UseCA / CertifierName / CertifierIDFile", "1 / – / –", "Domino CA (recommended) or a certifier ID file (password prompted)"],
-  ["DefaultHomeServer / DefaultOrgUnit / DefaultPolicy / DefaultGroups", "–", "Used when no mapping rule overrides them"],
-  ["VaultServer", "–", "Default vault server for IsIDInVault (overridable per mapping rule or batch row)"],
+  ["RegistrationServer / RegistrationLog", "– / log.nsf", "Server that registers; Domino registration log"],
+  ["UseCA / CertifierName / CertifierIDFile", "1 / – / –", "Domino CA or certifier ID (password prompted, never stored)"],
+  ["DefaultHomeServer / DefaultOrgUnit / DefaultPolicy / DefaultGroups", "–", "Defaults when no mapping rule sets a value"],
+  ["VaultServer / VaultCheckAfterReg", "– / 1", "Default vault server for the check; check after each user"],
   ["MappingFile", "C:\\BulkReg\\config\\server_mapping.csv", "Multi-server rules"],
-  ["ExtraSelection", "(empty)", "Extra @formula for Build Batch (pilot, waves)"],
-  ["BatchSize", "500", "Rows per batch built by Agent 02"],
-  ["BatchServerFilter", "(empty)", "Build a batch only for users mapped to this home server"],
-  ["BatchDir", "C:\\BulkReg\\batches\\", "Batch, summary, results, dry-run and verify files"],
-  ["MaxBatchRows", "1000", "Agent 03 refuses larger batch files"],
-  ["MaxScan", "5000", "Maximum directory search results (0 = no limit)"],
+  ["ExtraSelection / BatchServerFilter", "(empty)", "Narrow a batch: formula / one home server"],
+  ["BatchSize / MaxScan", "500 / 5000", "Rows per batch; directory search limit (0 = none)"],
+  ["BatchDir / MaxBatchRows", "C:\\BulkReg\\batches\\ / 1000", "Batch folder; largest accepted batch"],
   ["PauseMs / MaxConsecutiveErrors", "500 / 5", "Pause between users; circuit breaker"],
   ["DryRun", "1", "1 = simulate, 0 = live"],
-  ["ExpirationDays / MinPasswordLength / InitialPasswordLength", "730 / 8 / 16", "Certificate validity; ID password strength; initial password length"],
-  ["CreateMailDb / PreserveMailSystem", "0 / 1", "No mail file; restore Other Internet Mail after registration"],
-  ["IDFileDir / PasswordDir / AuditDir / WritePasswordFile", "C:\\BulkReg\\… / 1", "Output folders; write initial passwords to the restricted file"],
+  ["ExpirationDays / MinPasswordLength / InitialPasswordLength", "730 / 8 / 16", "Certificate validity; password strength (0–16); initial password length"],
+  ["CreateMailDb / PreserveMailSystem", "0 / 1", "No mail file; keep Other Internet Mail"],
+  ["IDFileDir / PasswordDir / AuditDir / WritePasswordFile", "C:\\BulkReg\\… / 1", "Output folders; write passwords to a restricted file"],
   ["IsNorthAmerican / EnforceUniqueShortName / StoreIDInAddressBook / SyncInternetPassword", "1 / 1 / 0 / 0", "NotesRegistration options"],
-  ["VaultCheckAfterReg / LogLevel / LogServer / LogDb", "1 / INFO / – / –", "Vault check after each user; logging"],
-], [3800, 2200, 3360]);
+  ["LogLevel / LogServer / LogDb", "INFO / – / –", "Log detail; optional log database"],
+], [3900, 2200, 3260]);
 
-// ================================================================ 17 AUDIT
-h1("17. Audit and Logging");
-tbl(["Output", "Location", "Contains"], [
-  ["Batch files", "C:\\BulkReg\\batches\\", "Who was selected, reviewed values, results per batch (chapter 14)"],
-  ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<RunID>_audit.csv", "One row per user per action, including BatchID. **No passwords.**"],
-  ["Debug log", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<RunID>_debug.log", "Timestamped events, approvals, batch file size and time"],
+h2("D4 Outputs, audit and result codes");
+tbl(["Output", "Location", "Content"], [
+  ["Batch files", "C:\\BulkReg\\batches\\", "D2"],
+  ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_audit.csv", "One row per user per action, including BatchID. **No passwords.**"],
+  ["Debug log", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_debug.log", "Every step, the approval line, and the batch file size and time"],
+  ["Password file", "C:\\BulkReg\\secure\\BulkReg_InitialPasswords_<batch>_<run>.csv", "Initial passwords (delete in C8)"],
+  ["Domino registration log", "log.nsf on the registration server", "Domino's own records"],
   ["Helper actions log", "C:\\BulkReg\\audit\\bulkreg_admin_actions.log", "PowerShell helper changes"],
-  ["Agent Log database", "LogServer!!LogDb (optional)", "The same events, stored centrally"],
-  ["Domino registration log", "log.nsf on the registration server", "Domino's own registration records"],
-  ["Password file", "C:\\BulkReg\\secure\\BulkReg_InitialPasswords_<batch>_<run>.csv", "Initial passwords. Restricted; delete after hand-off."],
-], [2200, 4000, 3160]);
-h2("17.1 Result codes");
+], [2000, 4300, 3060]);
 tbl(["Result", "Meaning", "Action"], [
-  ["OK / WARN / ERROR", "Preflight or Build Batch check", "Fix ERROR rows (they are excluded)"],
-  ["WOULD_REGISTER", "Dry-run result", "Review"],
-  ["REGISTERED", "ID created and certified, in the vault", "None"],
-  ["REGISTERED_VAULT_PENDING", "Registered, but the ID was not found in the vault yet", "Check the policy, re-run Verify"],
-  ["FAILED_VALIDATION", "Batch row values invalid, not attempted", "Fix and rebuild"],
-  ["FAILED", "Registration error (see Message: stage + error)", "Chapter 18"],
+  ["OK / WARN / ERROR", "Preflight or Build Batch check", "Fix ERROR (those rows are excluded)"],
+  ["WOULD_REGISTER", "Dry run", "Review"],
+  ["REGISTERED", "Registered, ID in vault", "None"],
+  ["REGISTERED_VAULT_PENDING", "Registered, ID not yet found in the vault", "Check the policy; re-run Verify"],
+  ["FAILED_VALIDATION", "Row values invalid; not attempted", "Fix the row or rebuild"],
+  ["FAILED", "Registration error (Message: stage + error)", "D6"],
   ["SKIPPED", "Already registered, document gone, or objectGUID mismatch", "None, or rebuild"],
-  ["NOT_PROCESSED", "Not reached because the circuit breaker stopped the run", "Next batch"],
-  ["UNREGISTERED / NOT_FOUND", "Verify: no Notes ID yet, or the document no longer exists", "Next batch, or investigate"],
-], [2900, 3700, 2760]);
-p("Open any audit or results CSV in `tools\\BulkReg_AuditViewer.html` (offline), in Excel, or with `bulkreg.cmd Status <file>`.");
+  ["NOT_PROCESSED", "Stopped by the circuit breaker", "Next batch"],
+  ["UNREGISTERED / NOT_FOUND", "Verify: no ID yet / document missing", "Next batch / investigate"],
+], [2900, 3800, 2660]);
+p("To read the results, open any audit or results CSV in `C:\\BulkReg-kit\\tools\\BulkReg_AuditViewer.html` (offline), in Excel (as text), or with `bulkreg.cmd Status <file>`.");
 
-// ================================================================ 18 TROUBLESHOOTING
-h1("18. Troubleshooting");
-p("To debug: set `LogLevel=DEBUG`, rebuild a small batch (for example ExtraSelection on one user), dry-run it, and read the debug log. FAILED rows show the **stage** (load, validate, configure, RegisterNewUser, verify, preserveMail, vault), the Notes error number and the code line.");
+h2("D5 PowerShell helper (optional)");
+p("Run it from `C:\\BulkReg-kit\\scripts\\windows\\`. Registration does not need it.");
+tbl(["Command", "Does"], [
+  ["`bulkreg.cmd Init` (elevated)", "Creates the C:\\BulkReg folders, restricts access, copies the templates (B9, B10)"],
+  ["`bulkreg.cmd Check`", "Flags placeholders, a missing certifier, loose permissions, and whether the client is running"],
+  ["`bulkreg.cmd Batches`", "Lists batch files: rows, Include=Y, state"],
+  ["`bulkreg.cmd DryRun On|Off`", "Sets DryRun with a .bak copy and a diff"],
+  ["`bulkreg.cmd Status [file]`", "Totals by result and the rows that need attention"],
+  ["`bulkreg.cmd Tail`", "Follows the newest debug log"],
+  ["`bulkreg.cmd PurgeSecrets [-IncludeIds] [-Yes]`", "Lists, then deletes, password files and ID files"],
+], [3800, 5560]);
+
+h2("D6 Troubleshooting");
+p("General method: set `LogLevel=DEBUG`, rebuild a 1-user batch (ExtraSelection), dry-run it, and read the debug log. FAILED rows show the stage (load, validate, configure, RegisterNewUser, verify, preserveMail, vault) and the Notes error.");
 tbl(["Symptom", "Likely cause", "Fix"], [
-  ["Build Batch selects 0 users", "All users registered, already in OPEN batches, filtered by BatchServerFilter or ExtraSelection", "Check the summary's 'Not selected' line; finish or remove the open batches"],
-  ["\"There is no open batch file\"", "No batch built, or all batches are DONE", "Run 02 | Build Batch"],
-  ["\"already DONE\"", "The batch already ran LIVE", "Build a new batch; unregistered users are picked again"],
-  ["\"header is missing … columns\"", "The CSV was re-saved without its header, or with a different layout", "Rebuild the batch; save as CSV UTF-8"],
-  ["Rows SKIPPED: objectGUID mismatch", "The Person document was recreated, or the row was edited", "Rebuild the batch"],
-  ["FAILED_VALIDATION: HomeServer", "Edited HomeServer is empty or unreachable", "Fix the batch row or the server"],
-  ["FAILED stage=RegisterNewUser", "Not an RA, wrong certifier or password, missing rights, unknown server", "Read the debug log message; fix the CA/RA, certifier, rights or server name"],
-  ["REGISTERED_VAULT_PENDING", "Policy has no vault, wrong VaultServer for that vault, or replication delay", "Check the policy synopsis and the mapping VaultServer; re-run Verify later"],
-  ["MailSystem changes after the next sync", "DirSync attribute mapping", "Adjust the DirSync mapping, or set PreserveMailSystem=0"],
-  ["Agent not in the Actions menu / refuses to run", "Wrong trigger, not signed, or not in the Windows client", "Step 4 settings; run from the Windows admin workstation"],
-], [2700, 3300, 3360]);
+  ["Actions menu shows only \"01\", \"02\"…", "`|` used in the agent names (alias separator)", "Rename the agents exactly as in B18"],
+  ["Agents not in the Actions menu", "Private agent, or wrong trigger", "B18: Shared, On event > Action menu selection"],
+  ["Execution Security Alert every time", "Signer not trusted in the ECL", "B19 sign; trust the signer if your policy allows"],
+  ["Compile error when saving", "A block was pasted into the wrong section", "Redo B17/B18 steps A–D"],
+  ["\"supported only in the Domino Administrator client on Windows\"", "Run outside the Windows client", "Run from the admin workstation"],
+  ["Audit folder not writable", "B9 not done, or wrong permissions", "Redo B9; `bulkreg.cmd Check`"],
+  ["Build Batch selects 0 users", "All registered, in OPEN batches, or filtered", "Read the summary's 'Not selected' line"],
+  ["\"no open batch\" / \"already DONE\"", "No batch, or it has already run", "Build a new batch (C2)"],
+  ["\"header is missing … columns\"", "File saved without its header, or the layout changed", "Rebuild; save as CSV UTF-8 (C3)"],
+  ["SKIPPED: objectGUID mismatch", "Document recreated, or the row was edited", "Rebuild the batch"],
+  ["FAILED stage=RegisterNewUser", "Not an RA, wrong certifier or password, missing roles, unknown server or policy", "B4, B5, B8; check the names in bulkreg.ini and the mapping"],
+  ["REGISTERED_VAULT_PENDING", "Policy without a vault, wrong policy name, wrong VaultServer, replication", "B7/B8; Policy synopsis; re-run Verify later"],
+  ["MailSystem changes after the next DirSync", "DirSync attribute mapping (Directory Sync configuration, Synchronization tab)", "Adjust the DirSync mapping or PreserveMailSystem"],
+], [2900, 3300, 3160]);
 p("Escalate to the platform owner if failures affect more than one batch. Escalate immediately to the security owner if a password file, ID file or certifier may have been exposed.");
-pb();
 
-// ================================================================ 19 SECURITY
-h1("19. Security, Change Control and Rollback");
-h2("19.1 Controls and evidence");
+h2("D7 Security controls and change checklist");
 tbl(["Risk", "Control", "Evidence"], [
-  ["Unknown users registered", "Only the reviewed Include=Y rows of an approved batch file are processed", "BATCH-<id>.csv in the change ticket, plus _results.csv"],
-  ["Wrong user hit", "objectGUID in the batch must match the Person document", "SKIPPED rows with reason"],
-  ["Unintended mass change", "DryRun default, per-server summary, typed batch ID, MaxBatchRows, circuit breaker", "Debug log approval line, audit Mode column"],
-  ["Same user in two batches", "Users in OPEN batches are excluded from new batches", "Build Batch summary"],
-  ["Double registration", "Certificate re-check per user", "SKIPPED rows"],
-  ["Certifier password exposure", "Masked prompt, memory only, never stored or logged; CA recommended", "Code review, logs"],
-  ["Personal data and ID exposure", "Restricted batches, ids and secure folders; secrets deleted after Verify; .gitignore blocks batch, ID and password files", "Folder ACLs, helper actions log"],
-  ["Weak initial passwords", "Random 16-character password plus a policy-forced change (LotusScript Rnd is not cryptographic)", "Security Settings policy"],
-], [2400, 4500, 2460]);
-h2("19.2 Change checklist (per batch)");
-tbl(["When", "Item"], [
-  ["Before", "Steps 1–5 done once; batch built; BATCH-<id>.csv and _summary.txt reviewed and attached; dry run clean"],
-  ["Go / no-go", "Pilot passed (first time); target servers healthy; DryRun=0 set deliberately"],
-  ["After", "_results.csv and the Verify report attached; secrets deleted; DryRun=1"],
-], [1500, 7860]);
-h2("19.3 Rollback");
-p("Registration certifies the existing Person document and creates an ID. It **cannot be cleanly undone**. To reverse users, take them from `BATCH-<id>_results.csv` and use your standard deletion process (AdminP Delete Person) and vault clean-up. HCL notes that users registered through user registration are **not** removed by a DirSync full resync. To recover from an interrupted run, build a new batch: the unregistered users are offered again.");
+  ["Unknown users registered", "Only reviewed Include=Y rows of an approved batch file", "Batch file in the ticket; _results.csv"],
+  ["Wrong user", "objectGUID must match; NoteID/UNID cross-check", "SKIPPED rows"],
+  ["Mass change by mistake", "DryRun default, per-server summary, typed batch ID, MaxBatchRows, circuit breaker", "Debug log approval line"],
+  ["Same user in two batches", "OPEN batches are excluded from new batches", "Build summary"],
+  ["Certifier password exposure", "Masked prompt, memory only, never stored or logged; CA recommended", "Code, logs"],
+  ["Personal data or IDs exposed", "Restricted folders; secrets deleted after Verify; .gitignore blocks batch, ID and password files", "ACLs, helper log"],
+  ["Weak initial passwords", "Random 16 characters plus a forced change at first use (B7). LotusScript Rnd is not cryptographic.", "Security Settings"],
+  ["Unauthorized tool use", "bulkreg.nsf ACL limited to admins; signed design", "B14, B19"],
+], [2300, 4600, 2460]);
+tbl(["When", "Check"], [
+  ["Before each batch", "Preflight clean; batch built, reviewed and attached; dry run clean"],
+  ["Go / no-go", "Pilot passed (first time); servers healthy; DryRun=0 set deliberately"],
+  ["After each batch", "Results and Verify attached; secrets deleted; DryRun=1; batch log updated"],
+], [1800, 7560]);
 
-// ================================================================ 20 LIMITATIONS
-h1("20. Known Limitations and Items to Verify");
-tbl(["#", "Item", "Action"], [
-  ["1", "The code has not been compiled or run against a live Domino environment", "Steps 7–8 (dry run and pilot) are mandatory before production"],
-  ["2", "The RegisterNewUser parameter order follows HCL's ContactNoteID example and the 14.5 syntax", "Confirm when you compile in Designer"],
-  ["3", "UseCA=1 passes an empty certifier password", "Confirm in the pilot"],
-  ["4", "PreserveMailSystem behaviour with your DirSync mapping", "Check in the pilot and after the next sync"],
-  ["5", "Batch files edited in Excel must stay CSV with the original header", "Save as CSV UTF-8; rebuild if in doubt"],
-  ["6", "One Domino Directory per config file", "Use one config per domain (13.4)"],
-  ["7", "bulkreg.ps1 was reviewed but not executed", "Run Help and Check once before relying on it"],
-  ["8", "Large batches depend on the admin workstation staying on and connected", "Keep batches at 500 or fewer; re-runs are safe"],
+h2("D8 Rollback");
+p("Registration certifies the existing Person document and creates an ID. It **cannot be cleanly undone**, which is why the dry run and the pilot exist. To reverse users, take them from `BATCH-<id>_results.csv` and use your standard deletion process (AdminP Delete Person) and vault clean-up. HCL notes that users registered through user registration are not removed by a DirSync full resync. To recover from an interrupted run, build a new batch: the unregistered users are offered again.");
+
+h2("D9 Known limitations – confirm during the pilot");
+tbl(["#", "Item", "How to confirm"], [
+  ["1", "The code has not been compiled or run against a live Domino environment", "B17–B21 and C4–C5"],
+  ["2", "RegisterNewUser parameters follow HCL's ContactNoteID example and the 14.5 syntax", "Compiles and the pilot passes"],
+  ["3", "UseCA=1 passes an empty certifier password", "The pilot registers successfully"],
+  ["4", "PolicyName is passed as stored (`*/name`)", "Policy synopsis of the pilot users (C5)"],
+  ["5", "PreserveMailSystem with your DirSync mapping", "MailSystem after the pilot and after the next sync"],
+  ["6", "The Agent Log template file name differs between releases (alog4.ntf / alog.ntf)", "B15"],
+  ["7", "bulkreg.ps1 was reviewed but not executed", "Run `bulkreg.cmd Check` once"],
+  ["8", "One Domino Directory per config file", "D1"],
 ], [500, 5600, 3260]);
 
+h2("D10 Glossary");
+tbl(["Term", "Meaning"], [
+  ["DirSync", "Domino Directory Sync: copies AD users and groups into the Domino Directory"],
+  ["Person document", "A user's entry in the Domino Directory (names.nsf)"],
+  ["objectGUID", "The AD user's unique ID, stored in the DirSync Person document"],
+  ["Registration", "Creating a certified Notes ID for a user"],
+  ["Registration server", "The server whose Domino Directory receives the registrations"],
+  ["Home server", "The user's Domino server (MailServer field)"],
+  ["ID Vault", "Server-side store for Notes IDs; assigned through Security Settings in a policy"],
+  ["Explicit policy", "A policy assigned to specific users (stored as */name)"],
+  ["RA", "Registration Authority: may register users through the Domino CA"],
+  ["Batch / Batch ID", "A reviewed list of users / its name BATCH-yyyymmdd-hhnnss"],
+  ["Include=Y", "The row will be registered"],
+  ["DryRun", "Simulation mode; nothing is changed"],
+], [2600, 6760]);
+pb();
+
 // ================================================================ APPENDICES
-h1("Appendix A – Alternative Methods (Manual)");
-h2("A.1 Register Selected Person (small numbers)");
-p("Domino Administrator → People & Groups → select DirSync users → right-click **Register Selected Person** → choose the certifier and the ID-Vault policy. You are prompted per user.");
-h2("A.2 Registration text file (Agent 05 + Import)");
-p("Agent 05 writes `C:\\BulkReg\\secure\\BatchReg_DirSync_<run>.txt` (HCL's 20-field format, UTF-8 BOM, contains passwords). Import it with People → Register → Import Text File. HCL documents this for new users, so test 1–2 DirSync users first.");
+h1("Appendices");
+h2("Appendix A – Manual alternatives");
+p("**Register Selected Person:** in Domino Administrator, People & Groups > select DirSync users > right-click **Register Selected Person**. You are prompted per user. Choose the explicit policy.");
+p("**Registration text file:** Agent 05 writes `C:\\BulkReg\\secure\\BatchReg_DirSync_<run>.txt` (HCL 20-field format, UTF-8 BOM, contains passwords). Import it with **People > Register > Import Text File**. HCL documents this for new users, so test 1–2 DirSync users first.");
 
-h1("Appendix B – Agent Reference");
-tbl(["Agent", "Reads", "Writes", "Prompts"], [
-  ["01 Preflight", "names.nsf, servers", "Audit, debug log", "Config path"],
-  ["02 Build Batch", "names.nsf, open batch files, servers", "BATCH-<id>.csv, _summary.txt, audit", "Config path"],
-  ["03 Register Batch", "One batch file, names.nsf", "names.nsf (LIVE), ID files, _results.csv / _dryrun.csv, password file, audit", "Config path, batch file, Yes/No, batch ID (LIVE), certifier password if UseCA=0"],
-  ["04 Verify", "A batch file (or all users), names.nsf, ID Vault", "_verify.csv, audit", "Config path, batch file or empty"],
-  ["05 Export (optional)", "names.nsf", "Text file (secure), audit", "Config path, password Yes/No"],
-], [1700, 2400, 2900, 2360]);
+h2("Appendix B – Agent reference");
+tbl(["Agent", "Reads", "Writes", "Asks for"], [
+  ["01 - Preflight Check", "names.nsf, servers", "Audit, debug log", "Config path"],
+  ["02 - Build Batch", "names.nsf, open batches, servers", "BATCH-<id>.csv, _summary.txt, audit", "Config path"],
+  ["03 - Register Batch", "One batch file, names.nsf", "names.nsf (LIVE), ID files, _results/_dryrun, password file, audit", "Config path, batch file, Yes/No, batch ID (LIVE), certifier password (UseCA=0)"],
+  ["04 - Verify Registration and Vault", "A batch file or all users, ID Vault", "_verify.csv, audit", "Config path, batch file or empty"],
+  ["05 - Export (optional)", "names.nsf", "Text file, audit", "Config path, password Yes/No"],
+], [2300, 2300, 2800, 1960]);
 
-h1("Appendix C – References (HCL documentation)");
+h2("Appendix C – HCL documentation used");
 C.push({ t: "refs", items: [
-  ["Registering Active Directory users in Domino (Directory Sync)", "https://help.hcl-software.com/domino/14.0.0/admin/conf_adsync_registering_ad_users.html"],
-  ["Registering users from a text file (14.5.1)", "https://help.hcl-software.com/domino/14.5.1/admin/conf_registeringusersfromatextfile_t.html"],
-  ["NotesRegistration class", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_NOTESREGISTRATION_CLASS.html"],
+  ["Registering Active Directory users (Directory Sync)", "https://help.hcl-software.com/domino/14.0.0/admin/conf_adsync_registering_ad_users.html"],
   ["ContactNoteID property", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_CONTACTNOTEID_PROPERTY_NOTESREGISTRATION.html"],
-  ["RegisterNewUser method (mail server: canonical name)", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_REGISTERNEWUSER_METHOD.html"],
-  ["UseCertificateAuthority property", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_USECERTIFICATEAUTHORITY_PROPERTY_REG.html"],
-  ["PolicyName property", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_POLICYNAME_PROPERTY_REG.html"],
-  ["NotesIDVault class", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_NOTESIDVAULT_CLASS.html"],
-  ["Installing the Domino Administrator client (Windows)", "https://help.hcl-software.com/domino/14.0.0/admin/admn_installingthedominoadministratorclient_c.html"],
+  ["RegisterNewUser method", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_REGISTERNEWUSER_METHOD.html"],
+  ["Creating an ID vault", "https://help.hcl-software.com/domino/14.5.0/admin/conf_creatinganidvault_t.html"],
+  ["Assigning users to a vault (Security Settings, ID Vault tab)", "https://help.hcl-software.com/domino/14.5.0/admin/conf_creatingoreditingidvaultpolicysettingsdocumentsma_t.html"],
+  ["Creating a security policy settings document", "https://help.hcl-software.com/domino/14.0.0/admin/conf_creatingasecuritypolicysettingsdocument_t.html"],
+  ["Creating a policy document (explicit policy names */name)", "https://help.hcl-software.com/domino/14.5.0/admin/conf_creatingapolicydocument_t.html"],
+  ["Modifying a server-based CA (adding RAs)", "https://help.hcl-software.com/domino/14.5.1/admin/conf_modifyingaserverbasedca_t.html"],
+  ["Administration roles in the Domino Directory ACL", "https://help.hcl-software.com/domino/14.0.0/admin/conf_usingadministrationrolesinthedominodirectoryacl_t.html"],
+  ["Configuring a database ACL (Manage ACL)", "https://help.hcl-software.com/domino/14.0.0/admin/conf_configuringadatabaseacl_t.html"],
+  ["Creating a database from a template", "https://help.hcl-software.com/dom_designer/14.5.1/basic/H_CREATING_A_DATABASE_FROM_A_TEMPLATE_OVER.html"],
+  ["Script libraries (Designer)", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_USING_SCRIPT_LIBRARIES.html"],
+  ["Creating an agent (Designer)", "https://help.hcl-software.com/dom_designer/14.5.1/basic/H_CREATING_AN_AGENT.html"],
+  ["Naming agents: aliases '|' and cascading '\\'", "https://help.hcl-software.com/notes/14.0.0/client/agt_rules_for_agent_names_r.html"],
+  ["Signing a database", "https://help.hcl-software.com/domino/14.0.0/admin/admn_signingadatabaseortemplate_t.html"],
+  ["Checking field values (Document Properties)", "https://help.hcl-software.com/dom_designer/14.5.1/basic/H_ABOUT_CHECKING_FIELD_VALUES_IN_A_DOCUMENT.html"],
+  ["Execution Security Alert (ECL)", "https://help.hcl-software.com/notes/14.0.0/client/sec_ecl_alert_c.html"],
 ]});
+
+h2("Appendix D – Keeping the kit in GitHub");
+p("Run these commands on the machine that holds the kit repository (Terminal on macOS, or PowerShell with Git for Windows).");
+code(`# one time: connect the folder to your existing private repo
+git remote add origin https://github.com/<org-or-user>/<repo>.git
+git fetch origin
+git push -u origin main            # empty repo
+# repo created with a README/LICENSE:
+git pull origin main --allow-unrelated-histories --no-rebase -X ours -m "Merge GitHub initial commit"
+git push -u origin main
+
+# every change
+git add -A
+git commit -m "Describe the change"
+git pull --rebase
+git push
+
+# on the admin workstation: get updates
+cd C:\\BulkReg-kit
+git pull`);
+warn("Never copy anything from `C:\\BulkReg` (configs with real values, batch files, ID files, passwords, logs) into the kit repository. `.gitignore` blocks the usual file names, but treat it as a safety net only.");
 
 module.exports = { META, C };

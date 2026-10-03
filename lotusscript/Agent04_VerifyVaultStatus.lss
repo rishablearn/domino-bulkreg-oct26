@@ -1,5 +1,6 @@
 '=====================================================================
-' Agent      : 04 | Verify Registration + ID Vault Status   (READ-ONLY)
+' Agent name : BulkReg\04 - Verify Registration and Vault   (READ-ONLY)
+'              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -12,12 +13,22 @@
 '                  | CHECK_ERROR | NOT_FOUND
 ' Run it after each batch and before deleting local ID files.
 '=====================================================================
+'#####################################################################
+' ### STEP A: paste the 3 lines below into (Options)
+'#####################################################################
 Option Public
 Option Declare
 Use "BulkRegCommon"
+'#####################################################################
+' ### STEP B: paste the lines below (module variables) into (Declarations)
+'#####################################################################
 
 Dim nUnreg As Long, nInV As Long, nNotV As Long, nErr As Long, nGone As Long
 
+'#####################################################################
+' ### STEP C: select Initialize and REPLACE its content with the block below
+' ###         (from 'Sub Initialize' to its 'End Sub').
+'#####################################################################
 Sub Initialize
 	On Error GoTo ErrH
 	Dim ws As NotesUIWorkspace, ans As Variant
@@ -91,6 +102,11 @@ ErrH:
 	BR_Msg "Verify aborted: " & Error$, 16
 	Exit Sub
 End Sub
+'#####################################################################
+' ### STEP D: paste everything from here to the END of the file directly
+' ###         below 'End Sub' of Initialize. Designer creates one entry per
+' ###         Function / Sub automatically.
+'#####################################################################
 
 Sub VerifyDoc(doc As NotesDocument, nid As String)
 	Dim u As BRUser, t0 As Double, res As String

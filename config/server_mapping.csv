@@ -3,7 +3,7 @@ MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer
 # MatchField = any Person document item (Department, InternetAddress, Location, CompanyName, OfficeCity ...)
 # Empty HomeServer/OrgUnit/Policy/Groups/VaultServer = use the defaults from bulkreg.ini
 # VaultServer (optional) = vault server used for the IsIDInVault check when you run more than one ID Vault
-Department;Finance*;<Mail01/ORG>;Finance;</ORG-DirSync-Vault>;BR-Finance;
-InternetAddress;*@emea.example.com;<Mail02/ORG>;EMEA;</ORG-DirSync-Vault-EMEA>;BR-EMEA;<VaultEMEA/ORG>
-InternetAddress;*@apac.example.com;<Mail03/ORG>;APAC;</ORG-DirSync-Vault-APAC>;BR-APAC;<VaultAPAC/ORG>
+Department;Finance*;<Mail01/ORG>;Finance;<*/DirSync-Vault>;BR-Finance;
+InternetAddress;*@emea.example.com;<Mail02/ORG>;EMEA;<*/DirSync-Vault-EMEA>;BR-EMEA;<VaultEMEA/ORG>
+InternetAddress;*@apac.example.com;<Mail03/ORG>;APAC;<*/DirSync-Vault-APAC>;BR-APAC;<VaultAPAC/ORG>
 *;*;<Mail01/ORG>;;;;

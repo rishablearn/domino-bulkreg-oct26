@@ -1,5 +1,6 @@
 '=====================================================================
-' Agent      : 01 | Preflight Check            (READ-ONLY - changes nothing)
+' Agent name : BulkReg\01 - Preflight Check   (READ-ONLY - changes nothing)
+'              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -8,10 +9,17 @@
 '   <AuditDir>\BulkReg_Preflight_<run>_audit.csv   (per-user status)
 '   <AuditDir>\BulkReg_Preflight_<run>_debug.log
 '=====================================================================
+'#####################################################################
+' ### STEP A: paste the 3 lines below into (Options)
+'#####################################################################
 Option Public
 Option Declare
 Use "BulkRegCommon"
 
+'#####################################################################
+' ### STEP C: select Initialize and REPLACE its content with the block below
+' ###         (from 'Sub Initialize' to its 'End Sub').
+'#####################################################################
 Sub Initialize
 	On Error GoTo ErrH
 	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
@@ -115,6 +123,11 @@ ErrH:
 	BR_Msg "Preflight aborted: " & Error$, 16
 	Exit Sub
 End Sub
+'#####################################################################
+' ### STEP D: paste everything from here to the END of the file directly
+' ###         below 'End Sub' of Initialize. Designer creates one entry per
+' ###         Function / Sub automatically.
+'#####################################################################
 
 ' Logs PASS/FAIL, returns 1 on failure
 Function BR_Check(ok As Boolean, what As String) As Integer

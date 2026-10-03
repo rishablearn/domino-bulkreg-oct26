@@ -1,5 +1,6 @@
 '=====================================================================
-' Agent      : 05 | Export to Registration Text File (OPTIONAL, manual method)
+' Agent name : BulkReg\05 - Export to Registration Text File   (OPTIONAL, manual method)
+'              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
 '              (READ-ONLY on names.nsf)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
@@ -22,10 +23,17 @@
 ' !! The output file contains INITIAL PASSWORDS. It is written to
 '    PasswordDir (restricted folder). Delete it after registration.
 '=====================================================================
+'#####################################################################
+' ### STEP A: paste the 3 lines below into (Options)
+'#####################################################################
 Option Public
 Option Declare
 Use "BulkRegCommon"
 
+'#####################################################################
+' ### STEP C: select Initialize and REPLACE its content with the block below
+' ###         (from 'Sub Initialize' to its 'End Sub').
+'#####################################################################
 Sub Initialize
 	On Error GoTo ErrH
 	Dim ws As NotesUIWorkspace
