@@ -1,5 +1,5 @@
 '=====================================================================
-' Agent      : 02 | Export DirSync users to Registration Text File
+' Agent      : 05 | Export to Registration Text File (OPTIONAL, manual method)
 '              (READ-ONLY on names.nsf)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)

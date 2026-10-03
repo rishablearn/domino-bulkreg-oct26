@@ -57,7 +57,7 @@ function callout(text, kind) {
   const label = kind === "warn" ? "Caution: " : kind === "done" ? "Done when: " : "Note: ";
   return new Table({
     width: { size: CW, type: WidthType.DXA }, columnWidths: [CW],
-    rows: [new TableRow({ children: [new TableCell({
+    rows: [new TableRow({ cantSplit: true, children: [new TableCell({
       width: { size: CW, type: WidthType.DXA },
       borders: { top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, left: { style: BorderStyle.SINGLE, size: 24, color } },
       shading: { fill, type: ShadingType.CLEAR, color: "auto" },
@@ -70,7 +70,7 @@ function callout(text, kind) {
 function codeBlock(text) {
   return new Table({
     width: { size: CW, type: WidthType.DXA }, columnWidths: [CW],
-    rows: [new TableRow({ children: [new TableCell({
+    rows: [new TableRow({ cantSplit: true, children: [new TableCell({
       width: { size: CW, type: WidthType.DXA }, borders,
       shading: { fill: "F4F4F4", type: ShadingType.CLEAR, color: "auto" },
       margins: { top: 100, bottom: 100, left: 140, right: 140 },
@@ -85,9 +85,10 @@ const spacer = () => new Paragraph({ spacing: { before: 0, after: 80 }, children
 let listId = 0;
 const numberingConfigs = [{ reference: "bullets", levels: [{ level: 0, format: LevelFormat.BULLET, text: "•", alignment: AlignmentType.LEFT, style: { paragraph: { indent: { left: 540, hanging: 270 } } } }] }];
 const body = [];
+let breakNext = false;
 for (const b of C) {
   switch (b.t) {
-    case "h1": body.push(new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun(b.text)] })); break;
+    case "h1": body.push(new Paragraph({ heading: HeadingLevel.HEADING_1, pageBreakBefore: breakNext, children: [new TextRun(b.text)] })); breakNext = false; break;
     case "h2": body.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun(b.text)] })); break;
     case "h3": body.push(new Paragraph({ heading: HeadingLevel.HEADING_3, children: [new TextRun(b.text)] })); break;
     case "p": body.push(new Paragraph({ children: runs(b.text) })); break;
@@ -103,7 +104,7 @@ for (const b of C) {
     case "note": body.push(callout(b.text, "note")); body.push(spacer()); break;
     case "warn": body.push(callout(b.text, "warn")); body.push(spacer()); break;
     case "done": body.push(callout(b.text, "done")); body.push(spacer()); break;
-    case "pagebreak": body.push(new Paragraph({ children: [new PageBreak()] })); break;
+    case "pagebreak": breakNext = true; break;   // next H1 starts on a new page (no blank pages)
     case "refs": b.items.forEach(([t, u]) => body.push(new Paragraph({ numbering: { reference: "bullets", level: 0 }, children: [
       new TextRun({ text: t + " – " }), new ExternalHyperlink({ link: u, children: [new TextRun({ text: u, style: "Hyperlink", size: 18 })] })] }))); break;
   }

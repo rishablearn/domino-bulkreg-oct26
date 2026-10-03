@@ -54,7 +54,7 @@ th{position:sticky;top:0;background:var(--chip);cursor:pointer;user-select:none}
 <script>
 (function(){
 let head=[],rows=[],filt=null,sortC=-1,sortD=1;
-const SHOW=["RunID","Timestamp","Tool","Mode","Action","Result","DurationSec","FullNameBefore","FullNameAfter","InternetAddress","HomeServer","OrgUnit","Policy","MailSystemBefore","MailSystemAfter","VaultStatus","Message"];
+const SHOW=["RunID","BatchID","Timestamp","Tool","Mode","Action","Result","DurationSec","FullNameBefore","FullNameAfter","InternetAddress","HomeServer","OrgUnit","Policy","MailSystemBefore","MailSystemAfter","VaultStatus","Message"];
 const cls=r=>/FAIL|ERROR|CHECK_ERROR|ABORT/.test(r)?"err":/WARN|PENDING|SKIP|NOT_IN|UNREG/.test(r)?"warn":/WOULD|DRY|EXPORTED/.test(r)?"info":"ok";
 function parse(t){t=t.replace(/^﻿/,"");const out=[];let row=[],f="",q=false;
  for(let i=0;i<t.length;i++){const c=t[i];

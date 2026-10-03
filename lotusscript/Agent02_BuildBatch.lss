@@ -1,0 +1,156 @@
+'=====================================================================
+' Agent      : 02 | Build Batch (select + validate)        READ-ONLY on names.nsf
+' Trigger    : Action menu selection, Target: None
+'              (Windows Domino Administrator client only)
+' Options    : Option Public / Option Declare / Use "BulkRegCommon"
+'
+' Selects the next batch of unregistered DirSync users (default 500),
+' resolves each user's home server / OU / policy / groups from
+' server_mapping.csv, validates them and writes a batch file for review:
+'
+'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>.csv          one row per user
+'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>_summary.txt  totals per server / policy
+'
+' Review the CSV (Excel: save as "CSV UTF-8"). You may:
+'   - set Include=N to leave a user out
+'   - change HomeServer, OrgUnit, Policy, Groups or VaultServer for a user
+' Rows with Check=ERROR are written with Include=N.
+' Agent 03 registers ONLY rows with Include=Y from the batch file you choose.
+'
+' Users already listed in another OPEN batch (no _results.csv yet) are not
+' selected again, so one user is never in two pending batches.
+'
+' Config: BatchSize (rows per batch, default 500), BatchServerFilter (only
+'         users mapped to that home server), ExtraSelection, BatchDir.
+'=====================================================================
+Option Public
+Option Declare
+Use "BulkRegCommon"
+
+Sub Initialize
+	On Error GoTo ErrH
+	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
+	Dim usersView As NotesView, dupCol As NotesDocumentCollection
+	Dim u As BRUser, issues As String, chk As String, inc As String, t0 As Double
+	Dim batchMax As Long, srvFilter As String, bdir As String, bfile As String, sumFile As String
+	Dim openIds List As String, srvCache List As String
+	Dim seenShort List As String, seenMail List As String
+	Dim srvInc List As Long, srvExcl List As Long, polInc List As Long
+	Dim nRows As Long, nInc As Long, nWarn As Long, nErr As Long
+	Dim nInOpen As Long, nOtherSrv As Long, nLeft As Long, r As String, hk As String, pk As String
+
+	If Not BR_Init("BuildBatch") Then Exit Sub
+	batchMax = CfgL("BatchSize", 500)
+	If batchMax < 1 Then batchMax = 500
+	srvFilter = Trim$(CfgS("BatchServerFilter", ""))
+
+	bdir = BR_BatchDir()
+	If Not BR_DirWritable(bdir) Then Error 5001, "BatchDir missing or not writable: " & bdir
+	gBatchID = "BATCH-" & gRunID
+	bfile = bdir & gBatchID & ".csv"
+	sumFile = bdir & gBatchID & "_summary.txt"
+
+	Call BR_OpenBatchNoteIDs(openIds)
+	Set db = BR_OpenDirectory()
+	Set usersView = db.GetView("($Users)")
+	Set col = BR_GetCandidates(db, True)
+
+	Call BR_AppendLine(bfile, Uchr$(&HFEFF) & BR_BATCH_COLS)
+	Set doc = col.GetFirstDocument()
+	Do While Not (doc Is Nothing)
+		t0 = Timer
+		Call BR_ReadUser(doc, u)
+		If IsElement(openIds(u.NoteID)) Then
+			nInOpen = nInOpen + 1                                   ' already in a pending batch
+		ElseIf srvFilter <> "" And LCase$(u.HomeServer) <> LCase$(srvFilter) Then
+			nOtherSrv = nOtherSrv + 1                               ' belongs to another server wave
+		ElseIf nRows >= batchMax Then
+			nLeft = nLeft + 1                                       ' for the next batch
+		Else
+			nRows = nRows + 1
+			issues = BR_Validate(u)
+			If u.ShortName <> "" Then
+				If IsElement(seenShort(LCase$(u.ShortName))) Then issues = issues & "ERROR:Duplicate ShortName in batch; " Else seenShort(LCase$(u.ShortName)) = u.NoteID
+			End If
+			If u.InternetAddress <> "" Then
+				If IsElement(seenMail(LCase$(u.InternetAddress))) Then issues = issues & "ERROR:Duplicate InternetAddress in batch; " Else seenMail(LCase$(u.InternetAddress)) = u.NoteID
+				If Not (usersView Is Nothing) Then
+					Set dupCol = usersView.GetAllDocumentsByKey(u.InternetAddress, True)
+					If dupCol.Count > 1 Then issues = issues & "WARN:InternetAddress used by " & dupCol.Count & " directory entries; "
+				End If
+			End If
+			If u.HomeServer <> "" Then
+				If Not BR_HomeServerOK(u.HomeServer, srvCache) Then issues = issues & "ERROR:HomeServer unreachable; "
+			End If
+
+			If InStr(issues, "ERROR:") > 0 Then
+				chk = "ERROR": inc = "N": nErr = nErr + 1
+			ElseIf InStr(issues, "WARN:") > 0 Then
+				chk = "WARN": inc = "Y": nWarn = nWarn + 1
+			Else
+				chk = "OK": inc = "Y"
+			End If
+			hk = BR_IIfStr(u.HomeServer = "", "(none)", u.HomeServer)
+			pk = BR_IIfStr(u.Policy = "", "(none)", u.Policy)
+			If inc = "Y" Then
+				nInc = nInc + 1
+				If IsElement(srvInc(hk)) Then srvInc(hk) = srvInc(hk) + 1 Else srvInc(hk) = 1
+				If IsElement(polInc(pk)) Then polInc(pk) = polInc(pk) + 1 Else polInc(pk) = 1
+			Else
+				If IsElement(srvExcl(hk)) Then srvExcl(hk) = srvExcl(hk) + 1 Else srvExcl(hk) = 1
+			End If
+
+			r = Q(inc) & "," & Q(gBatchID) & "," & Q(CStr(nRows)) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & _
+			Q(u.FullNameBefore) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
+			Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues)
+			Call BR_AppendLine(bfile, r)
+			Call BR_Audit(u, "BUILD", "SELECT", chk, BR_Elapsed(t0), "Include=" & inc & " " & issues)
+		End If
+		Set doc = col.GetNextDocument(doc)
+	Loop
+
+	' ---------- summary file ----------
+	Call BR_AppendLine(sumFile, "BulkReg " & BR_VERSION & " - batch summary")
+	Call BR_AppendLine(sumFile, "Batch ID        : " & gBatchID)
+	Call BR_AppendLine(sumFile, "Built by / at   : " & gOperator & " / " & Format$(Now, "yyyy-mm-dd hh:nn:ss"))
+	Call BR_AppendLine(sumFile, "Batch file      : " & bfile)
+	Call BR_AppendLine(sumFile, "Selection       : " & BR_SelectionFormula(True))
+	Call BR_AppendLine(sumFile, "Server filter   : " & BR_IIfStr(srvFilter = "", "(none - all home servers)", srvFilter))
+	Call BR_AppendLine(sumFile, "Batch size limit: " & batchMax)
+	Call BR_AppendLine(sumFile, "")
+	Call BR_AppendLine(sumFile, "Rows in batch   : " & nRows & "   Include=Y: " & nInc & "   (WARN: " & nWarn & ")   Include=N (ERROR): " & nErr)
+	Call BR_AppendLine(sumFile, "Not selected    : already in an open batch: " & nInOpen & " | other home server: " & nOtherSrv & " | left for next batch: " & nLeft)
+	Call BR_AppendLine(sumFile, "")
+	Call BR_AppendLine(sumFile, "Included users per home server:")
+	ForAll c In srvInc
+		Call BR_AppendLine(sumFile, "  " & ListTag(c) & " : " & c)
+	End ForAll
+	Call BR_AppendLine(sumFile, "Excluded (ERROR) per home server:")
+	ForAll c In srvExcl
+		Call BR_AppendLine(sumFile, "  " & ListTag(c) & " : " & c)
+	End ForAll
+	Call BR_AppendLine(sumFile, "Included users per explicit policy:")
+	ForAll c In polInc
+		Call BR_AppendLine(sumFile, "  " & ListTag(c) & " : " & c)
+	End ForAll
+	Call BR_AppendLine(sumFile, "")
+	Call BR_AppendLine(sumFile, "Next: review " & gBatchID & ".csv (Include / HomeServer / OrgUnit / Policy / Groups),")
+	Call BR_AppendLine(sumFile, "      then run 03 | Register Batch and choose this file.")
+
+	BR_Close "batch=" & gBatchID & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft
+	BR_Msg "Batch " & gBatchID & " created." & Chr$(10) & Chr$(10) & _
+	"Rows: " & nRows & "   Include=Y: " & nInc & "   WARN: " & nWarn & "   ERROR (Include=N): " & nErr & Chr$(10) & _
+	"Not selected - in open batch: " & nInOpen & ", other server: " & nOtherSrv & ", left for next batch: " & nLeft & Chr$(10) & Chr$(10) & _
+	"Review:  " & bfile & Chr$(10) & "Summary: " & sumFile & Chr$(10) & Chr$(10) & _
+	"Nothing has been registered. Run 03 | Register Batch after review.", BR_IIfInt(nErr > 0, 48, 64)
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Build Batch aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Build Batch aborted: " & Error$, 16
+	Exit Sub
+End Sub
+
+Function BR_IIfInt(c As Boolean, a As Integer, b As Integer) As Integer
+	If c Then BR_IIfInt = a Else BR_IIfInt = b
+End Function

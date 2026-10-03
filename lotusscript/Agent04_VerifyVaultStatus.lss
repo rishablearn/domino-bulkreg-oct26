@@ -4,51 +4,86 @@
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
 '
-' For every Person doc with objectGUID (DirSync user) reports:
-'   UNREGISTERED | REGISTERED + IN_VAULT | REGISTERED + NOT_IN_VAULT | CHECK_ERROR
-' Output: <AuditDir>\BulkReg_Verify_<run>_audit.csv (+ debug log)
-' Run it after each registration batch and before deleting local ID files.
+' Scope (asked at start):
+'   a batch file  -> verifies only the Include=Y users of BATCH-<id>.csv and
+'                    writes <BatchDir>\BATCH-<id>_verify_<run>.csv
+'   blank         -> verifies every DirSync user (objectGUID present)
+' Status per user: UNREGISTERED | REGISTERED + IN_VAULT | REGISTERED + NOT_IN_VAULT
+'                  | CHECK_ERROR | NOT_FOUND
+' Run it after each batch and before deleting local ID files.
 '=====================================================================
 Option Public
 Option Declare
 Use "BulkRegCommon"
 
+Dim nUnreg As Long, nInV As Long, nNotV As Long, nErr As Long, nGone As Long
+
 Sub Initialize
 	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace, ans As Variant
 	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
-	Dim u As BRUser, t0 As Double, res As String
-	Dim nUnreg As Long, nInV As Long, nNotV As Long, nErr As Long
+	Dim scopeFile As String, bname As String, fh As Integer, txt As String
+	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, nid As String
+	Dim summary As String, total As Long
 
 	If Not BR_Init("Verify") Then Exit Sub
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Verify", _
+	"Verify one batch: enter the batch file path." & Chr$(10) & _
+	"Verify all DirSync users: leave empty.", BR_LatestBatch())
+	If IsEmpty(ans) Then
+		BR_Close "Cancelled"
+		Exit Sub
+	End If
+	scopeFile = BR_Path(Trim$(CStr(ans)))
 	Set db = BR_OpenDirectory()
-	Set col = BR_GetCandidates(db, False)      ' all DirSync users, registered or not
-	Set doc = col.GetFirstDocument()
-	Do While Not (doc Is Nothing)
-		t0 = Timer
-		Call BR_ReadUser(doc, u)
-		u.FullNameAfter = u.FullNameBefore
-		u.MailSystemAfter = u.MailSystemBefore
-		If Not BR_IsRegistered(doc) Then
-			res = "UNREGISTERED": nUnreg = nUnreg + 1
-			u.VaultStatus = "N/A"
-		Else
-			u.VaultStatus = BR_VaultStatus(u.FullNameBefore)
-			Select Case Left$(u.VaultStatus, 5)
-			Case "IN_VA": res = "REGISTERED": nInV = nInV + 1
-			Case "NOT_I": res = "REGISTERED": nNotV = nNotV + 1
-			Case Else: res = "CHECK_ERROR": nErr = nErr + 1
-			End Select
-		End If
-		Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), "")
-		BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus
-		Set doc = col.GetNextDocument(doc)
-	Loop
 
-	Dim summary As String
-	summary = "DirSync users=" & col.Count & " | unregistered=" & nUnreg & " | registered+in vault=" & nInV & _
-	" | registered NOT in vault=" & nNotV & " | check errors=" & nErr
+	If scopeFile <> "" Then
+		' ---------- one batch ----------
+		If Dir$(scopeFile) = "" Then Error 7001, "Batch file not found: " & scopeFile
+		bname = StrRightBack(scopeFile, "\")
+		If Left$(bname, 6) <> "BATCH-" Or InStr(bname, "_") > 0 Then Error 7002, "Choose the batch file itself (BATCH-<id>.csv): " & bname
+		gBatchID = Left$(bname, Len(bname) - 4)
+		gResultsFile = BR_BatchDir() & gBatchID & "_verify_" & gRunID & ".csv"
+		Call BR_AppendLine(gResultsFile, Uchr$(&HFEFF) & BR_AuditHeader())
+		fh = FreeFile()
+		Open scopeFile For Input As #fh Charset = "UTF-8"
+		isFirst = True
+		Do Until EOF(fh)
+			Line Input #fh, txt
+			If isFirst Then
+				Call BR_CsvHeader(txt, delim, cols)
+				isFirst = False
+			ElseIf Trim$(txt) <> "" Then
+				parts = BR_CsvSplit(txt, delim)
+				If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
+					nid = BR_CsvGet(parts, cols, "NoteID")
+					total = total + 1
+					Set doc = Nothing
+					On Error Resume Next
+					Set doc = db.GetDocumentByID(nid)
+					On Error GoTo ErrH
+					Call VerifyDoc(doc, nid)
+				End If
+			End If
+		Loop
+		Close #fh
+	Else
+		' ---------- all DirSync users ----------
+		Set col = BR_GetCandidates(db, False)
+		Set doc = col.GetFirstDocument()
+		Do While Not (doc Is Nothing)
+			total = total + 1
+			Call VerifyDoc(doc, doc.NoteID)
+			Set doc = col.GetNextDocument(doc)
+		Loop
+	End If
+
+	summary = BR_IIfStr(gBatchID = "", "All DirSync users", gBatchID) & ": checked=" & total & " | registered+in vault=" & nInV & _
+	" | registered NOT in vault=" & nNotV & " | unregistered=" & nUnreg & " | check errors=" & nErr & " | not found=" & nGone
 	BR_Close summary
-	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & gAuditFile, 64
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & BR_IIfStr(gResultsFile <> "", gResultsFile, gAuditFile), _
+	CInt(BR_IIfStr(nNotV + nErr + nGone > 0, "48", "64"))
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Verify aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
@@ -56,3 +91,42 @@ ErrH:
 	BR_Msg "Verify aborted: " & Error$, 16
 	Exit Sub
 End Sub
+
+Sub VerifyDoc(doc As NotesDocument, nid As String)
+	Dim u As BRUser, t0 As Double, res As String
+	t0 = Timer
+	If doc Is Nothing Then
+		u.NoteID = nid
+		nGone = nGone + 1
+		Call BR_Audit(u, "VERIFY", "STATUS", "NOT_FOUND", BR_Elapsed(t0), "Person document no longer exists")
+		Exit Sub
+	End If
+	Call BR_ReadUser(doc, u)
+	u.FullNameAfter = u.FullNameBefore
+	u.MailSystemAfter = u.MailSystemBefore
+	If Not BR_IsRegistered(doc) Then
+		res = "UNREGISTERED": nUnreg = nUnreg + 1
+		u.VaultStatus = "N/A"
+	Else
+		u.VaultStatus = BR_VaultStatus(u.FullNameBefore, u.VaultServer)
+		Select Case Left$(u.VaultStatus, 5)
+		Case "IN_VA": res = "REGISTERED": nInV = nInV + 1
+		Case "NOT_I": res = "REGISTERED": nNotV = nNotV + 1
+		Case Else: res = "CHECK_ERROR": nErr = nErr + 1
+		End Select
+	End If
+	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), "")
+	BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus
+End Sub
+
+' Newest batch file (open or done) as the default scope
+Function BR_LatestBatch() As String
+	Dim d As String, f As String, best As String
+	d = BR_BatchDir()
+	f = Dir$(d & "BATCH-*.csv")
+	Do While f <> ""
+		If InStr(f, "_") = 0 And f > best Then best = f
+		f = Dir$()
+	Loop
+	If best <> "" Then BR_LatestBatch = d & best
+End Function

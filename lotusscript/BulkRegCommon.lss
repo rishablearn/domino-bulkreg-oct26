@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 1.2.0
+' Script Library : BulkRegCommon            Version 1.3.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_ExportToBatchRegFile,
@@ -14,7 +14,7 @@
 Option Public
 Option Declare
 
-Public Const BR_VERSION = "1.2.0"
+Public Const BR_VERSION = "1.3.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -30,6 +30,7 @@ Public Type BRMapRule
 	OrgUnit As String
 	Policy As String
 	Groups As String
+	VaultServer As String
 End Type
 
 ' ---------- one candidate user ----------
@@ -54,6 +55,7 @@ Public Type BRUser
 	MapRule As String
 	IDFile As String
 	VaultStatus As String
+	VaultServer As String
 	Issues As String
 End Type
 
@@ -70,6 +72,8 @@ Public gAuditFile As String
 Public gNLog As NotesLog
 Public gSession As NotesSession
 Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
+Public gBatchID As String        ' batch being built / registered (BATCH-yyyymmdd-hhnnss)
+Public gResultsFile As String    ' <BatchDir>\<BatchID>_results.csv (LIVE) or _dryrun.csv
 
 Public Const gSep = "\"                         ' Windows path separator
 Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
@@ -289,6 +293,7 @@ Function BR_LoadMapping(path As String) As Boolean
 				gMap(gMapCount).OrgUnit = BR_Part(parts, 3)
 				gMap(gMapCount).Policy = BR_Part(parts, 4)
 				gMap(gMapCount).Groups = BR_Part(parts, 5)
+				gMap(gMapCount).VaultServer = BR_Part(parts, 6)
 				gMapCount = gMapCount + 1
 			Else
 				BR_Log LVL_WARN, "Mapping line ignored (needs >= 3 columns): " & txt
@@ -316,6 +321,7 @@ Sub BR_ResolveMapping(doc As NotesDocument, u As BRUser)
 	u.OrgUnit = CfgS("DefaultOrgUnit", "")
 	u.Policy = CfgS("DefaultPolicy", "")
 	u.Groups = CfgS("DefaultGroups", "")
+	u.VaultServer = CfgS("VaultServer", "")
 	u.MapRule = "defaults"
 	For i = 0 To gMapCount - 1
 		If gMap(i).MatchField = "*" Then
@@ -328,6 +334,7 @@ Sub BR_ResolveMapping(doc As NotesDocument, u As BRUser)
 			If gMap(i).OrgUnit <> "" Then u.OrgUnit = gMap(i).OrgUnit
 			If gMap(i).Policy <> "" Then u.Policy = gMap(i).Policy
 			If gMap(i).Groups <> "" Then u.Groups = gMap(i).Groups
+			If gMap(i).VaultServer <> "" Then u.VaultServer = gMap(i).VaultServer
 			u.MapRule = "rule#" & (i + 1) & " " & gMap(i).MatchField & "=" & gMap(i).MatchPattern
 			Exit For
 		End If
@@ -458,7 +465,7 @@ End Sub
 Function BR_AuditHeader() As String
 	BR_AuditHeader = "RunID,Timestamp,Tool,Operator,Mode,Action,Result,DurationSec,NoteID,UNID,objectGUID," & _
 	"FullNameBefore,FullNameAfter,InternetAddress,ShortName,HomeServer,OrgUnit,Policy,MapRule," & _
-	"MailSystemBefore,MailSystemAfter,VaultStatus,IDFile,Message"
+	"MailSystemBefore,MailSystemAfter,VaultStatus,IDFile,Message,BatchID"
 End Function
 
 Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, dur As Double, msg As String)
@@ -469,8 +476,9 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FullNameAfter) & "," & _
 	Q(u.InternetAddress) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & _
 	Q(u.MapRule) & "," & Q(u.MailSystemBefore) & "," & Q(u.MailSystemAfter) & "," & Q(u.VaultStatus) & "," & _
-	Q(u.IDFile) & "," & Q(msg)
+	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID)
 	Call BR_AppendLine(gAuditFile, r)
+	If gResultsFile <> "" Then Call BR_AppendLine(gResultsFile, r)
 	Exit Sub
 ErrH:
 	Print "BulkReg: audit write failed: " & Error$
@@ -486,15 +494,15 @@ End Function
 '=====================================================================
 ' ID VAULT
 '=====================================================================
-Function BR_VaultStatus(fullName As String) As String
+Function BR_VaultStatus(fullName As String, vaultServer As String) As String
 	On Error GoTo ErrH
 	Dim vault As NotesIDVault
-	If CfgS("VaultServer", "") = "" Then
+	If vaultServer = "" Then
 		BR_VaultStatus = "NOT_CHECKED(no VaultServer)"
 		Exit Function
 	End If
 	Set vault = gSession.GetIDVault()
-	If vault.IsIDInVault(CfgS("VaultServer", ""), fullName) Then
+	If vault.IsIDInVault(vaultServer, fullName) Then
 		BR_VaultStatus = "IN_VAULT"
 	Else
 		BR_VaultStatus = "NOT_IN_VAULT"
@@ -606,4 +614,140 @@ Function BR_ServerReachable(server As String) As Boolean
 ErrH:
 	BR_ServerReachable = False
 	Exit Function
+End Function
+
+'=====================================================================
+' BATCH FILES  (reviewed batch workflow: 02 Build -> review -> 03 Register)
+'=====================================================================
+' A batch file  <BatchDir>\BATCH-<yyyymmdd-hhnnss>.csv  lists exactly the users
+' Agent 03 may register. State of a batch is derived from files next to it:
+'   OPEN    no _results.csv yet  (users in it are not offered to a new batch)
+'   DONE    BATCH-<id>_results.csv exists (written by a LIVE run)
+' A dry run writes BATCH-<id>_dryrun.csv and leaves the batch OPEN.
+
+Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,OrgUnit,Policy,Groups,VaultServer,MapRule,Check,Issues"
+
+Function BR_BatchDir() As String
+	BR_BatchDir = BR_CfgDir("BatchDir", "batches")
+End Function
+
+' Splits one CSV line; handles "quoted" fields, doubled quotes and the
+' delimiter inside quotes. Returns a 0-based string array.
+Function BR_CsvSplit(lineTxt As String, delim As String) As Variant
+	Dim out() As String, n As Integer, i As Long, c As String, cur As String, inQ As Boolean
+	ReDim out(0) As String
+	For i = 1 To Len(lineTxt)
+		c = Mid$(lineTxt, i, 1)
+		If inQ Then
+			If c = """" Then
+				If Mid$(lineTxt, i + 1, 1) = """" Then
+					cur = cur & """"
+					i = i + 1
+				Else
+					inQ = False
+				End If
+			Else
+				cur = cur & c
+			End If
+		ElseIf c = """" Then
+			inQ = True
+		ElseIf c = delim Then
+			ReDim Preserve out(n) As String
+			out(n) = cur
+			n = n + 1
+			cur = ""
+		Else
+			cur = cur & c
+		End If
+	Next
+	ReDim Preserve out(n) As String
+	out(n) = cur
+	BR_CsvSplit = out
+End Function
+
+' Header -> column index list (lower-case names). Detects , or ; (Excel locales).
+Function BR_CsvHeader(headerTxt As String, delim As String, cols List As Integer) As Integer
+	Dim parts As Variant, i As Integer, h As String
+	h = Replace(headerTxt, Uchr$(&HFEFF), "")
+	If InStr(h, ",") = 0 And InStr(h, ";") > 0 Then delim = ";" Else delim = ","
+	parts = BR_CsvSplit(h, delim)
+	Erase cols
+	For i = 0 To UBound(parts)
+		cols(LCase$(Trim$(parts(i)))) = i
+	Next
+	BR_CsvHeader = UBound(parts) + 1
+End Function
+
+Function BR_CsvGet(parts As Variant, cols List As Integer, colName As String) As String
+	Dim k As String
+	k = LCase$(colName)
+	If Not IsElement(cols(k)) Then Exit Function
+	If cols(k) > UBound(parts) Then Exit Function
+	BR_CsvGet = Trim$(CStr(parts(cols(k))))
+End Function
+
+' NoteIDs listed (Include=Y) in batch files that are still OPEN -> excluded
+' from new batches so one user is never in two pending batches.
+Sub BR_OpenBatchNoteIDs(ids List As String)
+	On Error GoTo ErrH
+	Dim d As String, f As String, files List As String, fh As Integer, txt As String
+	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
+	d = BR_BatchDir()
+	f = Dir$(d & "BATCH-*.csv")
+	Do While f <> ""
+		If InStr(f, "_") = 0 Then files(f) = f      ' only the batch file itself
+		f = Dir$()
+	Loop
+	ForAll bf In files
+		If Dir$(d & Left$(bf, Len(bf) - 4) & "_results.csv") = "" Then
+			fh = FreeFile()
+			Open d & bf For Input As #fh Charset = "UTF-8"
+			isFirst = True
+			Do Until EOF(fh)
+				Line Input #fh, txt
+				If isFirst Then
+					Call BR_CsvHeader(txt, delim, cols)
+					isFirst = False
+				ElseIf Trim$(txt) <> "" Then
+					parts = BR_CsvSplit(txt, delim)
+					If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then ids(BR_CsvGet(parts, cols, "NoteID")) = CStr(bf)
+				End If
+			Loop
+			Close #fh
+		End If
+	End ForAll
+	Exit Sub
+ErrH:
+	BR_Log LVL_WARN, "Could not read open batch files in " & d & ": " & Error$
+	On Error Resume Next
+	Close #fh
+	Exit Sub
+End Sub
+
+' Newest OPEN batch file (full path) or "" if none
+Function BR_NewestOpenBatch() As String
+	Dim d As String, f As String, best As String, files List As String
+	d = BR_BatchDir()
+	f = Dir$(d & "BATCH-*.csv")
+	Do While f <> ""                       ' collect first: Dir$ cannot be nested
+		If InStr(f, "_") = 0 Then files(f) = f
+		f = Dir$()
+	Loop
+	ForAll bf In files
+		If Dir$(d & Left$(bf, Len(bf) - 4) & "_results.csv") = "" Then
+			If bf > best Then best = bf
+		End If
+	End ForAll
+	If best <> "" Then BR_NewestOpenBatch = d & best
+End Function
+
+' Home-server reachability, checked once per server per run
+Function BR_HomeServerOK(server As String, cache List As String) As Boolean
+	Dim k As String
+	k = LCase$(server)
+	If Not IsElement(cache(k)) Then
+		If BR_ServerReachable(server) Then cache(k) = "OK" Else cache(k) = "UNREACHABLE"
+		BR_Log LVL_INFO, "Home server " & server & ": " & cache(k)
+	End If
+	BR_HomeServerOK = (cache(k) = "OK")
 End Function

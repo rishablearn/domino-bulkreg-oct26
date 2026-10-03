@@ -1,17 +1,18 @@
 <#
 =====================================================================
- bulkreg.ps1  -  BulkReg 1.2 OPTIONAL helper for the Windows admin workstation
+ bulkreg.ps1  -  BulkReg 1.3 OPTIONAL helper for the Windows admin workstation
                  (the machine running the HCL Domino Administrator client)
 
  Registration runs entirely inside the Domino Administrator client
  (agents in bulkreg.nsf > Actions). This script never registers users and
  never touches names.nsf. It only automates the Windows chores around a run:
 
-   Init          create C:\BulkReg\{config,ids,secure,audit,cert}, lock down
+   Init          create C:\BulkReg\{config,ids,secure,audit,cert,batches}, lock down
                  ids / secure / cert, copy the config templates
    Check         validate folders, ACLs and config values before a run
    DryRun On|Off flip DryRun in bulkreg.ini (backup + diff)
-   Status        summarise the newest (or a given) audit CSV
+   Batches       list batch files and their state (OPEN / DRYRUN / DONE)
+   Status        summarise the newest (or a given) audit or results CSV
    Tail          follow the newest debug log while an agent runs
    PurgeSecrets  list / delete initial-password files, text files, local IDs
 
@@ -22,7 +23,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('Help', 'Init', 'Check', 'DryRun', 'Status', 'Tail', 'PurgeSecrets')]
+    [ValidateSet('Help', 'Init', 'Check', 'DryRun', 'Batches', 'Status', 'Tail', 'PurgeSecrets')]
     [string]$Command = 'Help',
     [Parameter(Position = 1)] [string]$Arg,
     [string]$Base = $(if ($env:BULKREG_BASE) { $env:BULKREG_BASE } else { 'C:\BulkReg' }),
@@ -32,7 +33,7 @@ param(
 )
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$Version = '1.2.0'
+$Version = '1.3.0'
 if (-not $Config) { $Config = if ($env:BULKREG_CONFIG) { $env:BULKREG_CONFIG } else { Join-Path $Base 'config\bulkreg.ini' } }
 $KitConfig = Join-Path $PSScriptRoot '..\..\config'
 $script:Fails = 0; $script:Warns = 0
@@ -96,11 +97,12 @@ function Show-Help {
 bulkreg.ps1 $Version - optional helper for the Windows Domino Administrator workstation
 Base=$Base  Config=$Config
 
-  Init                               Create $Base\{config,ids,secure,audit,cert}, restrict ids/secure/cert,
+  Init                               Create $Base\{config,ids,secure,audit,cert,batches}, restrict ids/secure/cert/batches,
                                      copy config templates if missing (run as Administrator)
   Check                              Validate folders, ACLs and config values
   DryRun On|Off                      Set DryRun=1 / 0 in bulkreg.ini (backup + diff)
-  Status [audit.csv]                 Summarise an audit CSV by Result (default: newest)
+  Batches                            List batch files: rows, Include=Y, state (OPEN / DRYRUN / DONE)
+  Status [file.csv]                  Summarise an audit or BATCH-*_results.csv by Result (default: newest audit)
   Tail                               Follow the newest debug log
   PurgeSecrets [-IncludeIds] [-Yes]  List (default) or delete password/text files (and local ID files)
 
@@ -111,8 +113,8 @@ The agents themselves are run from bulkreg.nsf > Actions in the Domino Administr
 function Invoke-Init {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) { throw 'Init must run in an elevated PowerShell (Run as Administrator).' }
-    foreach ($d in 'config', 'ids', 'secure', 'audit', 'cert') { New-Item -ItemType Directory -Force -Path (Join-Path $Base $d) | Out-Null }
-    foreach ($d in 'ids', 'secure', 'cert') { Set-RestrictedAcl (Join-Path $Base $d) }
+    foreach ($d in 'config', 'ids', 'secure', 'audit', 'cert', 'batches') { New-Item -ItemType Directory -Force -Path (Join-Path $Base $d) | Out-Null }
+    foreach ($d in 'ids', 'secure', 'cert', 'batches') { Set-RestrictedAcl (Join-Path $Base $d) }
     foreach ($f in 'bulkreg.ini', 'server_mapping.csv') {
         $dst = Join-Path $Base "config\$f"; $src = Join-Path $KitConfig $f
         if (-not (Test-Path $dst) -and (Test-Path $src)) { Copy-Item $src $dst; Write-Host "Installed template -> $dst" }
@@ -135,6 +137,7 @@ function Invoke-Check {
     if (Test-Path $Config) { Pass "config $Config" } else { Fail "config $Config not found"; Show-Summary; return }
     Test-RestrictedAcl (Get-CfgDir 'IDFileDir' 'ids')
     Test-RestrictedAcl (Get-CfgDir 'PasswordDir' 'secure')
+    Test-RestrictedAcl (Get-CfgDir 'BatchDir' 'batches')
     $audit = Get-CfgDir 'AuditDir' 'audit'
     if (Test-Path $audit) { Pass "audit folder $audit" } else { Fail "audit folder $audit missing" }
     $map = Get-Cfg 'MappingFile' (Join-Path $Base 'config\server_mapping.csv')
@@ -171,6 +174,20 @@ function Show-Status([string]$File) {
     if ($bad) { Write-Host 'Needs attention (first 15):'; $bad | Select-Object -First 15 Result, FullNameBefore, Message | Format-Table -AutoSize -Wrap }
 }
 
+function Show-Batches {
+    $d = Get-CfgDir 'BatchDir' 'batches'
+    $files = @(Get-ChildItem -LiteralPath $d -Filter 'BATCH-*.csv' -File -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -notmatch '_' } | Sort-Object Name)
+    if ($files.Count -eq 0) { Write-Host "No batch files in $d"; return }
+    $files | ForEach-Object {
+        $rows = @(Import-Csv -LiteralPath $_.FullName -Encoding UTF8)
+        $inc = @($rows | Where-Object { $_.Include -eq 'Y' }).Count
+        $res = Join-Path $d "$($_.BaseName)_results.csv"
+        $dry = @(Get-ChildItem -LiteralPath $d -Filter "$($_.BaseName)_dryrun_*.csv" -File -ErrorAction SilentlyContinue)
+        $state = if (Test-Path $res) { 'DONE' } elseif ($dry.Count -gt 0) { 'OPEN (dry-run done)' } else { 'OPEN' }
+        [pscustomobject]@{ Batch = $_.BaseName; Rows = $rows.Count; IncludeY = $inc; State = $state; Built = $_.CreationTime }
+    } | Format-Table -AutoSize
+}
+
 function Show-Tail { $f = Get-Latest '*_debug.log'; if (-not $f) { throw 'no debug log yet' }; Write-Host "Following $($f.FullName)"; Get-Content -LiteralPath $f.FullName -Tail 50 -Wait }
 
 function Remove-Secrets {
@@ -195,6 +212,7 @@ switch ($Command) {
     'Init'         { Invoke-Init }
     'Check'        { Invoke-Check }
     'DryRun'       { switch ($Arg) { 'On' { Set-Cfg 'DryRun' '1' } 'Off' { Set-Cfg 'DryRun' '0' } default { throw 'usage: DryRun On|Off' } } }
+    'Batches'      { Show-Batches }
     'Status'       { Show-Status $Arg }
     'Tail'         { Show-Tail }
     'PurgeSecrets' { Remove-Secrets }

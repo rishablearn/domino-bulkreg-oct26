@@ -4,6 +4,9 @@ ids/
 secure/
 cert/
 audit/
+batches/
+BATCH-*.csv
+BATCH-*_summary.txt
 BulkReg_InitialPasswords_*.csv
 BatchReg_DirSync_*.txt
 *_audit.csv

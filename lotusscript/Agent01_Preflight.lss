@@ -19,7 +19,7 @@ Sub Initialize
 	Dim nOK As Long, nWarn As Long, nErr As Long, envErr As Long, envWarn As Long
 	Dim seenShort List As String, seenMail List As String
 	Dim servers List As String, usersView As NotesView, dupCol As NotesDocumentCollection
-	Dim t0 As Double
+	Dim t0 As Double, srvCount List As Long, hk As String, srvText As String
 
 	If Not BR_Init("Preflight") Then Exit Sub
 
@@ -83,6 +83,9 @@ Sub Initialize
 			If servers(LCase$(u.HomeServer)) <> "OK" Then issues = issues & "ERROR:HomeServer unreachable; "
 		End If
 
+		hk = u.HomeServer
+		If hk = "" Then hk = "(none)"
+		If IsElement(srvCount(hk)) Then srvCount(hk) = srvCount(hk) + 1 Else srvCount(hk) = 1
 		If InStr(issues, "ERROR:") > 0 Then
 			res = "ERROR": nErr = nErr + 1
 		ElseIf InStr(issues, "WARN:") > 0 Then
@@ -95,11 +98,15 @@ Sub Initialize
 		Set doc = col.GetNextDocument(doc)
 	Loop
 
+	ForAll c In srvCount
+		srvText = srvText & "   " & ListTag(c) & " : " & c & Chr$(10)
+		BR_Log LVL_INFO, "Candidates for home server " & ListTag(c) & " : " & c
+	End ForAll
 	Dim summary As String
 	summary = "Environment errors=" & envErr & " warnings=" & envWarn & _
 	" | Candidates=" & col.Count & " OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr
 	BR_Close summary
-	BR_Msg summary & Chr$(10) & Chr$(10) & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Candidates per home server:" & Chr$(10) & srvText & Chr$(10) & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
 	CInt(BR_IIf(envErr + nErr > 0, 48, 64))
 	Exit Sub
 ErrH:

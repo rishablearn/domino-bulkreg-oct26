@@ -1,0 +1,403 @@
+'=====================================================================
+' Agent      : 03 | Register Batch (ID -> ID Vault)
+' Trigger    : Action menu selection, Target: None
+'              (Windows Domino Administrator client only)
+' Options    : Option Public / Option Declare / Use "BulkRegCommon"
+'
+' Input      : ONE reviewed batch file  <BatchDir>\BATCH-<id>.csv  built by
+'              Agent 02. Only rows with Include=Y are processed - nothing is
+'              selected from names.nsf at run time, so you always know exactly
+'              who will be registered. HomeServer / OrgUnit / Policy / Groups
+'              are taken from the batch file (your reviewed values).
+'
+' Method     : NotesRegistration.ContactNoteID  (HCL Domino Designer 14.5)
+'              "Used to register users who have existing Person documents
+'               created by syncing Active Directory users into the Domino
+'               directory." Doc must have item objectGUID and NO Certificate.
+'
+' ID Vault   : deposited by the explicit policy (PolicyName) whose Security
+'              Settings assign the ID Vault; verified with IsIDInVault.
+'
+' Safety     : DryRun (default ON); Yes/No summary per home server; LIVE needs
+'              the batch ID typed exactly; objectGUID in the file must match
+'              the Person doc; Certificate re-checked (idempotent);
+'              MaxConsecutiveErrors circuit-breaker; per-user error isolation.
+'
+' Output     : LIVE   <BatchDir>\BATCH-<id>_results.csv  (closes the batch)
+'              DRYRUN <BatchDir>\BATCH-<id>_dryrun_<run>.csv (batch stays open)
+'              plus the usual audit CSV and debug log in AuditDir.
+'=====================================================================
+Option Public
+Option Declare
+Use "BulkRegCommon"
+
+Dim gCertPwd As String
+Dim gPwFile As String
+Dim gMode As String
+
+Sub Initialize
+	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace, ans As Variant
+	Dim db As NotesDatabase, u As BRUser
+	Dim bfile As String, bname As String, bdir As String, fh As Integer, txt As String
+	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
+	Dim nid() As String, gid() As String, hs() As String, ou() As String, po() As String, gr() As String, vs() As String
+	Dim n As Long, i As Long, seen List As String, srvCount List As Long, srvText As String, hk As String
+	Dim nExcluded As Long, maxRows As Long, pauseMs As Long, maxConsec As Long
+	Dim nOK As Long, nFail As Long, nSkip As Long, nConsec As Long, res As String, stopReason As String
+	Dim j As Long, blank As BRUser, summary As String
+
+	If Not BR_Init("Register") Then Exit Sub
+	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
+	maxRows = CfgL("MaxBatchRows", 1000)
+	pauseMs = CfgL("PauseMs", 500)
+	maxConsec = CfgL("MaxConsecutiveErrors", 5)
+	bdir = BR_BatchDir()
+
+	' ---------- choose the batch file ----------
+	Set ws = New NotesUIWorkspace
+	bfile = BR_NewestOpenBatch()
+	If bfile = "" Then
+		BR_Close "No open batch"
+		BR_Msg "There is no open batch file in " & bdir & Chr$(10) & "Run 02 | Build Batch first.", 48
+		Exit Sub
+	End If
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Register batch (" & gMode & ")", "Batch file to register (reviewed):", bfile)
+	If IsEmpty(ans) Then
+		BR_Close "Cancelled"
+		Exit Sub
+	End If
+	bfile = BR_Path(Trim$(CStr(ans)))
+	If Dir$(bfile) = "" Then Error 6001, "Batch file not found: " & bfile
+	bname = StrRightBack(bfile, "\")
+	If LCase$(Right$(bname, 4)) <> ".csv" Or Left$(bname, 6) <> "BATCH-" Or InStr(bname, "_") > 0 Then Error 6002, "Not a batch file (expected BATCH-<id>.csv): " & bname
+	gBatchID = Left$(bname, Len(bname) - 4)
+	If Dir$(bdir & gBatchID & "_results.csv") <> "" Then Error 6003, gBatchID & " is already DONE (" & gBatchID & "_results.csv exists). Build a new batch."
+
+	' ---------- load the approved rows ----------
+	fh = FreeFile()
+	Open bfile For Input As #fh Charset = "UTF-8"
+	isFirst = True
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		If isFirst Then
+			Call BR_CsvHeader(txt, delim, cols)
+			If Not IsElement(cols("include")) Or Not IsElement(cols("noteid")) Or Not IsElement(cols("objectguid")) Or Not IsElement(cols("homeserver")) Then
+				Close #fh
+				Error 6004, "Batch file header is missing Include/NoteID/objectGUID/HomeServer columns"
+			End If
+			isFirst = False
+		ElseIf Trim$(txt) <> "" Then
+			parts = BR_CsvSplit(txt, delim)
+			If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
+				If IsElement(seen(BR_CsvGet(parts, cols, "NoteID"))) Then
+					Close #fh
+					Error 6005, "NoteID " & BR_CsvGet(parts, cols, "NoteID") & " is listed twice in the batch file"
+				End If
+				seen(BR_CsvGet(parts, cols, "NoteID")) = "1"
+				ReDim Preserve nid(n) As String, gid(n) As String, hs(n) As String, ou(n) As String, po(n) As String, gr(n) As String, vs(n) As String
+				nid(n) = BR_CsvGet(parts, cols, "NoteID")
+				gid(n) = BR_CsvGet(parts, cols, "objectGUID")
+				hs(n) = BR_CsvGet(parts, cols, "HomeServer")
+				ou(n) = BR_CsvGet(parts, cols, "OrgUnit")
+				po(n) = BR_CsvGet(parts, cols, "Policy")
+				gr(n) = BR_CsvGet(parts, cols, "Groups")
+				vs(n) = BR_CsvGet(parts, cols, "VaultServer")
+				If vs(n) = "" Then vs(n) = CfgS("VaultServer", "")
+				hk = BR_IIfStr(hs(n) = "", "(none)", hs(n))
+				If IsElement(srvCount(hk)) Then srvCount(hk) = srvCount(hk) + 1 Else srvCount(hk) = 1
+				n = n + 1
+			Else
+				nExcluded = nExcluded + 1
+			End If
+		End If
+	Loop
+	Close #fh
+	BR_Log LVL_INFO, "Batch " & gBatchID & " loaded: Include=Y " & n & ", Include=N " & nExcluded & _
+	" | file " & bfile & " | size " & FileLen(bfile) & " bytes | modified " & FileDateTime(bfile)
+	If n = 0 Then
+		BR_Close "Batch has no Include=Y rows"
+		BR_Msg gBatchID & " has no rows with Include=Y. Nothing to do.", 48
+		Exit Sub
+	End If
+	If n > maxRows Then Error 6006, "Batch has " & n & " rows; MaxBatchRows is " & maxRows
+
+	ForAll c In srvCount
+		srvText = srvText & "   " & ListTag(c) & " : " & c & Chr$(10)
+		BR_Log LVL_INFO, "  home server " & ListTag(c) & " : " & c
+	End ForAll
+
+	' ---------- confirmation ----------
+	If Not ConfirmRun(n, nExcluded, srvText) Then Exit Sub
+	BR_Log LVL_INFO, "Batch " & gBatchID & " approved for " & gMode & " by " & gOperator
+
+	' ---------- results file ----------
+	If gMode = "LIVE" Then
+		gResultsFile = bdir & gBatchID & "_results.csv"
+	Else
+		gResultsFile = bdir & gBatchID & "_dryrun_" & gRunID & ".csv"
+	End If
+	Call BR_AppendLine(gResultsFile, Uchr$(&HFEFF) & BR_AuditHeader())
+	If gMode = "LIVE" And CfgB("WritePasswordFile", True) Then
+		gPwFile = BR_CfgDir("PasswordDir", "secure") & "BulkReg_InitialPasswords_" & gBatchID & "_" & gRunID & ".csv"
+		Call BR_AppendLine(gPwFile, Uchr$(&HFEFF) & "BatchID,FullName,InternetAddress,IDFile,InitialPassword")
+		BR_Log LVL_INFO, "Initial passwords will be written to the restricted file: " & gPwFile
+	End If
+
+	' ---------- register the approved rows ----------
+	Set db = BR_OpenDirectory()
+	For i = 0 To n - 1
+		res = RegisterOne(db, nid(i), gid(i), hs(i), ou(i), po(i), gr(i), vs(i))
+		Select Case Left$(res, 2)
+		Case "OK"
+			nOK = nOK + 1: nConsec = 0
+		Case "SK"
+			nSkip = nSkip + 1
+		Case Else
+			nFail = nFail + 1: nConsec = nConsec + 1
+		End Select
+		Print "BulkReg " & gMode & " " & gBatchID & ": " & (i + 1) & "/" & n & "  ok=" & nOK & " fail=" & nFail & " skip=" & nSkip
+		If nConsec >= maxConsec Then
+			stopReason = "Circuit breaker: " & nConsec & " consecutive failures"
+			BR_Log LVL_ERROR, stopReason
+			Exit For
+		End If
+		If pauseMs > 0 Then Sleep pauseMs / 1000
+	Next
+	' rows not reached (circuit breaker) are recorded so the results file is complete
+	If i < n - 1 Then
+		For j = i + 1 To n - 1
+			u = blank
+			u.NoteID = nid(j): u.GUID = gid(j): u.HomeServer = hs(j): u.OrgUnit = ou(j): u.Policy = po(j)
+			Call BR_Audit(u, gMode, "REGISTER", "NOT_PROCESSED", 0, stopReason & " - will be offered again by the next 02 | Build Batch")
+		Next
+	End If
+	If stopReason = "" Then stopReason = "All batch rows processed"
+
+	gCertPwd = ""
+	summary = gMode & " | " & gBatchID & " | rows=" & n & " ok=" & nOK & " failed=" & nFail & " skipped=" & nSkip & " | " & stopReason
+	BR_Close summary
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Results: " & gResultsFile & Chr$(10) & "Log: " & gDebugFile & _
+	BR_IIfS(gPwFile <> "", Chr$(10) & "Passwords (restricted): " & gPwFile, "") & Chr$(10) & Chr$(10) & _
+	BR_IIfS(gMode = "LIVE", "Batch is now DONE. Run 04 | Verify next.", "Dry run only - the batch is still OPEN. Set DryRun=0 to register it."), _
+	CInt(BR_IIfS(nFail > 0, 48, 64))
+	Exit Sub
+ErrH:
+	gCertPwd = ""
+	BR_Log LVL_ERROR, "Run aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Run aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
+	Exit Sub
+End Sub
+
+'---------------------------------------------------------------------
+' Operator confirmation: summary per home server (Yes/No); for LIVE the
+' batch ID must be typed exactly; certifier password if UseCA=0.
+'---------------------------------------------------------------------
+Function ConfirmRun(n As Long, nExcluded As Long, srvText As String) As Boolean
+	Dim ws As NotesUIWorkspace, ans As Variant
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_YESNO, "BulkReg - " & gMode & " - " & gBatchID, _
+	"Mode: " & gMode & Chr$(10) & _
+	"Batch: " & gBatchID & Chr$(10) & _
+	"Users to register (Include=Y): " & n & "    excluded (Include=N): " & nExcluded & Chr$(10) & _
+	"Per home server:" & Chr$(10) & srvText & _
+	"Registration server: " & CfgS("RegistrationServer", "") & Chr$(10) & _
+	"Certification: " & BR_CertText() & Chr$(10) & _
+	"Vault check: per batch row (default " & CfgS("VaultServer", "") & ")" & Chr$(10) & Chr$(10) & "Continue?")
+	If ans <> 1 Then
+		BR_Close "Cancelled by operator"
+		Exit Function
+	End If
+	If gMode = "LIVE" Then
+		ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - LIVE confirmation", _
+		"LIVE mode will create Notes IDs for " & n & " users." & Chr$(10) & _
+		"Type the batch ID to approve:  " & gBatchID, "")
+		If IsEmpty(ans) Then ans = ""
+		If CStr(ans) <> gBatchID Then
+			BR_Log LVL_WARN, "LIVE run not approved (batch ID not typed correctly) - aborted"
+			BR_Close "Not approved"
+			Exit Function
+		End If
+		If Not CfgB("UseCA", True) Then
+			ans = ws.Prompt(PROMPT_PASSWORD, "BulkReg", "Certifier ID password for " & BR_CfgFile("CertifierIDFile", "") & ":")
+			If IsEmpty(ans) Then ans = ""
+			gCertPwd = CStr(ans)
+			If gCertPwd = "" Then
+				BR_Close "No certifier password"
+				Exit Function
+			End If
+		End If
+	End If
+	ConfirmRun = True
+End Function
+
+'---------------------------------------------------------------------
+' Registers ONE user. Returns "OK...", "SKIP..." or "FAIL...".
+' Values come from the reviewed batch file. Every outcome writes an audit
+' row (and a results row). Errors never stop the batch.
+'---------------------------------------------------------------------
+Function RegisterOne(db As NotesDatabase, noteID As String, bGuid As String, bHome As String, bOU As String, bPolicy As String, bGroups As String, bVault As String) As String
+	Dim doc As NotesDocument, reg As NotesRegistration, u As BRUser
+	Dim t0 As Double, issues As String, userPwd As String, mailFile As String
+	Dim stage As String, emsg As String, homeCanon As String, nn As NotesName
+	t0 = Timer
+	On Error GoTo ErrH
+
+	stage = "load"
+	Set doc = db.GetDocumentByID(noteID)
+	If doc Is Nothing Then
+		u.NoteID = noteID
+		Call BR_Audit(u, gMode, "REGISTER", "SKIPPED", BR_Elapsed(t0), "Document no longer exists")
+		RegisterOne = "SKIP:gone"
+		Exit Function
+	End If
+	Call BR_ReadUser(doc, u)
+
+	' the batch row must still describe this AD user
+	If u.GUID <> bGuid Then
+		Call BR_Audit(u, gMode, "REGISTER", "SKIPPED", BR_Elapsed(t0), "objectGUID in batch (" & bGuid & ") does not match Person doc - rebuild the batch")
+		BR_Log LVL_WARN, "SKIP objectGUID mismatch: " & u.FullNameBefore
+		RegisterOne = "SKIP:guid"
+		Exit Function
+	End If
+	' reviewed values from the batch file are authoritative
+	If bHome <> u.HomeServer Or bOU <> u.OrgUnit Or bPolicy <> u.Policy Or bGroups <> u.Groups Then
+		BR_Log LVL_INFO, "Batch override for " & u.FullNameBefore & ": home=" & bHome & " ou=" & bOU & " policy=" & bPolicy & " groups=" & bGroups
+	End If
+	u.HomeServer = bHome: u.OrgUnit = bOU: u.Policy = bPolicy: u.Groups = bGroups: u.VaultServer = bVault
+	u.MapRule = "batch " & gBatchID
+
+	' idempotency: fresh re-check (someone may have registered it meanwhile)
+	If BR_IsRegistered(doc) Then
+		Call BR_Audit(u, gMode, "REGISTER", "SKIPPED", BR_Elapsed(t0), "Already has Certificate (registered)")
+		BR_Log LVL_INFO, "SKIP already registered: " & u.FullNameBefore
+		RegisterOne = "SKIP:registered"
+		Exit Function
+	End If
+
+	stage = "validate"
+	issues = BR_Validate(u)
+	If InStr(issues, "ERROR:") > 0 Then
+		Call BR_Audit(u, gMode, "REGISTER", "FAILED_VALIDATION", BR_Elapsed(t0), issues)
+		BR_Log LVL_ERROR, "VALIDATION " & u.FullNameBefore & " : " & issues
+		RegisterOne = "FAIL:validation"
+		Exit Function
+	End If
+
+	BR_Log LVL_DEBUG, "Prepared " & u.FullNameBefore & " noteid=" & u.NoteID & " guid=" & u.GUID & _
+	" home=" & u.HomeServer & " ou=" & u.OrgUnit & " policy=" & u.Policy & " groups=" & u.Groups & _
+	" map=" & u.MapRule & " mailsys=" & u.MailSystemBefore & " idfile=" & u.IDFile
+
+	If gMode = "DRYRUN" Then
+		Call BR_Audit(u, gMode, "REGISTER", "WOULD_REGISTER", BR_Elapsed(t0), issues)
+		BR_Log LVL_INFO, "DRYRUN would register " & u.FullNameBefore & " -> " & u.HomeServer & " (" & u.Policy & ")"
+		RegisterOne = "OK:dryrun"
+		Exit Function
+	End If
+
+	' ---------- build registration ----------
+	stage = "configure"
+	Set reg = New NotesRegistration
+	reg.ContactNoteID = u.NoteID                       ' register the existing DirSync Person doc
+	reg.RegistrationServer = CfgS("RegistrationServer", "")
+	If CfgB("UseCA", True) Then
+		reg.UseCertificateAuthority = True
+		reg.CertifierName = CfgS("CertifierName", "")
+	Else
+		reg.CertifierIDFile = BR_CfgFile("CertifierIDFile", "")
+	End If
+	reg.CreateMailDb = CfgB("CreateMailDb", False)
+	reg.Expiration = Today + CfgL("ExpirationDays", 730)
+	reg.IDType = ID_HIERARCHICAL
+	reg.MinPasswordLength = CInt(CfgL("MinPasswordLength", 8))
+	reg.IsNorthAmerican = CfgB("IsNorthAmerican", True)
+	reg.OrgUnit = u.OrgUnit
+	reg.RegistrationLog = CfgS("RegistrationLog", "log.nsf")
+	reg.UpdateAddressBook = True
+	reg.StoreIDInAddressBook = CfgB("StoreIDInAddressBook", False)
+	reg.EnforceUniqueShortName = CfgB("EnforceUniqueShortName", True)
+	reg.SynchInternetPassword = CfgB("SyncInternetPassword", False)
+	If u.Policy <> "" Then reg.PolicyName = u.Policy
+	If u.ShortName <> "" Then reg.ShortName = u.ShortName
+	If u.InternetAddress <> "" Then reg.MailInternetAddress = u.InternetAddress
+	If u.Groups <> "" Then reg.GroupList = Split(u.Groups, ",")
+
+	' never overwrite an ID file left by an earlier (failed) attempt
+	If Dir$(u.IDFile) <> "" Then
+		BR_Log LVL_WARN, "ID file exists from a previous attempt, using new name: " & u.IDFile
+		u.IDFile = Left$(u.IDFile, Len(u.IDFile) - 3) & "_" & gRunID & ".id"
+	End If
+
+	If reg.CreateMailDb Then mailFile = "mail" & gSep & BR_SafeFile(u) & ".nsf" Else mailFile = ""
+	userPwd = BR_GenPassword(CInt(CfgL("InitialPasswordLength", 16)))
+
+	' RegisterNewUser expects the CANONICAL server name (CN=Mail01/O=ORG)
+	Set nn = New NotesName(u.HomeServer)
+	homeCanon = nn.Canonical
+
+	' ---------- register ----------
+	stage = "RegisterNewUser"
+	BR_Log LVL_INFO, "REGISTER " & u.FullNameBefore & " -> " & u.HomeServer
+	Call reg.RegisterNewUser(u.LastName, u.IDFile, homeCanon, u.FirstName, u.MiddleInitial, _
+	gCertPwd, "", "BulkReg " & gRunID & " objectGUID=" & u.GUID, mailFile, "", userPwd, NOTES_DESKTOP_CLIENT)
+
+	' ---------- verify ----------
+	stage = "verify"
+	Delete doc
+	Set doc = db.GetDocumentByID(noteID)
+	If doc Is Nothing Then Error 4001, "Person document not found after registration"
+	u.FullNameAfter = BR_Item(doc, "FullName")
+	u.MailSystemAfter = BR_Item(doc, "MailSystem")
+	If Not BR_IsRegistered(doc) Then Error 4002, "RegisterNewUser returned but Person doc has no Certificate"
+
+	' keep the account as 'Other Internet Mail' / no mail file if requested
+	stage = "preserveMail"
+	If CfgB("PreserveMailSystem", True) And Not reg.CreateMailDb Then
+		If u.MailSystemAfter <> u.MailSystemBefore Or (u.MailFileBefore = "" And BR_Item(doc, "MailFile") <> "") Then
+			Call doc.ReplaceItemValue("MailSystem", u.MailSystemBefore)
+			If u.MailFileBefore = "" Then Call doc.ReplaceItemValue("MailFile", "")
+			Call doc.Save(True, False)
+			BR_Log LVL_INFO, "Restored MailSystem '" & u.MailSystemAfter & "' -> '" & u.MailSystemBefore & "' for " & u.FullNameAfter
+			u.MailSystemAfter = u.MailSystemBefore
+		End If
+	End If
+
+	stage = "vault"
+	If CfgB("VaultCheckAfterReg", True) Then u.VaultStatus = BR_VaultStatus(u.FullNameAfter, u.VaultServer) Else u.VaultStatus = "NOT_CHECKED"
+
+	If gPwFile <> "" Then
+		Call BR_AppendLine(gPwFile, Q(gBatchID) & "," & Q(u.FullNameAfter) & "," & Q(u.InternetAddress) & "," & Q(u.IDFile) & "," & Q(userPwd))
+	End If
+	userPwd = ""
+
+	If u.VaultStatus = "IN_VAULT" Or u.VaultStatus = "NOT_CHECKED" Then
+		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED", BR_Elapsed(t0), issues)
+		BR_Log LVL_INFO, "OK " & u.FullNameAfter & " vault=" & u.VaultStatus & " (" & Format$(BR_Elapsed(t0), "0.0") & "s)"
+	Else
+		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED_VAULT_PENDING", BR_Elapsed(t0), issues & " Vault: " & u.VaultStatus & " - re-check with Agent 04")
+		BR_Log LVL_WARN, "REGISTERED but vault=" & u.VaultStatus & " : " & u.FullNameAfter & " (check policy/ID Vault; re-run Agent 04)"
+	End If
+	RegisterOne = "OK"
+	Exit Function
+
+ErrH:
+	userPwd = ""
+	emsg = "stage=" & stage & " err=" & Err & " " & Error$ & " (line " & Erl & ")"
+	BR_Log LVL_ERROR, "FAIL " & u.FullNameBefore & " : " & emsg
+	Call BR_Audit(u, gMode, "REGISTER", "FAILED", BR_Elapsed(t0), emsg)
+	RegisterOne = "FAIL:" & stage
+	Exit Function
+End Function
+
+Function BR_CertText() As String
+	If CfgB("UseCA", True) Then
+		BR_CertText = "Domino CA - " & CfgS("CertifierName", "")
+	Else
+		BR_CertText = "Certifier ID - " & CfgS("CertifierIDFile", "")
+	End If
+End Function
+
+Function BR_IIfS(c As Boolean, a As Variant, b As Variant) As Variant
+	If c Then BR_IIfS = a Else BR_IIfS = b
+End Function
