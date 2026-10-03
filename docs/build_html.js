@@ -28,7 +28,7 @@ for (const b of C) {
     case "h3": html += `<h4>${inl(b.text)}</h4>`; break;
     case "p": html += `<p>${inl(b.text)}</p>`; break;
     case "bullets": html += "<ul>" + b.items.map((i) => `<li>${inl(i)}</li>`).join("") + "</ul>"; break;
-    case "numbers": html += "<ol>" + b.items.map((i) => `<li>${inl(i)}</li>`).join("") + "</ol>"; break;
+    case "numbers": html += (b.start > 1 ? `<ol start="${b.start}">` : "<ol>") + b.items.map((i) => `<li>${inl(i)}</li>`).join("") + "</ol>"; break;
     case "table": html += `<div class="tw"><table><thead><tr>${b.head.map((h) => `<th>${inl(h)}</th>`).join("")}</tr></thead><tbody>` +
       b.rows.map((r) => "<tr>" + r.map((c) => `<td>${inl(c)}</td>`).join("") + "</tr>").join("") + "</tbody></table></div>"; break;
     case "code": html += `<pre><code>${esc(b.text)}</code></pre>`; break;

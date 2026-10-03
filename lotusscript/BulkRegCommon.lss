@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 1.5.0
+' Script Library : BulkRegCommon            Version 1.6.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_ExportToBatchRegFile,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "1.5.0"
+Public Const BR_VERSION = "1.6.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -562,6 +562,27 @@ ErrH:
 	Exit Sub
 End Sub
 
+' Highest folder number (mail1..mailN) needed on a server to place <users> more
+' mail files, filling existing folders first. Used by Preflight for prerequisite B4.
+Function BR_MailFoldersNeeded(server As String, users As Long, names List As String, counts List As Long, scanned List As String) As Integer
+	Dim sk As String, prefix As String, limit As Long, k As Integer, remaining As Long, used As Long
+	Call BR_ScanServerMail(server, names, counts, scanned)
+	sk = LCase$(BR_SrvAbbr(server))
+	prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
+	limit = CfgL("MailFilesPerFolder", 1000)
+	If limit < 1 Then limit = 1000
+	remaining = users
+	k = 0
+	Do While remaining > 0 Or k = 0
+		k = k + 1
+		used = 0
+		If IsElement(counts(sk & "!!" & prefix & CStr(k))) Then used = counts(sk & "!!" & prefix & CStr(k))
+		If used < limit Then remaining = remaining - (limit - used)
+		If k > 999 Then Exit Do
+	Loop
+	BR_MailFoldersNeeded = k
+End Function
+
 ' Mail files already referenced by Person documents (MailServer + MailFile)
 Sub BR_ScanDirectoryMail(db As NotesDatabase, names List As String)
 	On Error GoTo ErrH
@@ -619,6 +640,12 @@ Function BR_AllocMailFile(u As BRUser, names List As String, counts List As Long
 			If counts(sk & "!!" & prefix & CStr(k)) < limit Then Exit Do
 			k = k + 1
 		Loop
+		' MailFolderMax = number of folders pre-created on the servers (prerequisite B4)
+		If CfgL("MailFolderMax", 0) > 0 And k > CfgL("MailFolderMax", 0) Then
+			u.MailFileNote = "folders " & prefix & "1.." & prefix & CfgL("MailFolderMax", 0) & " are full"
+			BR_AllocMailFile = "ERROR:All pre-created mail folders (" & prefix & "1.." & prefix & CfgL("MailFolderMax", 0) & ") on " & u.HomeServer & " are full - create " & prefix & CStr(k) & " and raise MailFolderMax; "
+			Exit Function
+		End If
 		folder = prefix & CStr(k)
 	Else
 		folder = BR_MailSingleDir()

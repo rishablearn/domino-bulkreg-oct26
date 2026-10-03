@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "2.4",
+  version: "2.5",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -18,7 +18,9 @@ const h2 = (t) => C.push({ t: "h2", text: t });
 const h3 = (t) => C.push({ t: "h3", text: t });
 const p = (t) => C.push({ t: "p", text: t });
 const ul = (...items) => C.push({ t: "bullets", items });
-const ol = (...items) => C.push({ t: "numbers", items });
+let olCount = 0;
+const ol = (...items) => { C.push({ t: "numbers", items }); olCount = items.length; };
+const olc = (...items) => { C.push({ t: "numbers", items, start: olCount + 1 }); olCount += items.length; };  // continue numbering
 const tbl = (head, rows, widths) => C.push({ t: "table", head, rows, widths });
 const code = (text) => C.push({ t: "code", text });
 const note = (text) => C.push({ t: "note", text });
@@ -36,11 +38,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 1.5.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 1.6.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["2.5", "**Prerequisite: pre-create the numbered mail folders** (mail1…mailN, one per 1000 users) on every home server (B4). Preflight calculates the folders needed per server and writes the create commands. New `MailFolderMax`: Build Batch never assigns a folder above the number you created."],
   ["2.4", "Mail file **naming = last name** (configurable), **uniqueness** checked against all mail folders on the home server, Person documents, open batches and the batch itself (clash → smith2.nsf or ERROR), **numbered folders** mail1, mail2… with max 1000 mail files each. MailFileNote recorded in batch file, summary, results and audit."],
   ["2.3", "**Every registered user now gets a Domino mail file** on the home server (MailFile column in the batch, reviewable). CreateMailDb / PreserveMailSystem removed. Mail file settings (folder, template, ACL manager, quota, full-text index), existence checks before and after registration, and mail file status in Verify."],
   ["2.1", "Name formats: servers in canonical (CN=DominoADMail/O=Demo) or abbreviated (DominoADMail/Demo) form, both accepted by the code. **Organizational policies** (*/Demo, */Sales/Demo) supported alongside explicit policies (B8 Option B, OrgPolicyAssignsVault, '-' in the mapping). Consistent 'Demo' examples."],
@@ -149,6 +152,7 @@ tbl(["#", "Item", "Example", "Your value"], [
   ["10", "Optional organizational unit (OU) per group of users", "EMEA", ""],
   ["11", "Optional groups to add new users to", "BR-EMEA", ""],
   ["11a", "Mail file naming and folders (D3a)", "last name; mail1, mail2 … max 1000 each → mail1\\smith.nsf", ""],
+  ["11d", "Users per home server and number of mail folders to create (1 per 1000 users)", "DominoADMail/Demo: 5000 users → 5 folders (mail1–mail5)", ""],
   ["11b", "Mail template available on every home server", "the template your mail users use (e.g. mail12.ntf)", ""],
   ["11c", "Optional: Manager of new mail files, quota (MB)", "LocalDomainAdmins, 2048", ""],
   ["12", "Admin ID that will run BulkReg", "Admin User/Demo", ""],
@@ -201,6 +205,33 @@ ol(
   "Click **OK** to save the ACL.",
   "Wait for the ACL change to reach the server you work on. It is immediate on the registration server itself."
 );
+h3("Create the numbered mail folders on every home server");
+p("Create the mail subfolders in advance on every home server, so registration never depends on Domino creating a folder. You need **one folder per 1000 users** (`MailFilesPerFolder`) on each server:");
+tbl(["Users on that home server", "Folders to create", "Names"], [
+  ["1 – 1,000", "1", "mail1"],
+  ["5,000", "5", "mail1 … mail5"],
+  ["10,000", "10", "mail1 … mail10"],
+  ["N", "N ÷ 1000, rounded up", "mail1 … mailN"],
+], [3200, 2600, 3560]);
+note("If the folders already contain mail files, you may need more. After B11/B12, Preflight (C1) calculates the exact number per server, counting the existing files, and writes the commands to `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt`. Create any extra folders it lists.");
+ol(
+  "Find the Domino **data directory** of the home server. It is the `Directory=` setting in that server's notes.ini, for example `D:\\Domino\\Data` (Windows) or `/local/notesdata` (Linux). In Domino Administrator, select the server; the **Files** tab shows its contents.",
+  "Sign in to the server's operating system as an administrator (Windows) or as root (Linux).",
+  "Create the folders. Replace `<DataDir>` and the number (here 5):"
+);
+code(`Windows server (PowerShell as Administrator):
+  1..5 | ForEach-Object { New-Item -ItemType Directory -Force "<DataDir>\\mail$_" }
+
+Linux server (as root; notes = the OS account that runs Domino):
+  for i in $(seq 1 5); do mkdir -p <DataDir>/mail$i; done
+  chown notes:notes <DataDir>/mail*
+  chmod 755 <DataDir>/mail*`);
+olc(
+  "On Windows, make sure the account that runs the Domino service has **Modify** rights on the new folders. They normally inherit from the data directory.",
+  "In Domino Administrator, select the server and open the **Files** tab. Press **F9** to refresh. *Result:* mail1 … mail5 appear in the folder list.",
+  "Repeat for every home server, using its own number of folders.",
+  "Write the number of folders you created into the worksheet (row 11d). It goes into `MailFolderMax` in B11. Use the **lowest** number created on any server, or create the same number on all servers."
+);
 h3("Allow your admin ID to create mail files on every home server");
 ol(
   "In Domino Administrator, click the **Configuration** tab and open **Server > All Server Documents**.",
@@ -209,7 +240,7 @@ ol(
   "Click **Save & Close**. Repeat for every home server.",
   "Check that the mail template from worksheet row 11b exists on every home server (**Files** tab of each server, filter on .ntf)."
 );
-done("Your admin ID has Editor access with [UserCreator] and [UserModifier] (and the Policy roles if needed) in names.nsf, can create databases on every home server, and the mail template exists on each of them.");
+done("Your admin ID has Editor access with [UserCreator] and [UserModifier] (and the Policy roles if needed) in names.nsf. The numbered mail folders exist on every home server. Your admin ID can create databases there, and the mail template exists on each of them.");
 
 // ---------- B5
 h2("B5 Set up certification");
@@ -319,7 +350,7 @@ code(`$b = 'C:\\BulkReg'
 'batches','ids','secure','cert' | ForEach-Object {
   icacls "$b\\$_" /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' "\${env:USERDOMAIN}\\\${env:USERNAME}:(OI)(CI)F"
 }`);
-ol(
+olc(
   "To check, type `icacls C:\\BulkReg\\ids` and press Enter. *Result:* only BUILTIN\\Administrators, NT AUTHORITY\\SYSTEM and your account are listed."
 );
 note("Explorer alternative: create the folders, then for batches, ids, secure and cert open **Properties > Security > Advanced > Disable inheritance > Remove all inherited permissions**, and add only Administrators, SYSTEM and your account. Helper alternative: `bulkreg.cmd Init` after B10.");
@@ -367,6 +398,7 @@ tbl(["Key", "Enter", "From"], [
   ["MailFileNaming", "`LASTNAME` (smith.nsf), `FIRSTINITIAL_LASTNAME` (jsmith.nsf) or `SHORTNAME`", "Worksheet 11a"],
   ["MailFileCollision", "`SUFFIX` (smith2.nsf …) or `ERROR` (row excluded)", "Worksheet 11a"],
   ["MailFolderMode / MailFolderPrefix / MailFilesPerFolder", "`NUMBERED` / `mail` / `1000` → mail1, mail2 … (or `SINGLE` with MailFileDir)", "Worksheet 11a"],
+  ["MailFolderMax", "The number of folders you created in B4, e.g. `5` for mail1–mail5", "Worksheet 11d"],
   ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default)", "Worksheet 11b"],
   ["MailACLManager / MailQuotaSizeLimit", "Optional: Manager of each new mail file; quota in MB (0 = none)", "Worksheet 11c"],
   ["LogServer / LogDb", "Leave empty unless you create the log database in B15", "B15"],
@@ -536,9 +568,10 @@ ol(
   "Note the totals: candidates, OK / WARN / ERROR, and **candidates per home server**.",
   "Open the newest `C:\\BulkReg\\audit\\BulkReg_Preflight_*_audit.csv` (D4 lists the columns).",
   "For each **ERROR** row, read the Message column. Fix the cause in Active Directory, for example a missing last name or a duplicate email address, and let DirSync synchronise.",
-  "If a user lands on the wrong server (HomeServer / MapRule columns), correct server_mapping.csv (B12) and run Preflight again."
+  "If a user lands on the wrong server (HomeServer / MapRule columns), correct server_mapping.csv (B12) and run Preflight again.",
+  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt`. For each home server it lists the users and the folders needed (for example `mail1 .. mail5`), with the create commands. Create any folder that does not exist yet (B4), and make sure `MailFolderMax` is high enough. Preflight warns if it is too low."
 );
-done("0 environment errors, and every user lands on the intended home server.");
+done("0 environment errors, every user lands on the intended home server, and every mail folder listed in the _mailfolders.txt file exists on its server.");
 
 h2("C2 Build a batch");
 meta("Domino administrator", "bulkreg.nsf", "writes a batch file; nothing in Domino");
@@ -712,6 +745,7 @@ tbl(["Key", "Default", "Meaning"], [
   ["ExpirationDays / MinPasswordLength / InitialPasswordLength", "730 / 8 / 16", "Certificate validity; password strength (0–16); initial password length"],
   ["MailFileNaming / MailFileCollision", "LASTNAME / SUFFIX", "Mail file name rule; what to do when the name is taken"],
   ["MailFolderMode / MailFolderPrefix / MailFilesPerFolder / MailFileDir", "NUMBERED / mail / 1000 / mail", "mail1, mail2 … with max files per folder; SINGLE uses MailFileDir"],
+  ["MailFolderMax", "5", "Number of pre-created folders (B4); no folder above it is assigned (0 = no limit)"],
   ["MailTemplate", "(empty)", "Mail template (empty = registration default)"],
   ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Optional mail file settings (quota in MB)"],
   ["CheckMailFileExists", "1", "Refuse users whose mail file already exists on the home server"],
@@ -745,6 +779,7 @@ tbl(["Situation on DominoADMail/Demo", "Batch of 500 users gets"], [
   ["mail1 and mail2 full, mail3 has 300", "500 users → mail3 (now 800)"],
   ["No mail folders yet", "500 users → mail1"],
 ], [4200, 5160]);
+p("The folders must already exist on the servers (prerequisite B4). `MailFolderMax` is the number of folders you created. If a user would need a folder above it (for example mail6 when you created mail1–mail5), Build Batch marks the row **ERROR: all pre-created mail folders are full** instead of creating a new folder. Create the next folder, raise MailFolderMax and rebuild.");
 p("With `MailFolderMode=SINGLE`, all mail files go into `MailFileDir` (for example `mail`).");
 h3("4. Where every decision is recorded");
 tbl(["Record", "Content"], [
@@ -826,6 +861,8 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["ERROR: Policy looks like a server/canonical name", "A server name (CN=…/O=…) was put in the Policy column", "Put the policy name (*/Name) or `-`"],
   ["ERROR: Policy '*'", "The organization-wide policy was entered", "Leave Policy empty: `*` applies automatically"],
   ["ERROR: MailFile … already exists on …", "A mail file with that name is on the home server (another user, or a leftover)", "Edit MailFile in the batch (e.g. mail\\jsmith2.nsf), or remove the old file after checking it"],
+  ["ERROR: All pre-created mail folders … are full", "More users than the folders you created can hold", "Create the next folder(s) on that server (B4), raise MailFolderMax, rebuild the batch"],
+  ["Preflight: MailFolderMax too low", "The users need more folders than MailFolderMax", "Create the folders listed in _mailfolders.txt and raise MailFolderMax"],
   ["WARN: mail file renamed", "The last-name file already exists on that server, in the directory or in an open batch", "Normal with SUFFIX. Review the new name, or edit MailFile"],
   ["\"Could not scan <server>\" in the debug log", "No access to the server's database list", "Uniqueness then uses the directory and the direct file check. Fix access and rebuild for full checking."],
   ["MAILFILE_PENDING / MAILFILE_MISSING", "Mail file creation queued (Administration Process) or failed: template missing, no Create databases right, server unreachable", "Check admin4.nsf on the home server, B4 rights and template; re-run Verify"],
@@ -859,7 +896,7 @@ tbl(["#", "Item", "How to confirm"], [
   ["2", "RegisterNewUser parameters follow HCL's ContactNoteID example and the 14.5 syntax", "Compiles and the pilot passes"],
   ["3", "UseCA=1 passes an empty certifier password", "The pilot registers successfully"],
   ["4", "PolicyName is passed as stored (`*/name`)", "Policy synopsis of the pilot users (C5)"],
-  ["5a", "Domino creating a new subfolder (mail2, mail3 …) when the first mail file is created in it", "Pilot with an empty folder. If not created, create the folders on the home servers first."],
+  ["5a", "Numbered mail folders must exist before registration", "Pre-created in B4 and enforced by MailFolderMax; Preflight lists what is needed"],
   ["5", "Mail file creation through NotesRegistration (immediate or via the Administration Process) and the DirSync mapping of mail fields", "Mail file present after the pilot and Person document unchanged after the next DirSync"],
   ["6", "The Agent Log template file name differs between releases (alog4.ntf / alog.ntf)", "B15"],
   ["7", "bulkreg.ps1 was reviewed but not executed", "Run `bulkreg.cmd Check` once"],

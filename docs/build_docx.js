@@ -95,7 +95,7 @@ for (const b of C) {
     case "bullets": b.items.forEach((it) => body.push(new Paragraph({ numbering: { reference: "bullets", level: 0 }, children: runs(it) }))); break;
     case "numbers": {
       const ref = "num" + (++listId);
-      numberingConfigs.push({ reference: ref, levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1.", alignment: AlignmentType.LEFT, style: { paragraph: { indent: { left: 540, hanging: 360 } } } }] });
+      numberingConfigs.push({ reference: ref, levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1.", start: b.start || 1, alignment: AlignmentType.LEFT, style: { paragraph: { indent: { left: 540, hanging: 360 } } } }] });
       b.items.forEach((it) => body.push(new Paragraph({ numbering: { reference: ref, level: 0 }, children: runs(it) })));
       break;
     }

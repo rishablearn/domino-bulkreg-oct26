@@ -106,15 +106,40 @@ Sub Initialize
 		Set doc = col.GetNextDocument(doc)
 	Loop
 
+	' ---------- mail folders to pre-create (prerequisite B4) ----------
+	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String
+	Dim need As Integer, fldFile As String, prefix As String, fmax As Long
+	prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
+	fmax = CfgL("MailFolderMax", 0)
+	fldFile = BR_CfgDir("AuditDir", "audit") & "BulkReg_Preflight_" & gRunID & "_mailfolders.txt"
+	If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" Then
+		Call BR_AppendLine(fldFile, "BulkReg " & BR_VERSION & " - mail folders to create on each home server (" & CfgL("MailFilesPerFolder", 1000) & " mail files per folder)")
+		Call BR_AppendLine(fldFile, "Create them in the Domino DATA directory of each server BEFORE the first batch (guide B4).")
+		Call BR_AppendLine(fldFile, "")
+	End If
 	ForAll c In srvCount
-		srvText = srvText & "   " & ListTag(c) & " : " & c & Chr$(10)
+		srvText = srvText & "   " & ListTag(c) & " : " & c
 		BR_Log LVL_INFO, "Candidates for home server " & ListTag(c) & " : " & c
+		If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" And ListTag(c) <> "(none)" Then
+			need = BR_MailFoldersNeeded(ListTag(c), CLng(c), mfNames, mfCounts, mfScanned)
+			srvText = srvText & "  -> needs " & prefix & "1.." & prefix & need
+			BR_Log LVL_INFO, "Mail folders needed on " & ListTag(c) & ": " & prefix & "1.." & prefix & need
+			Call BR_AppendLine(fldFile, ListTag(c) & " : " & c & " users -> folders " & prefix & "1 .. " & prefix & need)
+			Call BR_AppendLine(fldFile, "  Windows server (PowerShell):  1.." & need & " | % { New-Item -ItemType Directory -Force ""<DataDir>\" & prefix & "$_"" }")
+			Call BR_AppendLine(fldFile, "  Linux server (as root):       for i in $(seq 1 " & need & "); do mkdir -p <DataDir>/" & prefix & "$i; done; chown <notes>:<notes> <DataDir>/" & prefix & "*")
+			If fmax > 0 And need > fmax Then
+				BR_Log LVL_WARN, "MailFolderMax=" & fmax & " but " & ListTag(c) & " needs " & need & " folders - create them and raise MailFolderMax"
+				srvText = srvText & "  (MailFolderMax=" & fmax & " too low!)"
+				envWarn = envWarn + 1
+			End If
+		End If
+		srvText = srvText & Chr$(10)
 	End ForAll
 	Dim summary As String
 	summary = "Environment errors=" & envErr & " warnings=" & envWarn & _
 	" | Candidates=" & col.Count & " OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr
 	BR_Close summary
-	BR_Msg summary & Chr$(10) & Chr$(10) & "Candidates per home server:" & Chr$(10) & srvText & Chr$(10) & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Candidates per home server:" & Chr$(10) & srvText & Chr$(10) & BR_IIf(UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED", "Mail folders to create: " & fldFile & Chr$(10), "") & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
 	CInt(BR_IIf(envErr + nErr > 0, 48, 64))
 	Exit Sub
 ErrH:
