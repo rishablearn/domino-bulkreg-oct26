@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 1.3.0
+' Script Library : BulkRegCommon            Version 1.4.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_ExportToBatchRegFile,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "1.3.0"
+Public Const BR_VERSION = "1.4.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -54,6 +54,8 @@ Public Type BRUser
 	MailSystemBefore As String
 	MailFileBefore As String
 	MailSystemAfter As String
+	MailFile As String          ' Domino mail file to create, relative to the data dir (mail\jsmith.nsf)
+	MailFileStatus As String    ' MAILFILE_OK / MAILFILE_MISSING / ...
 	HomeServer As String
 	OrgUnit As String
 	Policy As String
@@ -85,6 +87,8 @@ Public Const gSep = "\"                         ' Windows path separator
 Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
 Public gBase As String
 Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes.ini
+' columns of a batch file (BATCH-<id>.csv) written by Agent 02, read by Agents 03/04
+Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,OrgUnit,Policy,Groups,VaultServer,MapRule,Check,Issues"
 
 '#####################################################################
 ' ### STEP C: paste everything from here to the END of the file AFTER the
@@ -438,7 +442,48 @@ Sub BR_ReadUser(doc As NotesDocument, u As BRUser)
 	u.MailFileBefore = BR_Item(doc, "MailFile")
 	Call BR_ResolveMapping(doc, u)
 	u.IDFile = BR_CfgDir("IDFileDir", "ids") & BR_SafeFile(u) & ".id"
+	u.MailFile = BR_MailFilePath(u)
 End Sub
+
+'=====================================================================
+' MAIL FILES  - every registered user gets a Domino mail file on the
+'               home server: <MailFileDir>\<name>.nsf  (e.g. mail\jsmith.nsf)
+'=====================================================================
+' File name without folder/extension: ShortName, else first initial + last name
+Function BR_MailBase(u As BRUser) As String
+	Dim src As String, i As Integer, c As String, out As String
+	src = u.ShortName
+	If src = "" Then src = Left$(u.FirstName, 1) & u.LastName
+	For i = 1 To Len(src)
+		c = Mid$(src, i, 1)
+		If c Like "[A-Za-z0-9_-]" Then out = out & c
+	Next
+	If out = "" Then out = "user" & u.NoteID
+	BR_MailBase = LCase$(out)
+End Function
+
+Function BR_MailFilePath(u As BRUser) As String
+	Dim d As String
+	d = Trim$(BR_Path(CfgS("MailFileDir", "mail")))
+	Do While Right$(d, 1) = "\"
+		d = Left$(d, Len(d) - 1)
+	Loop
+	If d = "" Then BR_MailFilePath = BR_MailBase(u) & ".nsf" Else BR_MailFilePath = d & "\" & BR_MailBase(u) & ".nsf"
+End Function
+
+' True when a database already exists at <path> on <server> (and can be opened)
+Function BR_MailFileExists(server As String, path As String) As Boolean
+	Dim db As NotesDatabase
+	On Error GoTo ErrH
+	Set db = gSession.GetDatabase(server, path, False)
+	If db Is Nothing Then Exit Function
+	If Not db.IsOpen Then Call db.Open("", "")
+	BR_MailFileExists = db.IsOpen
+	Exit Function
+ErrH:
+	BR_MailFileExists = False
+	Exit Function
+End Function
 
 ' Basic data-quality validation; returns "" when OK, otherwise issues list
 Function BR_Validate(u As BRUser) As String
@@ -447,6 +492,11 @@ Function BR_Validate(u As BRUser) As String
 	If u.FirstName = "" Then s = s & "WARN:FirstName missing; "
 	If u.InternetAddress = "" Then s = s & "WARN:InternetAddress missing; "
 	If u.HomeServer = "" Then s = s & "ERROR:No HomeServer (mapping/default); "
+	If u.MailFile = "" Then
+		s = s & "ERROR:No MailFile; "
+	ElseIf LCase$(Right$(u.MailFile, 4)) <> ".nsf" Or InStr(u.MailFile, ":") > 0 Or Left$(u.MailFile, 1) = "\" Then
+		s = s & "ERROR:MailFile must be a relative .nsf path such as mail\jsmith.nsf; "
+	End If
 	' Policy: EXPLICIT policy name (stored as */Name) or empty when an
 	' ORGANIZATIONAL policy (*/Demo, */Sales/Demo) assigns the vault automatically.
 	If u.Policy = "" Then
@@ -512,7 +562,7 @@ End Sub
 Function BR_AuditHeader() As String
 	BR_AuditHeader = "RunID,Timestamp,Tool,Operator,Mode,Action,Result,DurationSec,NoteID,UNID,objectGUID," & _
 	"FullNameBefore,FullNameAfter,InternetAddress,ShortName,HomeServer,OrgUnit,Policy,MapRule," & _
-	"MailSystemBefore,MailSystemAfter,VaultStatus,IDFile,Message,BatchID"
+	"MailSystemBefore,MailSystemAfter,VaultStatus,IDFile,Message,BatchID,MailFile,MailFileStatus"
 End Function
 
 Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, dur As Double, msg As String)
@@ -523,7 +573,7 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FullNameAfter) & "," & _
 	Q(u.InternetAddress) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & _
 	Q(u.MapRule) & "," & Q(u.MailSystemBefore) & "," & Q(u.MailSystemAfter) & "," & Q(u.VaultStatus) & "," & _
-	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID)
+	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(u.MailFile) & "," & Q(u.MailFileStatus)
 	Call BR_AppendLine(gAuditFile, r)
 	If gResultsFile <> "" Then Call BR_AppendLine(gResultsFile, r)
 	Exit Sub
@@ -672,7 +722,6 @@ End Function
 '   DONE    BATCH-<id>_results.csv exists (written by a LIVE run)
 ' A dry run writes BATCH-<id>_dryrun.csv and leaves the batch OPEN.
 
-Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,OrgUnit,Policy,Groups,VaultServer,MapRule,Check,Issues"
 
 Function BR_BatchDir() As String
 	BR_BatchDir = BR_CfgDir("BatchDir", "batches")

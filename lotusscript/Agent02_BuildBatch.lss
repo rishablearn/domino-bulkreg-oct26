@@ -6,7 +6,7 @@
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
 '
 ' Selects the next batch of unregistered DirSync users (default 500),
-' resolves each user's home server / OU / policy / groups from
+' resolves each user's home server / mail file / OU / policy / groups from
 ' server_mapping.csv, validates them and writes a batch file for review:
 '
 '   <BatchDir>\BATCH-<yyyymmdd-hhnnss>.csv          one row per user
@@ -14,7 +14,7 @@
 '
 ' Review the CSV (Excel: save as "CSV UTF-8"). You may:
 '   - set Include=N to leave a user out
-'   - change HomeServer, OrgUnit, Policy, Groups or VaultServer for a user
+'   - change HomeServer, MailFile, OrgUnit, Policy, Groups or VaultServer for a user
 ' Rows with Check=ERROR are written with Include=N.
 ' Agent 03 registers ONLY rows with Include=Y from the batch file you choose.
 '
@@ -42,7 +42,7 @@ Sub Initialize
 	Dim u As BRUser, issues As String, chk As String, inc As String, t0 As Double
 	Dim batchMax As Long, srvFilter As String, bdir As String, bfile As String, sumFile As String
 	Dim openIds List As String, srvCache List As String
-	Dim seenShort List As String, seenMail List As String
+	Dim seenShort List As String, seenMail List As String, seenMF List As String, checkMF As Boolean
 	Dim srvInc List As Long, srvExcl List As Long, polInc List As Long
 	Dim nRows As Long, nInc As Long, nWarn As Long, nErr As Long
 	Dim nInOpen As Long, nOtherSrv As Long, nLeft As Long, r As String, hk As String, pk As String
@@ -51,6 +51,7 @@ Sub Initialize
 	batchMax = CfgL("BatchSize", 500)
 	If batchMax < 1 Then batchMax = 500
 	srvFilter = Trim$(CfgS("BatchServerFilter", ""))
+	checkMF = CfgB("CheckMailFileExists", True)
 
 	bdir = BR_BatchDir()
 	If Not BR_DirWritable(bdir) Then Error 5001, "BatchDir missing or not writable: " & bdir
@@ -88,7 +89,19 @@ Sub Initialize
 				End If
 			End If
 			If u.HomeServer <> "" Then
-				If Not BR_HomeServerOK(u.HomeServer, srvCache) Then issues = issues & "ERROR:HomeServer unreachable; "
+				If Not BR_HomeServerOK(u.HomeServer, srvCache) Then
+					issues = issues & "ERROR:HomeServer unreachable; "
+				ElseIf u.MailFile <> "" Then
+					' mail file names must be unique per home server, and must not exist yet
+					If IsElement(seenMF(LCase$(u.HomeServer & "!!" & u.MailFile))) Then
+						issues = issues & "ERROR:MailFile " & u.MailFile & " already used in this batch on " & u.HomeServer & "; "
+					Else
+						seenMF(LCase$(u.HomeServer & "!!" & u.MailFile)) = u.NoteID
+					End If
+					If checkMF Then
+						If BR_MailFileExists(u.HomeServer, u.MailFile) Then issues = issues & "ERROR:MailFile " & u.MailFile & " already exists on " & u.HomeServer & " - change MailFile; "
+					End If
+				End If
 			End If
 
 			If InStr(issues, "ERROR:") > 0 Then
@@ -110,7 +123,7 @@ Sub Initialize
 
 			r = Q(inc) & "," & Q(gBatchID) & "," & Q(CStr(nRows)) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & _
 			Q(u.FullNameBefore) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
-			Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues)
+			Q(u.HomeServer) & "," & Q(u.MailFile) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues)
 			Call BR_AppendLine(bfile, r)
 			Call BR_Audit(u, "BUILD", "SELECT", chk, BR_Elapsed(t0), "Include=" & inc & " " & issues)
 		End If

@@ -3,9 +3,9 @@
 // numbered single-action steps with expected results, and a "Done when" check.
 const META = {
   title: "BulkReg Framework",
-  subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino with ID Vault, in reviewed batches across multiple servers, from the Windows Domino Administrator client",
+  subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "2.2",
+  version: "2.3",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -36,12 +36,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 1.3.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 1.4.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
-  ["2.2", "Mail settings (CreateMailDb, PreserveMailSystem) explained in plain language with a decision table and a before/after example (D3a)."],
+  ["2.3", "**Every registered user now gets a Domino mail file** on the home server (MailFile column in the batch, reviewable). CreateMailDb / PreserveMailSystem removed. Mail file settings (folder, template, ACL manager, quota, full-text index), existence checks before and after registration, and mail file status in Verify."],
   ["2.1", "Name formats: servers in canonical (CN=DominoADMail/O=Demo) or abbreviated (DominoADMail/Demo) form, both accepted by the code. **Organizational policies** (*/Demo, */Sales/Demo) supported alongside explicit policies (B8 Option B, OrgPolicyAssignsVault, '-' in the mapping). Consistent 'Demo' examples."],
   ["2.0", "Complete rewrite as a **from-scratch, step-by-step guide**. Every Domino object (vault, security settings, policy, roles, RA, tool database, agents) is created click by click. Agent names changed to `BulkReg\\NN - Name`, because `|` is the alias separator in Notes design names. Explicit policy names use the `*/name` form."],
 ], [1200, 8160]);
@@ -92,15 +92,15 @@ pb();
 h1("Part A – Understand");
 h2("A1 What BulkReg does");
 p("Directory Sync (DirSync) copies Active Directory users into the Domino Directory (`names.nsf`) as **Person documents**. These users can be found in Domino, but they have **no Notes ID**, no certificate and no mail file (Mail system: *Other Internet Mail*).");
-p("BulkReg registers these users **in reviewed batches**. Each user gets a certified Notes ID, the ID is stored in the **ID Vault**, and the user is assigned to the right **home server**. Every step is logged for audit.");
+p("BulkReg turns them into **full Domino users**, in reviewed batches. Each user gets a certified **Notes ID**, which is stored in the **ID Vault**, and a **Domino mail file** on the right **home server**. The Person document then points to that mail file. Every step is logged for audit.");
 p("It uses HCL's documented API for this case, `NotesRegistration.ContactNoteID`: *“Used to register users who have existing Person documents created by syncing Active Directory users into the Domino directory.”* The existing Person document is upgraded in place, so no duplicate is created.");
 h2("A2 How a batch works: you always see who is registered");
 tbl(["Stage", "Tool", "What happens", "Changes Domino?"], [
-  ["1 Build", "Agent 02", "Picks the next batch (default 500) of unregistered DirSync users. Works out each user's home server, OU, policy, groups and vault. Validates them and writes a **batch file** (CSV) plus a summary.", "No"],
+  ["1 Build", "Agent 02", "Picks the next batch (default 500) of unregistered DirSync users. Works out each user's home server, **mail file**, OU, policy, groups and vault. Validates them and writes a **batch file** (CSV) plus a summary.", "No"],
   ["2 Review", "You, in Excel or Notepad", "Read the list. Exclude users (Include=N) or correct their server, OU, policy, groups or vault. Save the file.", "No"],
   ["3 Dry run", "Agent 03, DryRun=1", "Simulates the batch and shows what would happen", "No"],
-  ["4 Register", "Agent 03, DryRun=0", "Shows totals per server. You type the batch ID to approve. Only the approved rows are registered.", "**Yes**"],
-  ["5 Verify", "Agent 04", "Checks every user of the batch: registered? ID in the vault?", "No"],
+  ["4 Register", "Agent 03, DryRun=0", "Shows totals per server. You type the batch ID to approve. Only the approved rows are registered: Notes ID + mail file + vault.", "**Yes**"],
+  ["5 Verify", "Agent 04", "Checks every user of the batch: registered? ID in the vault? Mail file present on the home server?", "No"],
 ], [1100, 1700, 5260, 1300]);
 h2("A3 Everything you will create in Part B");
 tbl(["Item", "Where", "Created in"], [
@@ -147,6 +147,9 @@ tbl(["#", "Item", "Example", "Your value"], [
   ["9", "Policy type (organizational or explicit, see A4) and exact name(s)", "Explicit: */DirSync-Vault, or organizational: */Demo, */Sales/Demo", ""],
   ["10", "Optional organizational unit (OU) per group of users", "EMEA", ""],
   ["11", "Optional groups to add new users to", "BR-EMEA", ""],
+  ["11a", "Mail file folder on the home servers, and naming", "mail → mail\\jsmith.nsf", ""],
+  ["11b", "Mail template available on every home server", "the template your mail users use (e.g. mail12.ntf)", ""],
+  ["11c", "Optional: Manager of new mail files, quota (MB)", "LocalDomainAdmins, 2048", ""],
   ["12", "Admin ID that will run BulkReg", "Admin User/Demo", ""],
   ["13", "Windows admin workstation name", "ADMIN-PC01", ""],
   ["14", "Batch size", "500", ""],
@@ -178,7 +181,7 @@ ol(
   "Click **File > Document Properties**, then the **Fields** tab (the second tab in the properties box).",
   "In the left column, scroll to **objectGUID** and click it. *Result:* a value is shown on the right. This marks a DirSync Person document.",
   "Scroll to **Certificate**. *Result:* the field is missing or empty. This means the user is not registered yet.",
-  "Scroll to **MailSystem** and **MailFile** and note their values, so you can compare them after the pilot."
+  "Scroll to **MailSystem**, **MailFile** and **MailServer** and note their values. After registration they will point to the new Domino mail file."
 );
 done("At least one Person document has an objectGUID value and no Certificate.");
 
@@ -197,7 +200,15 @@ ol(
   "Click **OK** to save the ACL.",
   "Wait for the ACL change to reach the server you work on. It is immediate on the registration server itself."
 );
-done("Your admin ID has Editor access with [UserCreator] and [UserModifier] (and the Policy roles if needed) in names.nsf on the registration server.");
+h3("Allow your admin ID to create mail files on every home server");
+ol(
+  "In Domino Administrator, click the **Configuration** tab and open **Server > All Server Documents**.",
+  "Open the Server document of the first home server (worksheet row 3) and click **Edit Server**.",
+  "Click the **Security** tab. In **Create databases & templates**, make sure your admin ID (or a group it belongs to) is listed, or that the field allows everyone your policy permits.",
+  "Click **Save & Close**. Repeat for every home server.",
+  "Check that the mail template from worksheet row 11b exists on every home server (**Files** tab of each server, filter on .ntf)."
+);
+done("Your admin ID has Editor access with [UserCreator] and [UserModifier] (and the Policy roles if needed) in names.nsf, can create databases on every home server, and the mail template exists on each of them.");
 
 // ---------- B5
 h2("B5 Set up certification");
@@ -352,7 +363,9 @@ tbl(["Key", "Enter", "From"], [
   ["OrgPolicyAssignsVault", "`1` if an organizational policy (`*/Demo`, `*/Sales/Demo`) assigns the vault, otherwise `0`", "B8"],
   ["VaultServer", "The vault server, e.g. `DominoVault/Demo` (as shown in the vault document)", "Worksheet 7"],
   ["BatchSize", "`500` or your value", "Worksheet 14"],
-  ["CreateMailDb / PreserveMailSystem", "Leave `0` / `1` if users keep their mailbox outside Domino (the usual case). See D3a before changing.", "D3a"],
+  ["MailFileDir", "Folder for mail files on the home servers, normally `mail`", "Worksheet 11a"],
+  ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default)", "Worksheet 11b"],
+  ["MailACLManager / MailQuotaSizeLimit", "Optional: Manager of each new mail file; quota in MB (0 = none)", "Worksheet 11c"],
   ["LogServer / LogDb", "Leave empty unless you create the log database in B15", "B15"],
   ["DryRun", "Leave `1`", "–"],
 ], [2300, 5100, 1960]);
@@ -548,6 +561,7 @@ h3("Check every row");
 tbl(["Check", "How", "If wrong"], [
   ["Right people", "Read FullName and InternetAddress", "Set Include to `N`"],
   ["Right home server", "Read HomeServer (and MapRule)", "Correct HomeServer, or fix the mapping and rebuild"],
+  ["Right mail file name", "Read MailFile, for example `mail\\jsmith.nsf`. Rows whose mail file already exists are marked ERROR.", "Edit MailFile, for example `mail\\jsmith2.nsf`"],
   ["Right OU / policy / vault", "Read OrgUnit, Policy and VaultServer", "Correct the value in the row"],
   ["Warnings", "Filter Check = WARN and read Issues", "Accept them, or set Include to `N`"],
   ["Errors", "Check = ERROR rows already have Include=N", "Fix in AD and include them in a later batch"],
@@ -582,8 +596,8 @@ ol(
   "Set `DryRun=0` in bulkreg.ini. Save.",
   "Run **03 - Register Batch**, choose the pilot batch, click **Yes**, type the **batch ID** exactly when asked, and enter the certifier password if UseCA=0.",
   "Read the end dialog: ok=2. Open `BATCH-<id>_results.csv`. *Result:* both rows REGISTERED with VaultStatus IN_VAULT.",
-  "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), hierarchical full name, correct home server, **MailSystem** unchanged (compare with B3), and **Policy synopsis** showing your explicit and/or organizational policy with the vault.",
-  "On a test PC, set up Notes for one pilot user: the ID must download from the vault, and the user must be asked to change the password.",
+  "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), hierarchical full name, **MailServer** = the intended home server, **MailFile** = the path from the batch, **MailSystem** = Notes, and **Policy synopsis** showing the policy with the vault. Then open the home server's **Files** tab and confirm the mail file exists.",
+  "On a test PC, set up Notes for one pilot user: the ID must download from the vault, the user must be asked to change the password, and the mail file must open. Send a test mail to the user's Internet address and confirm it arrives in the Domino mail file.",
   "Run **04 - Verify Registration and Vault** and choose the pilot batch. *Result:* 2 × REGISTERED, IN_VAULT.",
   "Set `DryRun=1` and clear `ExtraSelection=` in bulkreg.ini. Save."
 );
@@ -610,7 +624,7 @@ ol(
   "Click **Actions > BulkReg > 04 - Verify Registration and Vault**.",
   "Accept the proposed batch file (the newest batch) or type the batch path. Leave it empty to verify all DirSync users.",
   "Read the summary and open `BATCH-<id>_verify_<run>.csv`.",
-  "**REGISTERED + IN_VAULT:** done. **NOT_IN_VAULT:** check the user's policy synopsis and vault, then run Verify again later (replication). **UNREGISTERED** or **NOT_FOUND:** see D6."
+  "**REGISTERED + IN_VAULT + MAILFILE_OK:** done. **MAILFILE_MISSING:** see D6. **NOT_IN_VAULT:** check the user's policy synopsis and vault, then run Verify again later (replication). **UNREGISTERED** or **NOT_FOUND:** see D6."
 );
 done("Every registered user of the batch is IN_VAULT, or the exceptions are logged in the change ticket.");
 
@@ -672,7 +686,7 @@ tbl(["Column", "Edit?", "Meaning"], [
   ["BatchID, Seq", "No", "Batch identifier, row number"],
   ["NoteID, UNID, objectGUID", "**Never**", "Identify the Person document and the AD user; checked by Agent 03"],
   ["FullName, FirstName, LastName, ShortName, InternetAddress", "No (fix in AD)", "User data"],
-  ["HomeServer, OrgUnit, Policy, Groups, VaultServer", "**Yes**", "Values used for registration"],
+  ["HomeServer, MailFile, OrgUnit, Policy, Groups, VaultServer", "**Yes**", "Values used for registration (MailFile is relative to the server data directory, e.g. mail\\jsmith.nsf)"],
   ["MapRule, Check, Issues", "No", "Where the values came from, and the validation result"],
 ], [3900, 1500, 3960]);
 
@@ -692,40 +706,34 @@ tbl(["Key", "Default", "Meaning"], [
   ["PauseMs / MaxConsecutiveErrors", "500 / 5", "Pause between users; circuit breaker"],
   ["DryRun", "1", "1 = simulate, 0 = live"],
   ["ExpirationDays / MinPasswordLength / InitialPasswordLength", "730 / 8 / 16", "Certificate validity; password strength (0–16); initial password length"],
-  ["CreateMailDb / PreserveMailSystem", "0 / 1", "No mail file; keep Other Internet Mail"],
+  ["MailFileDir / MailTemplate", "mail / (empty)", "Mail file folder on the home server; mail template (empty = registration default)"],
+  ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Optional mail file settings (quota in MB)"],
+  ["CheckMailFileExists", "1", "Refuse users whose mail file already exists on the home server"],
   ["IDFileDir / PasswordDir / AuditDir / WritePasswordFile", "C:\\BulkReg\\… / 1", "Output folders; write passwords to a restricted file"],
   ["IsNorthAmerican / EnforceUniqueShortName / StoreIDInAddressBook / SyncInternetPassword", "1 / 1 / 0 / 0", "NotesRegistration options"],
   ["LogLevel / LogServer / LogDb", "INFO / – / –", "Log detail; optional log database"],
 ], [3900, 2200, 3260]);
 
-h2("D3a Mail settings explained: CreateMailDb and PreserveMailSystem");
-p("**Background.** DirSync users usually keep their mailbox **outside Domino** (Exchange, Microsoft 365, Gmail…). Their Person document says *Mail system = Other Internet Mail*, *Mail file* is empty, and Domino delivers mail for them to their Internet address. They only need a **Notes ID**, for applications and the ID vault, not a Domino mailbox.");
-h3("CreateMailDb: should registration create a Domino mailbox?");
-tbl(["Value", "What happens", "Choose it when"], [
-  ["`0` (default)", "No mail file is created. Only the Notes ID is created and stored in the vault.", "Users keep their mailbox where it is today"],
-  ["`1`", "A Domino mail file `mail\\<shortname>_<noteid>.nsf` is created on the user's home server, and the user becomes a Domino (Notes) mail user", "You are moving these users' mail to Domino. Needs *Create databases* rights on the home servers."],
-], [1500, 4800, 3060]);
-h3("PreserveMailSystem: keep the user's mail routing as it was (only when CreateMailDb=0)");
-p("Registration can switch the Person document to **Notes** mail with a mail file path, even though no mail file was created. Domino would then try to deliver the user's mail to a mailbox that does not exist. With `PreserveMailSystem=1`, BulkReg checks the Person document straight after registration and **puts back the values it had before**.");
-tbl(["Value", "What happens", "Choose it when"], [
-  ["`1` (default, recommended)", "Mail system and Mail file are restored to their pre-registration values. Mail keeps flowing to the external mailbox exactly as before.", "Users keep their external mailbox"],
-  ["`0`", "BulkReg leaves whatever registration wrote", "You will set the mail fields yourself, for example in a separate migration step"],
-], [2200, 4700, 2460]);
-h3("Example: one user, before and after (CreateMailDb=0, PreserveMailSystem=1)");
-tbl(["Person document field", "Before registration", "Right after RegisterNewUser (possible)", "After BulkReg finishes"], [
-  ["Full name", "John Smith", "John Smith/Sales/Demo", "John Smith/Sales/Demo"],
-  ["Certificate", "(empty)", "(present)", "(present)"],
-  ["Mail system", "Other Internet Mail", "Notes", "**Other Internet Mail**"],
-  ["Mail file", "(empty)", "mail\\jsmith.nsf", "**(empty)**"],
-  ["Internet address", "john.smith@demo.com", "john.smith@demo.com", "john.smith@demo.com"],
-], [2200, 2100, 2700, 2360]);
-h3("Which combination do I need?");
-tbl(["Your situation", "CreateMailDb", "PreserveMailSystem"], [
-  ["Users keep Exchange / Microsoft 365 / other external mail (normal DirSync case)", "0", "1"],
-  ["Users should get a Domino mailbox now", "1", "(ignored)"],
-  ["You manage the mail fields yourself after registration", "0", "0"],
-], [5600, 1800, 1960]);
-note("Every user's MailSystemBefore and MailSystemAfter values are in the audit and results CSV, so you can check them. Confirm the behaviour in the pilot (C5): compare the Mail system field with the value noted in B3. If a later DirSync run overwrites these fields, the DirSync field mapping wins (Directory Sync configuration, Synchronization tab).");
+h2("D3a Mail files");
+p("Every user BulkReg registers becomes a **Domino mail user**: registration creates a mail file on the user's **home server** and the Person document points to it (MailServer, MailFile, Mail system = Notes).");
+tbl(["Item", "How BulkReg handles it"], [
+  ["Location", "On the user's HomeServer (server_mapping.csv, reviewable in the batch)"],
+  ["Path", "`<MailFileDir>\\<ShortName>.nsf`, e.g. `mail\\jsmith.nsf`. Without a ShortName: first initial + last name. Editable per user in the batch (MailFile column)."],
+  ["Duplicates", "Build Batch marks a row ERROR if the same mail file appears twice in the batch for a server, or if the file **already exists** on the home server. Register Batch checks again just before registering. An existing mail file is never overwritten."],
+  ["Template", "`MailTemplate` (e.g. mail12.ntf), or the registration default when empty. It must exist on every home server (B4)."],
+  ["Access and size", "`MailACLManager` (optional extra Manager), `MailQuotaSizeLimit` / `MailQuotaWarningThreshold` in MB, `MailCreateFTIndex`"],
+  ["Check after registration", "Register Batch records MailFileStatus (MAILFILE_OK or MAILFILE_PENDING). Verify (C7) checks the mail file named in the Person document on the MailServer: MAILFILE_OK, MAILFILE_MISSING or NO_MAILFILE_IN_PERSON_DOC."],
+], [2400, 6960]);
+h3("Example: one user before and after registration");
+tbl(["Person document field", "Before (DirSync)", "After BulkReg"], [
+  ["Full name", "John Smith", "John Smith/Sales/Demo"],
+  ["Certificate", "(empty)", "(present)"],
+  ["Mail system", "Other Internet Mail", "Notes"],
+  ["Mail server", "(empty or other)", "CN=DominoADMail/O=Demo"],
+  ["Mail file", "(empty)", "mail\\jsmith.nsf"],
+  ["Internet address", "john.smith@demo.com", "john.smith@demo.com"],
+], [2600, 3200, 3560]);
+warn("From now on, Domino delivers mail for these users to their **Domino mail file**. Before the first live batch, agree with the mail team how inbound Internet mail (MX / routing) reaches Domino for these addresses, and whether any existing mailbox content must be migrated. That is outside BulkReg. Also check that the DirSync field mapping (Directory Sync configuration, Synchronization tab) does not overwrite MailSystem, MailServer or MailFile after registration.");
 
 h2("D4 Outputs, audit and result codes");
 tbl(["Output", "Location", "Content"], [
@@ -739,8 +747,8 @@ tbl(["Output", "Location", "Content"], [
 tbl(["Result", "Meaning", "Action"], [
   ["OK / WARN / ERROR", "Preflight or Build Batch check", "Fix ERROR (those rows are excluded)"],
   ["WOULD_REGISTER", "Dry run", "Review"],
-  ["REGISTERED", "Registered, ID in vault", "None"],
-  ["REGISTERED_VAULT_PENDING", "Registered, ID not yet found in the vault", "Check the policy; re-run Verify"],
+  ["REGISTERED", "Registered, ID in vault, mail file present", "None"],
+  ["REGISTERED_PENDING", "Registered, but the ID is not in the vault yet and/or the mail file is not there yet", "Re-run Verify; see D6"],
   ["FAILED_VALIDATION", "Row values invalid; not attempted", "Fix the row or rebuild"],
   ["FAILED", "Registration error (Message: stage + error)", "D6"],
   ["SKIPPED", "Already registered, document gone, or objectGUID mismatch", "None, or rebuild"],
@@ -775,11 +783,13 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["\"header is missing … columns\"", "File saved without its header, or the layout changed", "Rebuild; save as CSV UTF-8 (C3)"],
   ["SKIPPED: objectGUID mismatch", "Document recreated, or the row was edited", "Rebuild the batch"],
   ["FAILED stage=RegisterNewUser", "Not an RA, wrong certifier or password, missing roles, unknown server or policy", "B4, B5, B8; check the names in bulkreg.ini and the mapping"],
-  ["REGISTERED_VAULT_PENDING", "Policy without a vault, wrong policy name, wrong VaultServer, replication, or the user's OU does not match the organizational policy", "B7/B8; Policy synopsis; re-run Verify later"],
+  ["REGISTERED_PENDING (vault)", "Policy without a vault, wrong policy name, wrong VaultServer, replication, or the user's OU does not match the organizational policy", "B7/B8; Policy synopsis; re-run Verify later"],
   ["WARN: No explicit policy", "Policy empty and OrgPolicyAssignsVault=0", "Set the explicit policy, or OrgPolicyAssignsVault=1 if an organizational policy assigns the vault"],
   ["ERROR: Policy looks like a server/canonical name", "A server name (CN=…/O=…) was put in the Policy column", "Put the policy name (*/Name) or `-`"],
   ["ERROR: Policy '*'", "The organization-wide policy was entered", "Leave Policy empty: `*` applies automatically"],
-  ["MailSystem changes after the next DirSync", "DirSync attribute mapping (Directory Sync configuration, Synchronization tab)", "Adjust the DirSync mapping or PreserveMailSystem"],
+  ["ERROR: MailFile … already exists on …", "A mail file with that name is on the home server (another user, or a leftover)", "Edit MailFile in the batch (e.g. mail\\jsmith2.nsf), or remove the old file after checking it"],
+  ["MAILFILE_PENDING / MAILFILE_MISSING", "Mail file creation queued (Administration Process) or failed: template missing, no Create databases right, server unreachable", "Check admin4.nsf on the home server, B4 rights and template; re-run Verify"],
+  ["Mail fields change after the next DirSync", "DirSync attribute mapping overwrites MailSystem / MailServer / MailFile", "Remove those fields from the DirSync mapping (Directory Sync configuration, Synchronization tab)"],
 ], [2900, 3300, 3160]);
 p("Escalate to the platform owner if failures affect more than one batch. Escalate immediately to the security owner if a password file, ID file or certifier may have been exposed.");
 
@@ -809,7 +819,7 @@ tbl(["#", "Item", "How to confirm"], [
   ["2", "RegisterNewUser parameters follow HCL's ContactNoteID example and the 14.5 syntax", "Compiles and the pilot passes"],
   ["3", "UseCA=1 passes an empty certifier password", "The pilot registers successfully"],
   ["4", "PolicyName is passed as stored (`*/name`)", "Policy synopsis of the pilot users (C5)"],
-  ["5", "PreserveMailSystem with your DirSync mapping", "MailSystem after the pilot and after the next sync"],
+  ["5", "Mail file creation through NotesRegistration (immediate or via the Administration Process) and the DirSync mapping of mail fields", "Mail file present after the pilot and Person document unchanged after the next DirSync"],
   ["6", "The Agent Log template file name differs between releases (alog4.ntf / alog.ntf)", "B15"],
   ["7", "bulkreg.ps1 was reviewed but not executed", "Run `bulkreg.cmd Check` once"],
   ["8", "One Domino Directory per config file", "D1"],
@@ -822,7 +832,8 @@ tbl(["Term", "Meaning"], [
   ["objectGUID", "The AD user's unique ID, stored in the DirSync Person document"],
   ["Registration", "Creating a certified Notes ID for a user"],
   ["Registration server", "The server whose Domino Directory receives the registrations"],
-  ["Home server", "The user's Domino server (MailServer field)"],
+  ["Home server", "The user's Domino server (MailServer field), where the mail file is created"],
+  ["Mail file", "The user's Domino mailbox database, e.g. mail\\jsmith.nsf"],
   ["ID Vault", "Server-side store for Notes IDs; assigned through Security Settings in a policy"],
   ["Explicit policy", "A policy assigned to specific users (stored as */name)"],
   ["Organizational policy", "A policy applied automatically to everyone under an org or OU (*/Demo, */Sales/Demo)"],

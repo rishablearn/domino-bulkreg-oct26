@@ -5,10 +5,13 @@
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
 '
+' Mail       : creates a Domino mail file for every user on the batch row's
+'              HomeServer at the batch row's MailFile (e.g. mail\jsmith.nsf).
+'
 ' Input      : ONE reviewed batch file  <BatchDir>\BATCH-<id>.csv  built by
 '              Agent 02. Only rows with Include=Y are processed - nothing is
 '              selected from names.nsf at run time, so you always know exactly
-'              who will be registered. HomeServer / OrgUnit / Policy / Groups
+'              who will be registered. HomeServer / MailFile / OrgUnit / Policy / Groups
 '              are taken from the batch file (your reviewed values).
 '
 ' Method     : NotesRegistration.ContactNoteID  (HCL Domino Designer 14.5)
@@ -52,7 +55,7 @@ Sub Initialize
 	Dim db As NotesDatabase, u As BRUser
 	Dim bfile As String, bname As String, bdir As String, fh As Integer, txt As String
 	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
-	Dim nid() As String, gid() As String, hs() As String, ou() As String, po() As String, gr() As String, vs() As String, un() As String
+	Dim nid() As String, gid() As String, hs() As String, ou() As String, po() As String, gr() As String, vs() As String, un() As String, mf() As String
 	Dim n As Long, i As Long, seen List As String, srvCount List As Long, srvText As String, hk As String
 	Dim nExcluded As Long, maxRows As Long, pauseMs As Long, maxConsec As Long
 	Dim nOK As Long, nFail As Long, nSkip As Long, nConsec As Long, res As String, stopReason As String
@@ -106,10 +109,11 @@ Sub Initialize
 					Error 6005, "NoteID " & BR_CsvGet(parts, cols, "NoteID") & " is listed twice in the batch file"
 				End If
 				seen(BR_CsvGet(parts, cols, "NoteID")) = "1"
-				ReDim Preserve nid(n) As String, gid(n) As String, hs(n) As String, ou(n) As String, po(n) As String, gr(n) As String, vs(n) As String, un(n) As String
+				ReDim Preserve nid(n) As String, gid(n) As String, hs(n) As String, ou(n) As String, po(n) As String, gr(n) As String, vs(n) As String, un(n) As String, mf(n) As String
 				nid(n) = BR_CsvGet(parts, cols, "NoteID")
 				gid(n) = BR_CsvGet(parts, cols, "objectGUID")
 				un(n) = BR_CsvGet(parts, cols, "UNID")
+				mf(n) = BR_CsvGet(parts, cols, "MailFile")
 				hs(n) = BR_CsvGet(parts, cols, "HomeServer")
 				ou(n) = BR_CsvGet(parts, cols, "OrgUnit")
 				po(n) = BR_CsvGet(parts, cols, "Policy")
@@ -160,7 +164,7 @@ Sub Initialize
 	' ---------- register the approved rows ----------
 	Set db = BR_OpenDirectory()
 	For i = 0 To n - 1
-		res = RegisterOne(db, nid(i), un(i), gid(i), hs(i), ou(i), po(i), gr(i), vs(i))
+		res = RegisterOne(db, nid(i), un(i), gid(i), hs(i), mf(i), ou(i), po(i), gr(i), vs(i))
 		Select Case Left$(res, 2)
 		Case "OK"
 			nOK = nOK + 1: nConsec = 0
@@ -255,7 +259,7 @@ End Function
 ' Values come from the reviewed batch file. Every outcome writes an audit
 ' row (and a results row). Errors never stop the batch.
 '---------------------------------------------------------------------
-Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGuid As String, bHome As String, bOU As String, bPolicy As String, bGroups As String, bVault As String) As String
+Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGuid As String, bHome As String, bMailFile As String, bOU As String, bPolicy As String, bGroups As String, bVault As String) As String
 	Dim doc As NotesDocument, reg As NotesRegistration, u As BRUser
 	Dim t0 As Double, issues As String, userPwd As String, mailFile As String
 	Dim stage As String, emsg As String, homeCanon As String, nn As NotesName
@@ -289,6 +293,7 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 		BR_Log LVL_INFO, "Batch override for " & u.FullNameBefore & ": home=" & bHome & " ou=" & bOU & " policy=" & bPolicy & " groups=" & bGroups
 	End If
 	u.HomeServer = bHome: u.OrgUnit = bOU: u.Policy = bPolicy: u.Groups = bGroups: u.VaultServer = bVault
+	If bMailFile <> "" Then u.MailFile = BR_Path(bMailFile)
 	u.MapRule = "batch " & gBatchID
 
 	' idempotency: fresh re-check (someone may have registered it meanwhile)
@@ -301,6 +306,9 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 
 	stage = "validate"
 	issues = BR_Validate(u)
+	If InStr(issues, "ERROR:") = 0 Then
+		If BR_MailFileExists(u.HomeServer, u.MailFile) Then issues = issues & "ERROR:MailFile " & u.MailFile & " already exists on " & u.HomeServer & "; "
+	End If
 	If InStr(issues, "ERROR:") > 0 Then
 		Call BR_Audit(u, gMode, "REGISTER", "FAILED_VALIDATION", BR_Elapsed(t0), issues)
 		BR_Log LVL_ERROR, "VALIDATION " & u.FullNameBefore & " : " & issues
@@ -310,7 +318,7 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 
 	BR_Log LVL_DEBUG, "Prepared " & u.FullNameBefore & " noteid=" & u.NoteID & " guid=" & u.GUID & _
 	" home=" & u.HomeServer & " ou=" & u.OrgUnit & " policy=" & u.Policy & " groups=" & u.Groups & _
-	" map=" & u.MapRule & " mailsys=" & u.MailSystemBefore & " idfile=" & u.IDFile
+	" map=" & u.MapRule & " mailfile=" & u.MailFile & " mailsys=" & u.MailSystemBefore & " idfile=" & u.IDFile
 
 	If gMode = "DRYRUN" Then
 		Call BR_Audit(u, gMode, "REGISTER", "WOULD_REGISTER", BR_Elapsed(t0), issues)
@@ -330,7 +338,13 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 	Else
 		reg.CertifierIDFile = BR_CfgFile("CertifierIDFile", "")
 	End If
-	reg.CreateMailDb = CfgB("CreateMailDb", False)
+	' ---- Domino mail file: always created on the user's home server ----
+	reg.CreateMailDb = True
+	If CfgS("MailTemplate", "") <> "" Then reg.MailTemplateName = CfgS("MailTemplate", "")
+	If CfgS("MailACLManager", "") <> "" Then reg.MailACLManager = CfgS("MailACLManager", "")
+	reg.MailCreateFTIndex = CfgB("MailCreateFTIndex", False)
+	If CfgL("MailQuotaSizeLimit", 0) > 0 Then reg.MailQuotaSizeLimit = CfgL("MailQuotaSizeLimit", 0)
+	If CfgL("MailQuotaWarningThreshold", 0) > 0 Then reg.MailQuotaWarningThreshold = CfgL("MailQuotaWarningThreshold", 0)
 	reg.Expiration = Today + CfgL("ExpirationDays", 730)
 	reg.IDType = ID_HIERARCHICAL
 	reg.MinPasswordLength = CInt(CfgL("MinPasswordLength", 8))
@@ -352,7 +366,7 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 		u.IDFile = Left$(u.IDFile, Len(u.IDFile) - 3) & "_" & gRunID & ".id"
 	End If
 
-	If reg.CreateMailDb Then mailFile = "mail" & gSep & BR_SafeFile(u) & ".nsf" Else mailFile = ""
+	mailFile = u.MailFile                ' relative to the data directory, e.g. mail\jsmith.nsf
 	userPwd = BR_GenPassword(CInt(CfgL("InitialPasswordLength", 16)))
 
 	' RegisterNewUser expects the CANONICAL server name (CN=DominoADMail/O=Demo)
@@ -374,16 +388,13 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 	u.MailSystemAfter = BR_Item(doc, "MailSystem")
 	If Not BR_IsRegistered(doc) Then Error 4002, "RegisterNewUser returned but Person doc has no Certificate"
 
-	' keep the account as 'Other Internet Mail' / no mail file if requested
-	stage = "preserveMail"
-	If CfgB("PreserveMailSystem", True) And Not reg.CreateMailDb Then
-		If u.MailSystemAfter <> u.MailSystemBefore Or (u.MailFileBefore = "" And BR_Item(doc, "MailFile") <> "") Then
-			Call doc.ReplaceItemValue("MailSystem", u.MailSystemBefore)
-			If u.MailFileBefore = "" Then Call doc.ReplaceItemValue("MailFile", "")
-			Call doc.Save(True, False)
-			BR_Log LVL_INFO, "Restored MailSystem '" & u.MailSystemAfter & "' -> '" & u.MailSystemBefore & "' for " & u.FullNameAfter
-			u.MailSystemAfter = u.MailSystemBefore
-		End If
+	' ---------- mail file ----------
+	stage = "mailfile"
+	BR_Log LVL_INFO, "Mail: system '" & u.MailSystemBefore & "' -> '" & u.MailSystemAfter & "', MailFile in Person doc: " & BR_Item(doc, "MailFile")
+	If BR_MailFileExists(u.HomeServer, u.MailFile) Then
+		u.MailFileStatus = "MAILFILE_OK"
+	Else
+		u.MailFileStatus = "MAILFILE_PENDING"       ' may still be created in the background - re-check with Agent 04
 	End If
 
 	stage = "vault"
@@ -394,12 +405,12 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 	End If
 	userPwd = ""
 
-	If u.VaultStatus = "IN_VAULT" Or u.VaultStatus = "NOT_CHECKED" Then
+	If (u.VaultStatus = "IN_VAULT" Or u.VaultStatus = "NOT_CHECKED") And u.MailFileStatus = "MAILFILE_OK" Then
 		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED", BR_Elapsed(t0), issues)
 		BR_Log LVL_INFO, "OK " & u.FullNameAfter & " vault=" & u.VaultStatus & " (" & Format$(BR_Elapsed(t0), "0.0") & "s)"
 	Else
-		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED_VAULT_PENDING", BR_Elapsed(t0), issues & " Vault: " & u.VaultStatus & " - re-check with Agent 04")
-		BR_Log LVL_WARN, "REGISTERED but vault=" & u.VaultStatus & " : " & u.FullNameAfter & " (check policy/ID Vault; re-run Agent 04)"
+		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED_PENDING", BR_Elapsed(t0), issues & " Vault: " & u.VaultStatus & " Mail file: " & u.MailFileStatus & " - re-check with Agent 04")
+		BR_Log LVL_WARN, "REGISTERED but vault=" & u.VaultStatus & " mailfile=" & u.MailFileStatus & " : " & u.FullNameAfter & " (re-run Agent 04)"
 	End If
 	RegisterOne = "OK"
 	Exit Function

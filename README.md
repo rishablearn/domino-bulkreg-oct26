@@ -1,18 +1,25 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
 BulkReg 1.3.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v2.1. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v2.3. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## What it does
-DirSync creates Person documents for AD users, but those users have no Notes ID. BulkReg registers them in **reviewed batches** using HCL's `NotesRegistration.ContactNoteID`, which upgrades the existing Person document in place. The ID is deposited in the **ID Vault** through an explicit policy. Each user is assigned to a **home server** across your Domino servers, and every action is audited.
+DirSync creates Person documents for AD users, but those users have no Notes ID and no Domino mail file. BulkReg turns them into **full Domino users** in **reviewed batches**, using HCL's `NotesRegistration.ContactNoteID`, which upgrades the existing Person document in place. For each user it:
+
+- creates a **Notes ID**, deposited in the **ID Vault** through the policy;
+- creates a **Domino mail file** on the user's **home server** (for example `mail\jsmith.nsf`), and points the Person document at it.
+
+Every action is audited.
+
+Mail settings live in `bulkreg.ini`: `MailFileDir` (default `mail`), `MailTemplate`, `MailACLManager`, `MailQuotaSizeLimit`, `MailCreateFTIndex` and `CheckMailFileExists`. Each user's mail file path is shown in the batch file (MailFile column) and can be edited before registering. An existing mail file is never overwritten.
 
 ## You always know who is registered
 | Stage | Agent | Result |
 |---|---|---|
 | 1 Build | `BulkReg\02 - Build Batch` | `C:\BulkReg\batches\BATCH-<id>.csv` (default 500 users) + `_summary.txt` (counts per home server and policy). Read-only. |
-| 2 Review | You, in Excel | Set `Include=N` to skip users; correct HomeServer / OrgUnit / Policy / Groups / VaultServer. Save as CSV UTF-8. |
+| 2 Review | You, in Excel | Set `Include=N` to skip users; correct HomeServer / MailFile / OrgUnit / Policy / Groups / VaultServer. Save as CSV UTF-8. |
 | 3 Register | `BulkReg\03 - Register Batch` | Registers **only** the Include=Y rows of the file you choose, after a per-server summary and you typing the **batch ID**. Writes `BATCH-<id>_results.csv`. |
-| 4 Verify | `BulkReg\04 - Verify Registration and Vault` | Registration and vault status for that batch (`_verify_<run>.csv`). |
+| 4 Verify | `BulkReg\04 - Verify Registration and Vault` | Registration, vault and mail file status for that batch (`_verify_<run>.csv`). |
 
 Explicit policy names are written as Domino stores them: `*/PolicyName`. Agent 03 never searches names.nsf by itself. Each row's `objectGUID` must still match the Person document. A user in an OPEN batch is never selected into another batch.
 

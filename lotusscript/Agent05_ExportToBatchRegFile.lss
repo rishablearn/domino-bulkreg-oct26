@@ -80,10 +80,10 @@ Sub Initialize
 			If genPw Then pw = BR_GenPassword(CInt(CfgL("InitialPasswordLength", 16))) Else pw = ""
 			ln = u.LastName & ";" & u.FirstName & ";" & u.MiddleInitial & ";" & u.OrgUnit & ";" & _
 			pw & ";" & idDirForImport & ";" & BR_SafeFile(u) & ".id" & ";" & _
-			u.HomeServer & ";" & "" & ";" & "" & ";" & _
+			u.HomeServer & ";" & BR_Path(CfgS("MailFileDir", "mail")) & ";" & BR_MailBase(u) & ".nsf" & ";" & _
 			"" & ";" & "DirSync objectGUID " & u.GUID & ";" & "" & ";" & _
 			"" & ";" & "" & ";" & u.InternetAddress & ";" & u.ShortName & ";" & _
-			"" & ";" & "" & ";" & ""
+			"" & ";" & "" & ";" & CfgS("MailTemplate", "")
 			Call st.WriteText(ln, EOL_CRLF)
 			pw = ""
 			nOut = nOut + 1

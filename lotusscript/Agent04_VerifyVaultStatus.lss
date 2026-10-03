@@ -10,6 +10,7 @@
 '                    writes <BatchDir>\BATCH-<id>_verify_<run>.csv
 '   blank         -> verifies every DirSync user (objectGUID present)
 ' Status per user: UNREGISTERED | REGISTERED + IN_VAULT | REGISTERED + NOT_IN_VAULT
+'                  + MailFileStatus MAILFILE_OK | MAILFILE_MISSING | NO_MAILFILE_IN_PERSON_DOC
 '                  | CHECK_ERROR | NOT_FOUND
 ' Run it after each batch and before deleting local ID files.
 '=====================================================================
@@ -23,7 +24,7 @@ Use "BulkRegCommon"
 ' ### STEP B: paste the lines below (module variables) into (Declarations)
 '#####################################################################
 
-Dim nUnreg As Long, nInV As Long, nNotV As Long, nErr As Long, nGone As Long
+Dim nUnreg As Long, nInV As Long, nNotV As Long, nErr As Long, nGone As Long, nMailBad As Long
 
 '#####################################################################
 ' ### STEP C: select Initialize and REPLACE its content with the block below
@@ -91,10 +92,10 @@ Sub Initialize
 	End If
 
 	summary = BR_IIfStr(gBatchID = "", "All DirSync users", gBatchID) & ": checked=" & total & " | registered+in vault=" & nInV & _
-	" | registered NOT in vault=" & nNotV & " | unregistered=" & nUnreg & " | check errors=" & nErr & " | not found=" & nGone
+	" | registered NOT in vault=" & nNotV & " | unregistered=" & nUnreg & " | check errors=" & nErr & " | not found=" & nGone & " | mail file missing=" & nMailBad
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & BR_IIfStr(gResultsFile <> "", gResultsFile, gAuditFile), _
-	CInt(BR_IIfStr(nNotV + nErr + nGone > 0, "48", "64"))
+	CInt(BR_IIfStr(nNotV + nErr + nGone + nMailBad > 0, "48", "64"))
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Verify aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
@@ -125,6 +126,16 @@ Sub VerifyDoc(doc As NotesDocument, nid As String)
 		u.VaultStatus = "N/A"
 	Else
 		u.VaultStatus = BR_VaultStatus(u.FullNameBefore, u.VaultServer)
+		' mail file named in the Person document must exist on the user's mail server
+		u.MailFile = BR_Item(doc, "MailFile")
+		If u.MailFile = "" Then
+			u.MailFileStatus = "NO_MAILFILE_IN_PERSON_DOC"
+		ElseIf BR_MailFileExists(BR_Item(doc, "MailServer"), u.MailFile) Then
+			u.MailFileStatus = "MAILFILE_OK"
+		Else
+			u.MailFileStatus = "MAILFILE_MISSING"
+		End If
+		If u.MailFileStatus <> "MAILFILE_OK" Then nMailBad = nMailBad + 1
 		Select Case Left$(u.VaultStatus, 5)
 		Case "IN_VA": res = "REGISTERED": nInV = nInV + 1
 		Case "NOT_I": res = "REGISTERED": nNotV = nNotV + 1
