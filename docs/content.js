@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino with ID Vault, in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "2.1",
+  version: "2.2",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -41,6 +41,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["2.2", "Mail settings (CreateMailDb, PreserveMailSystem) explained in plain language with a decision table and a before/after example (D3a)."],
   ["2.1", "Name formats: servers in canonical (CN=DominoADMail/O=Demo) or abbreviated (DominoADMail/Demo) form, both accepted by the code. **Organizational policies** (*/Demo, */Sales/Demo) supported alongside explicit policies (B8 Option B, OrgPolicyAssignsVault, '-' in the mapping). Consistent 'Demo' examples."],
   ["2.0", "Complete rewrite as a **from-scratch, step-by-step guide**. Every Domino object (vault, security settings, policy, roles, RA, tool database, agents) is created click by click. Agent names changed to `BulkReg\\NN - Name`, because `|` is the alias separator in Notes design names. Explicit policy names use the `*/name` form."],
 ], [1200, 8160]);
@@ -351,6 +352,7 @@ tbl(["Key", "Enter", "From"], [
   ["OrgPolicyAssignsVault", "`1` if an organizational policy (`*/Demo`, `*/Sales/Demo`) assigns the vault, otherwise `0`", "B8"],
   ["VaultServer", "The vault server, e.g. `DominoVault/Demo` (as shown in the vault document)", "Worksheet 7"],
   ["BatchSize", "`500` or your value", "Worksheet 14"],
+  ["CreateMailDb / PreserveMailSystem", "Leave `0` / `1` if users keep their mailbox outside Domino (the usual case). See D3a before changing.", "D3a"],
   ["LogServer / LogDb", "Leave empty unless you create the log database in B15", "B15"],
   ["DryRun", "Leave `1`", "–"],
 ], [2300, 5100, 1960]);
@@ -695,6 +697,35 @@ tbl(["Key", "Default", "Meaning"], [
   ["IsNorthAmerican / EnforceUniqueShortName / StoreIDInAddressBook / SyncInternetPassword", "1 / 1 / 0 / 0", "NotesRegistration options"],
   ["LogLevel / LogServer / LogDb", "INFO / – / –", "Log detail; optional log database"],
 ], [3900, 2200, 3260]);
+
+h2("D3a Mail settings explained: CreateMailDb and PreserveMailSystem");
+p("**Background.** DirSync users usually keep their mailbox **outside Domino** (Exchange, Microsoft 365, Gmail…). Their Person document says *Mail system = Other Internet Mail*, *Mail file* is empty, and Domino delivers mail for them to their Internet address. They only need a **Notes ID**, for applications and the ID vault, not a Domino mailbox.");
+h3("CreateMailDb: should registration create a Domino mailbox?");
+tbl(["Value", "What happens", "Choose it when"], [
+  ["`0` (default)", "No mail file is created. Only the Notes ID is created and stored in the vault.", "Users keep their mailbox where it is today"],
+  ["`1`", "A Domino mail file `mail\\<shortname>_<noteid>.nsf` is created on the user's home server, and the user becomes a Domino (Notes) mail user", "You are moving these users' mail to Domino. Needs *Create databases* rights on the home servers."],
+], [1500, 4800, 3060]);
+h3("PreserveMailSystem: keep the user's mail routing as it was (only when CreateMailDb=0)");
+p("Registration can switch the Person document to **Notes** mail with a mail file path, even though no mail file was created. Domino would then try to deliver the user's mail to a mailbox that does not exist. With `PreserveMailSystem=1`, BulkReg checks the Person document straight after registration and **puts back the values it had before**.");
+tbl(["Value", "What happens", "Choose it when"], [
+  ["`1` (default, recommended)", "Mail system and Mail file are restored to their pre-registration values. Mail keeps flowing to the external mailbox exactly as before.", "Users keep their external mailbox"],
+  ["`0`", "BulkReg leaves whatever registration wrote", "You will set the mail fields yourself, for example in a separate migration step"],
+], [2200, 4700, 2460]);
+h3("Example: one user, before and after (CreateMailDb=0, PreserveMailSystem=1)");
+tbl(["Person document field", "Before registration", "Right after RegisterNewUser (possible)", "After BulkReg finishes"], [
+  ["Full name", "John Smith", "John Smith/Sales/Demo", "John Smith/Sales/Demo"],
+  ["Certificate", "(empty)", "(present)", "(present)"],
+  ["Mail system", "Other Internet Mail", "Notes", "**Other Internet Mail**"],
+  ["Mail file", "(empty)", "mail\\jsmith.nsf", "**(empty)**"],
+  ["Internet address", "john.smith@demo.com", "john.smith@demo.com", "john.smith@demo.com"],
+], [2200, 2100, 2700, 2360]);
+h3("Which combination do I need?");
+tbl(["Your situation", "CreateMailDb", "PreserveMailSystem"], [
+  ["Users keep Exchange / Microsoft 365 / other external mail (normal DirSync case)", "0", "1"],
+  ["Users should get a Domino mailbox now", "1", "(ignored)"],
+  ["You manage the mail fields yourself after registration", "0", "0"],
+], [5600, 1800, 1960]);
+note("Every user's MailSystemBefore and MailSystemAfter values are in the audit and results CSV, so you can check them. Confirm the behaviour in the pilot (C5): compare the Mail system field with the value noted in B3. If a later DirSync run overwrites these fields, the DirSync field mapping wins (Directory Sync configuration, Synchronization tab).");
 
 h2("D4 Outputs, audit and result codes");
 tbl(["Output", "Location", "Content"], [
