@@ -116,6 +116,7 @@ Sub Initialize
 				gr(n) = BR_CsvGet(parts, cols, "Groups")
 				vs(n) = BR_CsvGet(parts, cols, "VaultServer")
 				If vs(n) = "" Then vs(n) = CfgS("VaultServer", "")
+				hs(n) = BR_SrvAbbr(hs(n))          ' accept CN=Srv/O=Org or Srv/Org
 				hk = BR_IIfStr(hs(n) = "", "(none)", hs(n))
 				If IsElement(srvCount(hk)) Then srvCount(hk) = srvCount(hk) + 1 Else srvCount(hk) = 1
 				n = n + 1
@@ -354,7 +355,7 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 	If reg.CreateMailDb Then mailFile = "mail" & gSep & BR_SafeFile(u) & ".nsf" Else mailFile = ""
 	userPwd = BR_GenPassword(CInt(CfgL("InitialPasswordLength", 16)))
 
-	' RegisterNewUser expects the CANONICAL server name (CN=Mail01/O=ORG)
+	' RegisterNewUser expects the CANONICAL server name (CN=DominoADMail/O=Demo)
 	Set nn = New NotesName(u.HomeServer)
 	homeCanon = nn.Canonical
 

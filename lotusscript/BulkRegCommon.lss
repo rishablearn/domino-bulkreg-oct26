@@ -342,15 +342,43 @@ Sub BR_ResolveMapping(doc As NotesDocument, u As BRUser)
 		End If
 		If gMap(i).MatchField = "*" Or fv Like gMap(i).MatchPattern Then
 			If gMap(i).HomeServer <> "" Then u.HomeServer = gMap(i).HomeServer
+			' empty = keep the default;  "-" = explicitly none (e.g. rely on an organizational policy)
 			If gMap(i).OrgUnit <> "" Then u.OrgUnit = gMap(i).OrgUnit
 			If gMap(i).Policy <> "" Then u.Policy = gMap(i).Policy
 			If gMap(i).Groups <> "" Then u.Groups = gMap(i).Groups
+			If u.OrgUnit = "-" Then u.OrgUnit = ""
+			If u.Policy = "-" Then u.Policy = ""
+			If u.Groups = "-" Then u.Groups = ""
 			If gMap(i).VaultServer <> "" Then u.VaultServer = gMap(i).VaultServer
 			u.MapRule = "rule#" & (i + 1) & " " & gMap(i).MatchField & "=" & gMap(i).MatchPattern
 			Exit For
 		End If
 	Next
+	' accept CN=DominoADMail/O=Demo or DominoADMail/Demo - store the abbreviated form
+	u.HomeServer = BR_SrvAbbr(u.HomeServer)
 End Sub
+
+'=====================================================================
+' SERVER NAMES  - canonical (CN=DominoADMail/O=Demo) or abbreviated
+'                 (DominoADMail/Demo) are both accepted everywhere
+'=====================================================================
+Function BR_SrvAbbr(s As String) As String
+	Dim nn As NotesName
+	If Trim$(s) = "" Then Exit Function
+	Set nn = New NotesName(Trim$(s))
+	BR_SrvAbbr = nn.Abbreviated
+End Function
+
+Function BR_SrvCanon(s As String) As String
+	Dim nn As NotesName
+	If Trim$(s) = "" Then Exit Function
+	Set nn = New NotesName(Trim$(s))
+	BR_SrvCanon = nn.Canonical
+End Function
+
+Function BR_SameServer(a As String, b As String) As Boolean
+	BR_SameServer = (LCase$(BR_SrvAbbr(a)) = LCase$(BR_SrvAbbr(b)))
+End Function
 
 '=====================================================================
 ' DIRECTORY / CANDIDATES
@@ -419,7 +447,15 @@ Function BR_Validate(u As BRUser) As String
 	If u.FirstName = "" Then s = s & "WARN:FirstName missing; "
 	If u.InternetAddress = "" Then s = s & "WARN:InternetAddress missing; "
 	If u.HomeServer = "" Then s = s & "ERROR:No HomeServer (mapping/default); "
-	If u.Policy = "" Then s = s & "WARN:No explicit policy - ID Vault deposit depends on org/dynamic policy; "
+	' Policy: EXPLICIT policy name (stored as */Name) or empty when an
+	' ORGANIZATIONAL policy (*/Demo, */Sales/Demo) assigns the vault automatically.
+	If u.Policy = "" Then
+		If Not CfgB("OrgPolicyAssignsVault", False) Then s = s & "WARN:No explicit policy - set OrgPolicyAssignsVault=1 if an organizational policy (*/Demo or */OU/Demo) assigns the ID Vault; "
+	ElseIf InStr(u.Policy, "=") > 0 Then
+		s = s & "ERROR:Policy '" & u.Policy & "' looks like a server/canonical name, not a policy; "
+	ElseIf Trim$(u.Policy) = "*" Then
+		s = s & "ERROR:Policy '*' is the organization-wide policy - it applies automatically, leave Policy empty; "
+	End If
 	If u.GUID = "" Then s = s & "ERROR:objectGUID empty; "
 	BR_Validate = s
 End Function

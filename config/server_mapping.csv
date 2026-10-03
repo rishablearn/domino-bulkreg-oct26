@@ -1,9 +1,15 @@
 MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer
 # Rules are evaluated top-down; FIRST match wins. Pattern uses LotusScript Like (* and ?), case-insensitive.
-# MatchField = any Person document item (Department, InternetAddress, Location, CompanyName, OfficeCity ...)
-# Empty HomeServer/OrgUnit/Policy/Groups/VaultServer = use the defaults from bulkreg.ini
-# VaultServer (optional) = vault server used for the IsIDInVault check when you run more than one ID Vault
-Department;Finance*;<Mail01/ORG>;Finance;<*/DirSync-Vault>;BR-Finance;
-InternetAddress;*@emea.example.com;<Mail02/ORG>;EMEA;<*/DirSync-Vault-EMEA>;BR-EMEA;<VaultEMEA/ORG>
-InternetAddress;*@apac.example.com;<Mail03/ORG>;APAC;<*/DirSync-Vault-APAC>;BR-APAC;<VaultAPAC/ORG>
-*;*;<Mail01/ORG>;;;;
+# MatchField  = any Person document item (Department, InternetAddress, Location, CompanyName, OfficeCity ...)
+# HomeServer  = CN=DominoADMail/O=Demo  or  DominoADMail/Demo  (both accepted)
+# OrgUnit     = OU added to the Notes name (Sales -> John Smith/Sales/Demo). An organizational policy
+#               */Sales/Demo then applies automatically.
+# Policy      = EXPLICIT policy as listed in the Policies view (*/DirSync-Vault-EMEA), or EMPTY when an
+#               organizational policy (*/Demo, */Sales/Demo) assigns the vault: use - for none
+# VaultServer = optional, vault server used for the IsIDInVault check when you run more than one ID Vault
+# Empty column = default from bulkreg.ini;  - (a single hyphen) = explicitly none.
+# Replace every <placeholder> (including < >) before use.
+InternetAddress;*@emea.demo.com;<CN=DominoADMail2/O=Demo>;EMEA;<*/DirSync-Vault-EMEA>;BR-EMEA;<DominoVaultEMEA/Demo>
+InternetAddress;*@apac.demo.com;<DominoADMail3/Demo>;APAC;<*/DirSync-Vault-APAC>;BR-APAC;<DominoVaultAPAC/Demo>
+Department;Sales*;<DominoADMail/Demo>;Sales;-;BR-Sales;
+*;*;<DominoADMail/Demo>;;;;

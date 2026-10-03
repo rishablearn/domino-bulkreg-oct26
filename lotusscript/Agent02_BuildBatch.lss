@@ -70,7 +70,7 @@ Sub Initialize
 		Call BR_ReadUser(doc, u)
 		If IsElement(openIds(u.NoteID)) Then
 			nInOpen = nInOpen + 1                                   ' already in a pending batch
-		ElseIf srvFilter <> "" And LCase$(u.HomeServer) <> LCase$(srvFilter) Then
+		ElseIf srvFilter <> "" And Not BR_SameServer(u.HomeServer, srvFilter) Then
 			nOtherSrv = nOtherSrv + 1                               ' belongs to another server wave
 		ElseIf nRows >= batchMax Then
 			nLeft = nLeft + 1                                       ' for the next batch

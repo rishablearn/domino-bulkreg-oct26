@@ -1,7 +1,7 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
 BulkReg 1.3.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v2.0. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v2.1. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## What it does
 DirSync creates Person documents for AD users, but those users have no Notes ID. BulkReg registers them in **reviewed batches** using HCL's `NotesRegistration.ContactNoteID`, which upgrades the existing Person document in place. The ID is deposited in the **ID Vault** through an explicit policy. Each user is assigned to a **home server** across your Domino servers, and every action is audited.
@@ -16,19 +16,30 @@ DirSync creates Person documents for AD users, but those users have no Notes ID.
 
 Explicit policy names are written as Domino stores them: `*/PolicyName`. Agent 03 never searches names.nsf by itself. Each row's `objectGUID` must still match the Person document. A user in an OPEN batch is never selected into another batch.
 
+## Names and policies (examples use the organization Demo)
+| Object | Accepted forms |
+|---|---|
+| Servers (registration, home, vault) | `CN=DominoADMail/O=Demo` **or** `DominoADMail/Demo` (also with an OU: `CN=DominoADMail/OU=EMEA/O=Demo`) |
+| CA certifier (`CertifierName`) | `O=Demo` or `OU=Sales/O=Demo` |
+| **Organizational policy** | `*/Demo`, `*/Sales/Demo`. Domino applies it **automatically** at registration. Leave Policy empty (`-` in the mapping) and set `OrgPolicyAssignsVault=1`. |
+| **Explicit policy** | `*/DirSync-Vault`. Name it in `DefaultPolicy` or in the mapping's Policy column. |
+
+Mapping columns: empty = use the default from bulkreg.ini; `-` = explicitly none.
+
 ## Multiple servers
 - **Registration server:** one per Domino domain (the directory master). All registrations run against it.
 - **Home servers:** any number. They're assigned per user by `config\server_mapping.csv` (first matching rule wins), reviewable per row, and passed to `RegisterNewUser` in canonical form.
 - **ID Vault:** chosen by the **explicit policy** of each rule. The optional `VaultServer` column is where BulkReg checks `IsIDInVault`.
 - **Waves:**
   - Mixed batches of 500.
-  - `BatchServerFilter=Mail02/ORG` for one server per wave.
+  - `BatchServerFilter=DominoADMail2/Demo` for one server per wave.
   - `ExtraSelection` for department or region waves.
 
 ```
 MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer
-InternetAddress;*@emea.example.com;Mail02/ORG;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;VaultEMEA/ORG
-*;*;Mail01/ORG;;;;
+InternetAddress;*@emea.demo.com;CN=DominoADMail2/O=Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo
+Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;
+*;*;DominoADMail/Demo;;;;
 ```
 
 ## Steps

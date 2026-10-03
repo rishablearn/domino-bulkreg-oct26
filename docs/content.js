@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino with ID Vault, in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "2.0",
+  version: "2.1",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -41,6 +41,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["2.1", "Name formats: servers in canonical (CN=DominoADMail/O=Demo) or abbreviated (DominoADMail/Demo) form, both accepted by the code. **Organizational policies** (*/Demo, */Sales/Demo) supported alongside explicit policies (B8 Option B, OrgPolicyAssignsVault, '-' in the mapping). Consistent 'Demo' examples."],
   ["2.0", "Complete rewrite as a **from-scratch, step-by-step guide**. Every Domino object (vault, security settings, policy, roles, RA, tool database, agents) is created click by click. Agent names changed to `BulkReg\\NN - Name`, because `|` is the alias separator in Notes design names. Explicit policy names use the `*/name` form."],
 ], [1200, 8160]);
 h3("Review and approval");
@@ -66,10 +67,24 @@ tbl(["You see", "Meaning"], [
   ["**Bold**", "A button, tab, menu item or field you click or fill in"],
   ["Menu > Item > Sub-item", "Click each item in turn"],
   ["`C:\\BulkReg\\config`", "Text to type, a path, a file or a value, exactly as shown"],
-  ["`<Mail01/ORG>`", "A placeholder. Replace it, including the angle brackets, with your value from the worksheet (B1)."],
+  ["`<DominoADMail/Demo>`", "A placeholder. Replace it, including the angle brackets, with your value from the worksheet (B1)."],
   ["Result:", "What you should see after a step. If you see something else, stop and use chapter D6 (Troubleshooting)."],
   ["Done when (green box)", "The check that the procedure is complete. Do not continue until it is true."],
 ], [2600, 6760]);
+h2("Example names used in this guide");
+p("All examples use the organization **Demo**. Replace them with your own names from the worksheet (B1).");
+tbl(["Object", "Canonical form", "Abbreviated form", "Notes"], [
+  ["Registration / admin server", "`CN=DominoAdmin/O=Demo`", "`DominoAdmin/Demo`", "Holds the master Domino Directory"],
+  ["Home (mail) servers", "`CN=DominoADMail/O=Demo`, `CN=DominoADMail2/O=Demo`", "`DominoADMail/Demo`, `DominoADMail2/Demo`", "BulkReg accepts both forms anywhere a server is entered"],
+  ["Server with an OU", "`CN=DominoADMail/OU=EMEA/O=Demo`", "`DominoADMail/EMEA/Demo`", "Same rule"],
+  ["Vault server", "`CN=DominoVault/O=Demo`", "`DominoVault/Demo`", "Use the name shown in the vault document"],
+  ["Organization certifier", "`O=Demo`", "`/Demo`", "CertifierName for the Domino CA"],
+  ["OU certifier", "`OU=Sales/O=Demo`", "`/Sales/Demo`", "Registers users as John Smith/Sales/Demo"],
+  ["Registered user", "`CN=John Smith/OU=Sales/O=Demo`", "`John Smith/Sales/Demo`", "Result of registration with OrgUnit Sales"],
+  ["Organizational policy (whole org)", "`*/Demo`", "–", "Applied automatically to users under /Demo"],
+  ["Organizational policy (one OU)", "`*/Sales/Demo`", "–", "Applied automatically to users under /Sales/Demo"],
+  ["Explicit policy", "`*/DirSync-Vault`", "–", "Applied only when named at registration (Policy column)"],
+], [2300, 2700, 2300, 2060]);
 pb();
 
 // ================================================================ PART A
@@ -93,13 +108,23 @@ tbl(["Item", "Where", "Created in"], [
   ["Registration Authority entry (if you use the Domino CA)", "CA-enabled certifier", "B5"],
   ["ID Vault (only if you do not have one yet)", "Vault server", "B6"],
   ["Security Settings document (assigns the vault, password rules)", "names.nsf > Settings", "B7"],
-  ["Explicit policy (one per vault or region)", "names.nsf > Policies", "B8"],
+  ["Policy that assigns the vault: explicit (one per vault or region) or organizational", "names.nsf > Policies", "B8"],
   ["Working folders", "`C:\\BulkReg\\` on the admin workstation", "B9"],
   ["The BulkReg kit (code, templates, docs)", "`C:\\BulkReg-kit\\`", "B10"],
   ["Configuration: bulkreg.ini, server_mapping.csv", "`C:\\BulkReg\\config\\`", "B11, B12"],
   ["Tool database bulkreg.nsf (+ optional log database)", "Local Notes data directory", "B13–B15"],
   ["Script library and 5 agents", "Inside bulkreg.nsf", "B17, B18"],
 ], [4300, 3200, 1860]);
+h2("A4 Organizational or explicit policy: which one assigns the vault?");
+p("The ID reaches the vault because the user's **effective policy** includes a Security Settings document that assigns the vault. HCL: *“If you create an organizational policy, it automatically applies when you register users. If you create an explicit policy, you assign it manually during user registration, in the Person document or by using the Policy Assignment tool.”*");
+tbl(["", "Organizational policy", "Explicit policy"], [
+  ["Name in the Policies view", "`*/Demo` (whole org), `*/Sales/Demo` (OU), `*` (everyone)", "`*/DirSync-Vault`"],
+  ["Who gets it", "Every user whose Notes name is under that org / OU, **including existing users**", "Only users it is assigned to"],
+  ["How BulkReg uses it", "Nothing to pass: Domino applies it at registration. Leave Policy empty (or `-` in the mapping) and set `OrgPolicyAssignsVault=1`.", "Passed per user (Policy column / DefaultPolicy) to NotesRegistration.PolicyName"],
+  ["Use it when", "The whole org or OU should use the vault anyway", "Only the DirSync users should get these settings, or different groups need different vaults"],
+], [2200, 3600, 3560]);
+warn("Creating or changing an **organizational** policy affects **every user** under that org or OU, not only BulkReg users. Get the change approved by the platform and security owners.");
+p("Both can apply at the same time: the effective policy combines the organizational policy for the user's OU with an explicit policy. BulkReg's pilot (C5) shows the result in the user's **Policy synopsis**.");
 pb();
 
 // ================================================================ PART B
@@ -110,18 +135,18 @@ h2("B1 Fill in the planning worksheet");
 meta("Domino administrator", "Anywhere", "nothing");
 p("Every later step uses these values. Collect them first and get the platform owner to confirm them.");
 tbl(["#", "Item", "Example", "Your value"], [
-  ["1", "Domino domain and organization", "ORG", ""],
-  ["2", "Registration server (holds the master Domino Directory)", "Admin01/ORG", ""],
-  ["3", "Home servers users will be assigned to (all of them)", "Mail01/ORG, Mail02/ORG, Mail03/ORG", ""],
-  ["4", "How users are split across home servers (department, email domain, location…)", "@emea.example.com → Mail02/ORG", ""],
+  ["1", "Domino domain and organization", "Demo", ""],
+  ["2", "Registration server (holds the master Domino Directory)", "DominoAdmin/Demo", ""],
+  ["3", "Home servers users will be assigned to (canonical or abbreviated)", "CN=DominoADMail/O=Demo, DominoADMail2/Demo, DominoADMail3/Demo", ""],
+  ["4", "How users are split across home servers (department, email domain, location…)", "@emea.demo.com → DominoADMail2/Demo", ""],
   ["5", "Certification method: Domino CA (recommended) or certifier ID file", "Domino CA", ""],
-  ["6", "CA-enabled certifier name (CA) or certifier ID file path", "OU=Users/O=ORG", ""],
-  ["7", "ID Vault name(s) and vault server(s)", "DirSyncVault on Vault01/ORG", ""],
+  ["6", "CA-enabled certifier name (CA) or certifier ID file path", "O=Demo or OU=Sales/O=Demo", ""],
+  ["7", "ID Vault name(s) and vault server(s)", "DemoVault on DominoVault/Demo (CN=DominoVault/O=Demo)", ""],
   ["8", "Security Settings document name(s)", "BulkReg-Vault-Security", ""],
-  ["9", "Explicit policy name(s), one per vault or region", "DirSync-Vault (stored as */DirSync-Vault)", ""],
+  ["9", "Policy type (organizational or explicit, see A4) and exact name(s)", "Explicit: */DirSync-Vault, or organizational: */Demo, */Sales/Demo", ""],
   ["10", "Optional organizational unit (OU) per group of users", "EMEA", ""],
   ["11", "Optional groups to add new users to", "BR-EMEA", ""],
-  ["12", "Admin ID that will run BulkReg", "Admin User/ORG", ""],
+  ["12", "Admin ID that will run BulkReg", "Admin User/Demo", ""],
   ["13", "Windows admin workstation name", "ADMIN-PC01", ""],
   ["14", "Batch size", "500", ""],
   ["15", "Change ticket number", "CHG000123", ""],
@@ -228,7 +253,9 @@ ol(
 done("The Security Settings document is listed in the Settings view, and its ID Vault tab shows your vault.");
 
 // ---------- B8
-h2("B8 Create the explicit policy");
+h2("B8 Create the policy that assigns the vault");
+p("Choose **Option A (explicit)** or **Option B (organizational)** using A4. Write your choice in worksheet row 9.");
+h3("Option A – Explicit policy (only the users BulkReg registers)");
 meta("Domino administrator with [PolicyCreator]", "Domino Administrator", "creates one policy document in names.nsf");
 ol(
   "Click the **People & Groups** tab, then open the **Policies** view.",
@@ -243,7 +270,19 @@ ol(
   "Repeat B7 and B8 for every additional vault or region."
 );
 warn("BulkReg passes the policy name to `NotesRegistration.PolicyName`. Use the name exactly as the Policies view shows it (with `*/`). The pilot (C5) confirms it: Person document > **Policy synopsis** must show this policy.");
-done("Each explicit policy is listed in the Policies view, linked to a Security Settings document with the right vault, and its exact name is in the worksheet.");
+h3("Option B – Organizational policy (everyone under an org or OU)");
+ol(
+  "Click the **People & Groups** tab, then open the **Policies** view.",
+  "Check whether a policy for your org or OU already exists (for example `*/Demo` or `*/Sales/Demo`). If it does, **edit** it in step 6 instead of creating a new one.",
+  "Click **Add Policy**.",
+  "In **Policy name**, type the organization or OU **without** `*/`, for example `Demo` or `Sales/Demo`.",
+  "Set **Policy type** to **Organizational**.",
+  "In the **Security** settings field, select the Security Settings document from B7. Press **F9** if it is not listed.",
+  "Click **Save & Close**. *Result:* the Policies view lists `*/Demo` (or `*/Sales/Demo`).",
+  "In bulkreg.ini set `OrgPolicyAssignsVault=1` and leave `DefaultPolicy=` empty (B11). In server_mapping.csv, put `-` in the Policy column of the rules that rely on it (B12).",
+  "If you use an OU policy (`*/Sales/Demo`), make sure the mapping gives those users OrgUnit `Sales`, so they are registered as `John Smith/Sales/Demo`."
+);
+done("Option A: each explicit policy is listed, linked to a Security Settings document with the right vault, and its exact name is in the worksheet. Option B: the organizational policy is listed, linked to that Security Settings document, approved, and OrgPolicyAssignsVault=1.");
 pb();
 
 // ---------- B9
@@ -302,14 +341,15 @@ ol(
   "Choose **File > Save**. Keep the encoding as **UTF-8**."
 );
 tbl(["Key", "Enter", "From"], [
-  ["DirectoryServer", "The registration server, e.g. `Admin01/ORG`", "Worksheet 2"],
+  ["DirectoryServer", "The registration server: `DominoAdmin/Demo` or `CN=DominoAdmin/O=Demo`", "Worksheet 2"],
   ["RegistrationServer", "The same server", "Worksheet 2"],
   ["UseCA", "`1` for the Domino CA, `0` for a certifier ID file", "Worksheet 5"],
-  ["CertifierName", "With UseCA=1: the CA certifier, e.g. `OU=Users/O=ORG`", "Worksheet 6"],
+  ["CertifierName", "With UseCA=1: the CA certifier, e.g. `O=Demo` or `OU=Sales/O=Demo`", "Worksheet 6"],
   ["CertifierIDFile", "With UseCA=0: `C:\\BulkReg\\cert\\<file>.id`. With UseCA=1: leave the placeholder or clear it.", "B5 Option 2"],
-  ["DefaultHomeServer", "The home server for users that match no specific rule", "Worksheet 3"],
-  ["DefaultPolicy", "The explicit policy **exactly** as listed, e.g. `*/DirSync-Vault`", "Worksheet 9"],
-  ["VaultServer", "The vault server, e.g. `Vault01/ORG`", "Worksheet 7"],
+  ["DefaultHomeServer", "Home server for users that match no specific rule: `DominoADMail/Demo` or `CN=DominoADMail/O=Demo`", "Worksheet 3"],
+  ["DefaultPolicy", "Explicit policy **exactly** as listed, e.g. `*/DirSync-Vault`. **Empty** with an organizational policy.", "Worksheet 9"],
+  ["OrgPolicyAssignsVault", "`1` if an organizational policy (`*/Demo`, `*/Sales/Demo`) assigns the vault, otherwise `0`", "B8"],
+  ["VaultServer", "The vault server, e.g. `DominoVault/Demo` (as shown in the vault document)", "Worksheet 7"],
   ["BatchSize", "`500` or your value", "Worksheet 14"],
   ["LogServer / LogDb", "Leave empty unless you create the log database in B15", "B15"],
   ["DryRun", "Leave `1`", "–"],
@@ -322,12 +362,12 @@ meta("Domino administrator", "Notepad", "C:\\BulkReg\\config\\server_mapping.csv
 p("Each line is a **rule**: *if this Person document field matches this pattern, use this home server, OU, policy, groups and vault*. Rules are checked top-down; the **first match wins**. The last rule `*;*` catches everyone else.");
 tbl(["Column", "Meaning", "Example"], [
   ["MatchField", "Person document field to test (any field: Department, InternetAddress, Location, CompanyName…). `*` = any.", "`InternetAddress`"],
-  ["MatchPattern", "Pattern, not case-sensitive. `*` = any text, `?` = one character.", "`*@emea.example.com`"],
-  ["HomeServer", "Home server for matching users (empty = DefaultHomeServer)", "`Mail02/ORG`"],
-  ["OrgUnit", "OU added to the Notes name (empty = DefaultOrgUnit)", "`EMEA`"],
-  ["Policy", "Explicit policy, exactly as listed (empty = DefaultPolicy)", "`*/DirSync-Vault-EMEA`"],
-  ["Groups", "Comma-separated groups (empty = DefaultGroups)", "`BR-EMEA`"],
-  ["VaultServer", "Vault server for the vault check (empty = VaultServer)", "`VaultEMEA/ORG`"],
+  ["MatchPattern", "Pattern, not case-sensitive. `*` = any text, `?` = one character.", "`*@emea.demo.com`"],
+  ["HomeServer", "Home server for matching users, canonical or abbreviated (empty = DefaultHomeServer)", "`CN=DominoADMail2/O=Demo`"],
+  ["OrgUnit", "OU added to the Notes name (empty = DefaultOrgUnit, `-` = none)", "`EMEA` → John Smith/EMEA/Demo"],
+  ["Policy", "Explicit policy exactly as listed (empty = DefaultPolicy, `-` = none: rely on the organizational policy)", "`*/DirSync-Vault-EMEA` or `-`"],
+  ["Groups", "Comma-separated groups (empty = DefaultGroups, `-` = none)", "`BR-EMEA`"],
+  ["VaultServer", "Vault server for the vault check (empty = VaultServer)", "`DominoVaultEMEA/Demo`"],
 ], [2100, 4900, 2360]);
 ol(
   "Open `C:\\BulkReg\\config\\server_mapping.csv` in **Notepad** (do not use Excel for this file).",
@@ -339,10 +379,16 @@ ol(
 );
 p("Worked example for three servers:");
 code(`MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer
-InternetAddress;*@emea.example.com;Mail02/ORG;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;VaultEMEA/ORG
-InternetAddress;*@apac.example.com;Mail03/ORG;APAC;*/DirSync-Vault-APAC;BR-APAC;VaultAPAC/ORG
-Department;Finance*;Mail01/ORG;Finance;*/DirSync-Vault;BR-Finance;
-*;*;Mail01/ORG;;;;`);
+InternetAddress;*@emea.demo.com;CN=DominoADMail2/O=Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo
+InternetAddress;*@apac.demo.com;DominoADMail3/Demo;APAC;*/DirSync-Vault-APAC;BR-APAC;DominoVaultAPAC/Demo
+Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;
+*;*;DominoADMail/Demo;;;;`);
+tbl(["Rule", "Result for a matching user"], [
+  ["1 (EMEA)", "Home server DominoADMail2/Demo, name John Smith/EMEA/Demo, explicit policy */DirSync-Vault-EMEA, group BR-EMEA, vault checked on DominoVaultEMEA/Demo"],
+  ["2 (APAC)", "Home server DominoADMail3/Demo, name …/APAC/Demo, explicit policy */DirSync-Vault-APAC"],
+  ["3 (Sales)", "Home server DominoADMail/Demo, name John Smith/Sales/Demo, **no explicit policy**: the organizational policy */Sales/Demo assigns the vault"],
+  ["4 (everyone else)", "Defaults from bulkreg.ini"],
+], [1800, 7560]);
 done("Every rule names an existing server and policy from the worksheet, and the last rule is the catch-all.");
 pb();
 
@@ -534,7 +580,7 @@ ol(
   "Set `DryRun=0` in bulkreg.ini. Save.",
   "Run **03 - Register Batch**, choose the pilot batch, click **Yes**, type the **batch ID** exactly when asked, and enter the certifier password if UseCA=0.",
   "Read the end dialog: ok=2. Open `BATCH-<id>_results.csv`. *Result:* both rows REGISTERED with VaultStatus IN_VAULT.",
-  "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), hierarchical full name, correct home server, **MailSystem** unchanged (compare with B3), and **Policy synopsis** showing your explicit policy.",
+  "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), hierarchical full name, correct home server, **MailSystem** unchanged (compare with B3), and **Policy synopsis** showing your explicit and/or organizational policy with the vault.",
   "On a test PC, set up Notes for one pilot user: the ID must download from the vault, and the user must be asked to change the password.",
   "Run **04 - Verify Registration and Vault** and choose the pilot batch. *Result:* 2 × REGISTERED, IN_VAULT.",
   "Set `DryRun=1` and clear `ExtraSelection=` in bulkreg.ini. Save."
@@ -594,13 +640,13 @@ h2("D1 Registering across multiple servers");
 tbl(["Role", "How many", "What BulkReg does with it"], [
   ["Registration server", "One per Domino domain (holds the master Domino Directory)", "All registrations run against it (`RegistrationServer`). Person documents are updated there and replicate to all servers."],
   ["Home servers", "Any number", "Assigned per user by server_mapping.csv, reviewable per row in the batch. Passed to RegisterNewUser in canonical form (CN=…/O=…); this becomes the user's home/mail server."],
-  ["ID Vault(s)", "One or more, each with replicas", "The **explicit policy** (its Security Settings) decides which vault receives the ID. `VaultServer` is only where BulkReg checks IsIDInVault."],
+  ["ID Vault(s)", "One or more, each with replicas", "The user's **effective policy** (explicit and/or organizational, through its Security Settings) decides which vault receives the ID. `VaultServer` is only where BulkReg checks IsIDInVault."],
   ["Policies", "One per vault or group", "Map each user group to the policy for its vault and settings"],
 ], [2000, 2600, 4760]);
 h3("Batch strategies");
 tbl(["Strategy", "Setting", "Use when"], [
   ["Mixed batches", "BatchSize=500, no filter", "All servers are ready"],
-  ["One server per wave", "`BatchServerFilter=Mail02/ORG`", "Servers go live on different dates, or are owned by different teams"],
+  ["One server per wave", "`BatchServerFilter=DominoADMail2/Demo`", "Servers go live on different dates, or are owned by different teams"],
   ["Department or region waves", "`ExtraSelection=Department = \"Sales\"`", "Business-driven rollout"],
   ["Individual exceptions", "Edit HomeServer / Policy / VaultServer in the batch row", "A few users need a different server"],
 ], [2400, 3500, 3460]);
@@ -634,7 +680,8 @@ tbl(["Key", "Default", "Meaning"], [
   ["DirectoryServer / DirectoryFile", "– / names.nsf", "Directory that DirSync writes into"],
   ["RegistrationServer / RegistrationLog", "– / log.nsf", "Server that registers; Domino registration log"],
   ["UseCA / CertifierName / CertifierIDFile", "1 / – / –", "Domino CA or certifier ID (password prompted, never stored)"],
-  ["DefaultHomeServer / DefaultOrgUnit / DefaultPolicy / DefaultGroups", "–", "Defaults when no mapping rule sets a value"],
+  ["DefaultHomeServer / DefaultOrgUnit / DefaultPolicy / DefaultGroups", "–", "Defaults when no mapping rule sets a value. Servers: canonical or abbreviated."],
+  ["OrgPolicyAssignsVault", "0", "1 = an organizational policy (*/Demo, */OU/Demo) assigns the vault; no explicit policy needed"],
   ["VaultServer / VaultCheckAfterReg", "– / 1", "Default vault server for the check; check after each user"],
   ["MappingFile", "C:\\BulkReg\\config\\server_mapping.csv", "Multi-server rules"],
   ["ExtraSelection / BatchServerFilter", "(empty)", "Narrow a batch: formula / one home server"],
@@ -697,7 +744,10 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["\"header is missing … columns\"", "File saved without its header, or the layout changed", "Rebuild; save as CSV UTF-8 (C3)"],
   ["SKIPPED: objectGUID mismatch", "Document recreated, or the row was edited", "Rebuild the batch"],
   ["FAILED stage=RegisterNewUser", "Not an RA, wrong certifier or password, missing roles, unknown server or policy", "B4, B5, B8; check the names in bulkreg.ini and the mapping"],
-  ["REGISTERED_VAULT_PENDING", "Policy without a vault, wrong policy name, wrong VaultServer, replication", "B7/B8; Policy synopsis; re-run Verify later"],
+  ["REGISTERED_VAULT_PENDING", "Policy without a vault, wrong policy name, wrong VaultServer, replication, or the user's OU does not match the organizational policy", "B7/B8; Policy synopsis; re-run Verify later"],
+  ["WARN: No explicit policy", "Policy empty and OrgPolicyAssignsVault=0", "Set the explicit policy, or OrgPolicyAssignsVault=1 if an organizational policy assigns the vault"],
+  ["ERROR: Policy looks like a server/canonical name", "A server name (CN=…/O=…) was put in the Policy column", "Put the policy name (*/Name) or `-`"],
+  ["ERROR: Policy '*'", "The organization-wide policy was entered", "Leave Policy empty: `*` applies automatically"],
   ["MailSystem changes after the next DirSync", "DirSync attribute mapping (Directory Sync configuration, Synchronization tab)", "Adjust the DirSync mapping or PreserveMailSystem"],
 ], [2900, 3300, 3160]);
 p("Escalate to the platform owner if failures affect more than one batch. Escalate immediately to the security owner if a password file, ID file or certifier may have been exposed.");
@@ -744,6 +794,8 @@ tbl(["Term", "Meaning"], [
   ["Home server", "The user's Domino server (MailServer field)"],
   ["ID Vault", "Server-side store for Notes IDs; assigned through Security Settings in a policy"],
   ["Explicit policy", "A policy assigned to specific users (stored as */name)"],
+  ["Organizational policy", "A policy applied automatically to everyone under an org or OU (*/Demo, */Sales/Demo)"],
+  ["Canonical / abbreviated name", "CN=DominoADMail/O=Demo / DominoADMail/Demo: the same name in two formats"],
   ["RA", "Registration Authority: may register users through the Domino CA"],
   ["Batch / Batch ID", "A reviewed list of users / its name BATCH-yyyymmdd-hhnnss"],
   ["Include=Y", "The row will be registered"],
@@ -754,7 +806,7 @@ pb();
 // ================================================================ APPENDICES
 h1("Appendices");
 h2("Appendix A – Manual alternatives");
-p("**Register Selected Person:** in Domino Administrator, People & Groups > select DirSync users > right-click **Register Selected Person**. You are prompted per user. Choose the explicit policy.");
+p("**Register Selected Person:** in Domino Administrator, People & Groups > select DirSync users > right-click **Register Selected Person**. You are prompted per user. Choose the explicit policy if you use one.");
 p("**Registration text file:** Agent 05 writes `C:\\BulkReg\\secure\\BatchReg_DirSync_<run>.txt` (HCL 20-field format, UTF-8 BOM, contains passwords). Import it with **People > Register > Import Text File**. HCL documents this for new users, so test 1–2 DirSync users first.");
 
 h2("Appendix B – Agent reference");
