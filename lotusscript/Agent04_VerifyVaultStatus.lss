@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent      : 04 | Verify Registration + ID Vault Status   (READ-ONLY)
-' Trigger    : Windows client: Action menu selection, Target: None
-'              Server (Windows / Linux-RHEL): On schedule, see guide ch. 15
+' Trigger    : Action menu selection, Target: None
+'              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
 '
 ' For every Person doc with objectGUID (DirSync user) reports:

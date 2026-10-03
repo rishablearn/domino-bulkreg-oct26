@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent      : 03 | Bulk Register DirSync Users (ID -> ID Vault)
-' Trigger    : Windows client: Action menu selection, Target: None
-'              Server (Windows / Linux-RHEL): On schedule, see guide ch. 15
+' Trigger    : Action menu selection, Target: None
+'              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
 '
 ' Method     : NotesRegistration.ContactNoteID  (HCL Domino Designer 14.5)
@@ -14,8 +14,7 @@
 '              Security Settings assign the ID Vault. Verified afterwards with
 '              NotesIDVault.IsIDInVault.
 '
-' Safety     : DryRun (default ON), typed confirmation (client) or dated
-'              ServerConfirm token (server), BatchSize,
+' Safety     : DryRun (default ON), typed REGISTER confirmation, BatchSize,
 '              MaxConsecutiveErrors circuit-breaker, idempotent
 '              (re-checks Certificate before every registration), per-user
 '              error isolation, audit row for every user/action.
@@ -42,15 +41,6 @@ Sub Initialize
 	pauseMs = CfgL("PauseMs", 500)
 	maxConsec = CfgL("MaxConsecutiveErrors", 5)
 
-	' Headless (server on Windows or Linux/RHEL) cannot prompt for a certifier
-	' password and BulkReg never stores one -> the Domino CA is mandatory.
-	' HCL: when run on the server, the SERVER must be listed as an RA in the CA.
-	If gHeadless And Not CfgB("UseCA", True) Then
-		BR_Log LVL_ERROR, "Headless mode requires UseCA=1 (server listed as Registration Authority). Run refused."
-		BR_Close "Refused: UseCA=0 in headless mode"
-		Exit Sub
-	End If
-
 	' ---------- collect candidate NoteIDs first (stable list) ----------
 	Set db = BR_OpenDirectory()
 	Set col = BR_GetCandidates(db, True)
@@ -68,7 +58,7 @@ Sub Initialize
 	Loop
 	Set col = Nothing
 
-	' ---------- confirmations (dialogs in the client, config token on a server) ----------
+	' ---------- confirmations (Yes/No, typed REGISTER, certifier password) ----------
 	If Not ConfirmRun(nIds, batch) Then Exit Sub
 
 	If gMode = "LIVE" And CfgB("WritePasswordFile", True) Then
@@ -121,29 +111,11 @@ End Sub
 
 '---------------------------------------------------------------------
 ' Operator confirmation.
-'  INTERACTIVE (Windows client): Yes/No summary, typed REGISTER for LIVE,
-'                                masked certifier password when UseCA=0.
-'  HEADLESS (server, Windows or Linux/RHEL): LIVE only runs when bulkreg.ini
-'                                contains ServerConfirm=REGISTER-<yyyymmdd> for
-'                                TODAY's date (server clock), so a stale config
-'                                can never trigger a live run on a later day.
+'  Yes/No summary, typed REGISTER for LIVE, masked certifier password
+'  when UseCA=0. Windows Domino Administrator client only.
 '---------------------------------------------------------------------
 Function ConfirmRun(nIds As Long, batch As Long) As Boolean
-	Dim ws As NotesUIWorkspace, ans As Variant, token As String
-	If gHeadless Then
-		If gMode = "LIVE" Then
-			token = "REGISTER-" & Format$(Today, "yyyymmdd")
-			If CfgS("ServerConfirm", "") <> token Then
-				BR_Log LVL_WARN, "LIVE headless run refused: set ServerConfirm=" & token & " in bulkreg.ini for today's run."
-				BR_Close "Not confirmed (ServerConfirm)"
-				Exit Function
-			End If
-		End If
-		BR_Log LVL_INFO, "Headless run confirmed: mode=" & gMode & " candidates=" & nIds & " batch=" & batch & " cert=" & BR_CertText()
-		ConfirmRun = True
-		Exit Function
-	End If
-
+	Dim ws As NotesUIWorkspace, ans As Variant
 	Set ws = New NotesUIWorkspace
 	ans = ws.Prompt(PROMPT_YESNO, "BulkReg - " & gMode, _
 	"Mode: " & gMode & Chr$(10) & _

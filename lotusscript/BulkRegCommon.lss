@@ -1,17 +1,12 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 1.1.0 (multi-OS)
+' Script Library : BulkRegCommon            Version 1.2.0
 ' Purpose        : Shared code for the BulkReg framework
-'                  (config, multi-server mapping, logging, audit, helpers,
-'                   platform + run-mode abstraction)
+'                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_ExportToBatchRegFile,
 '                  Agent03_BulkRegister, Agent04_VerifyVaultStatus
-' Runs in        : INTERACTIVE - Domino Administrator / Notes client on Windows
-'                    (agent trigger: Action menu selection, Target: None)
-'                  HEADLESS    - Domino server on Windows or Linux/RHEL
-'                    (agent trigger: On schedule, run on demand with
-'                     tell amgr run "bulkreg.nsf" 'agent name')
-'                  Mode is detected with NotesSession.IsOnServer; paths are
-'                  normalised for the platform reported by NotesSession.Platform.
+' Runs in        : HCL Domino Administrator client on WINDOWS only
+'                  (agent trigger: Action menu selection, Target: None).
+'                  BR_Init refuses to run on a server or a non-Windows client.
 '
 ' Paste this into  Designer > Code > Script Libraries > New LotusScript
 ' Library, name it exactly "BulkRegCommon".
@@ -19,7 +14,7 @@
 Option Public
 Option Declare
 
-Public Const BR_VERSION = "1.1.0"
+Public Const BR_VERSION = "1.2.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -74,61 +69,57 @@ Public gDebugFile As String
 Public gAuditFile As String
 Public gNLog As NotesLog
 Public gSession As NotesSession
+Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
 
-' ---------- platform / run mode (multi-OS) ----------
-Public gHeadless As Boolean      ' True = server agent (Windows or Linux/RHEL server), no UI
-Public gIsWindows As Boolean
-Public gPlatform As String       ' NotesSession.Platform: "Windows/64", "Linux/64", "UNIX", ...
-Public gSep As String            ' path separator for this platform
-Public gBase As String           ' default base folder (C:\BulkReg\ or /local/bulkreg/)
-
-Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' notes.ini variable (client or server)
+Public Const gSep = "\"                         ' Windows path separator
+Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
+Public gBase As String
+Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes.ini
 
 '=====================================================================
 ' INITIALISATION
 '=====================================================================
-' Interactive (Windows Notes/Admin client): prompts for and remembers the
-'   config path in the client notes.ini.
-' Headless (scheduled / "tell amgr run" agent on a Windows or Linux/RHEL
-'   Domino server): reads the config path from the SERVER notes.ini
-'   variable BulkRegConfigPath (console: set config BulkRegConfigPath=...).
+' Checks it runs in the Windows Domino Administrator / Notes client,
+' prompts for (and remembers) the config path, loads config + mapping,
+' opens the debug log, audit CSV and optional Agent Log database.
 Function BR_Init(toolName As String) As Boolean
 	On Error GoTo ErrH
-	Dim ws As NotesUIWorkspace           ' created only in interactive mode
+	Dim ws As NotesUIWorkspace
 	Dim cfgPath As Variant
 	Dim lastPath As String
 
 	Set gSession = New NotesSession
 	gTool = toolName
 	gRunID = Format$(Now, "yyyymmdd-hhnnss")
-	gOperator = gSession.EffectiveUserName
+	gOperator = gSession.UserName
 	gLogLevel = LVL_INFO
+	gBase = BR_DEFAULT_BASE
+	gPlatform = gSession.Platform
 	Randomize
-	Call BR_DetectPlatform()
 
-	lastPath = gSession.GetEnvironmentString(BR_ENV_CFG, True)
-	If lastPath = "" Then lastPath = gBase & "config" & gSep & "bulkreg.ini"
-	If gHeadless Then
-		cfgPath = lastPath
-		Print "BulkReg " & BR_VERSION & " " & toolName & " (headless on " & gSession.Platform & ") config=" & lastPath
-	Else
-		Set ws = New NotesUIWorkspace
-		cfgPath = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg " & BR_VERSION & " - " & toolName, _
-		"Path to bulkreg.ini:", lastPath)
-		If IsEmpty(cfgPath) Then Exit Function
-		If Trim$(CStr(cfgPath)) = "" Then Exit Function
-		Call gSession.SetEnvironmentVar(BR_ENV_CFG, CStr(cfgPath), True)
+	' ---- supported environment: Windows client only ----
+	If gSession.IsOnServer Then
+		Print "BulkReg: must be run from the Windows Domino Administrator client (Actions menu), not on a server. Run refused."
+		Exit Function
 	End If
+	If InStr(1, gPlatform, "Windows", 5) = 0 Then
+		Messagebox "BulkReg is supported only in the Domino Administrator client on Windows." & Chr$(10) & _
+		"Detected platform: " & gPlatform, 16, "BulkReg"
+		Exit Function
+	End If
+
+	Set ws = New NotesUIWorkspace
+	lastPath = gSession.GetEnvironmentString(BR_ENV_CFG, True)
+	If lastPath = "" Then lastPath = gBase & "config\bulkreg.ini"
+	cfgPath = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg " & BR_VERSION & " - " & toolName, _
+	"Path to bulkreg.ini:", lastPath)
+	If IsEmpty(cfgPath) Then Exit Function
+	If Trim$(CStr(cfgPath)) = "" Then Exit Function
+	Call gSession.SetEnvironmentVar(BR_ENV_CFG, CStr(cfgPath), True)
 
 	If Not BR_LoadConfig(BR_Path(CStr(cfgPath))) Then Exit Function
 	gLogLevel = BR_LevelFromName(CfgS("LogLevel", "INFO"))
 	If CfgS("BaseDir", "") <> "" Then gBase = BR_Dir(CfgS("BaseDir", ""))
-
-	' headless runs must be explicitly enabled in the config (kill switch)
-	If gHeadless And Not CfgB("ServerRunEnabled", False) Then
-		Print "BulkReg: ServerRunEnabled=0 in " & CStr(cfgPath) & " - headless run refused."
-		Exit Function
-	End If
 
 	' --- output files ---
 	Dim auditDir As String
@@ -154,14 +145,13 @@ Function BR_Init(toolName As String) As Boolean
 	End If
 
 	BR_Log LVL_INFO, "==== BulkReg " & BR_VERSION & " | tool=" & toolName & " | run=" & gRunID & _
-	" | operator=" & gOperator & " | platform=" & gPlatform & " | mode=" & BR_IIfStr(gHeadless, "HEADLESS(server)", "INTERACTIVE(client)") & _
-	" | config=" & CStr(cfgPath) & " ===="
+	" | operator=" & gOperator & " | platform=" & gPlatform & " | config=" & CStr(cfgPath) & " ===="
 	If gNLog Is Nothing And CfgS("LogDb", "") <> "" Then
 		BR_Log LVL_WARN, "Could not open Agent Log db " & CfgS("LogServer", "") & "!!" & CfgS("LogDb", "") & " - continuing with file logging only."
 	End If
 	BR_DumpConfig
 
-	If Not BR_LoadMapping(BR_CfgFile("MappingFile", "config" & gSep & "server_mapping.csv")) Then Exit Function
+	If Not BR_LoadMapping(BR_CfgFile("MappingFile", "config\server_mapping.csv")) Then Exit Function
 	BR_Init = True
 	Exit Function
 ErrH:
@@ -170,44 +160,27 @@ ErrH:
 End Function
 
 '=====================================================================
-' PLATFORM / UI ABSTRACTION  (Windows + Linux/RHEL)
+' PATH + MESSAGE HELPERS (Windows)
 '=====================================================================
-Sub BR_DetectPlatform()
-	gPlatform = gSession.Platform
-	gIsWindows = (InStr(1, gPlatform, "Windows", 5) > 0)
-	gHeadless = gSession.IsOnServer
-	If gIsWindows Then
-		gSep = "\"
-		gBase = "C:\BulkReg\"
-	Else
-		gSep = "/"
-		gBase = "/local/bulkreg/"
-	End If
-End Sub
-
-' Converts any path to the separators of the current platform
+' Accepts / or \ in config values and returns a Windows path
 Function BR_Path(p As String) As String
-	If gSep = "/" Then BR_Path = Replace(p, "\", "/") Else BR_Path = Replace(p, "/", "\")
+	BR_Path = Replace(p, "/", "\")
 End Function
 
-' Folder from config (or <BaseDir>/<defSub>/), normalised, trailing separator
+' Folder from config (or <BaseDir>\<defSub>\), with trailing backslash
 Function BR_CfgDir(k As String, defSub As String) As String
 	BR_CfgDir = BR_Dir(CfgS(k, gBase & defSub))
 End Function
 
-' File path from config (or <BaseDir>/<defRel>), normalised
+' File path from config (or <BaseDir>\<defRel>)
 Function BR_CfgFile(k As String, defRel As String) As String
 	BR_CfgFile = BR_Path(CfgS(k, gBase & defRel))
 End Function
 
-' Message to the operator: dialog in the client, log/console line on a server
+' Message box for the operator (also written to the debug log)
 Sub BR_Msg(txt As String, mbType As Integer)
-	If gHeadless Then
-		Print "BulkReg: " & Replace(txt, Chr$(10), " | ")
-		If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [MSG  ] " & Replace(txt, Chr$(10), " | "))
-	Else
-		Messagebox txt, mbType, "BulkReg " & gTool
-	End If
+	If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [MSG  ] " & Replace(txt, Chr$(10), " | "))
+	Messagebox txt, mbType, "BulkReg " & gTool
 End Sub
 
 Function BR_IIfStr(c As Boolean, a As String, b As String) As String

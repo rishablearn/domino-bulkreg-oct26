@@ -1,16 +1,15 @@
 '=====================================================================
 ' Agent      : 02 | Export DirSync users to Registration Text File
 '              (READ-ONLY on names.nsf)
-' Trigger    : Windows client: Action menu selection, Target: None
-'              Server (Windows / Linux-RHEL): On schedule, see guide ch. 15
+' Trigger    : Action menu selection, Target: None
+'              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
 '
 ' Produces the 20-field ';' separated, UTF-8 BOM file documented in
 ' "Registering users from a text file" (Domino 14.5.1) for use with
 '   People > Register > Import Text File   (Domino Administrator, Windows)
 ' plus a review CSV (no passwords) in AuditDir.
-' The file always uses CRLF line ends, because it is imported on Windows
-' even when it is produced on a Linux/RHEL server.
+' The file uses CRLF line ends (Windows).
 '
 ' Field order (HCL doc, Table 1):
 '  1 Last  2 First  3 MI  4 OrgUnit  5 Password  6 IDFileDir  7 IDFileName
@@ -18,9 +17,7 @@
 ' 13 ForwardingAddress  14 Profile  15 LocalAdmin  16 InternetAddress
 ' 17 ShortName  18 AltName  19 AltOrgUnit  20 MailTemplate
 '
-' Column 6 (ID file directory) is taken from ImportIDFileDir - the folder as
-' seen by the Windows admin client that performs the import - and falls
-' back to IDFileDir.
+' Column 6 (ID file directory) is IDFileDir.
 '
 ' !! The output file contains INITIAL PASSWORDS. It is written to
 '    PasswordDir (restricted folder). Delete it after registration.
@@ -39,25 +36,20 @@ Sub Initialize
 
 	If Not BR_Init("ExportBatchReg") Then Exit Sub
 
-	' --- password option: dialog in the client, config value on a server ---
-	If gHeadless Then
-		genPw = CfgB("ExportGeneratePasswords", True)
-	Else
-		Set ws = New NotesUIWorkspace
-		ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Export", _
-		"Generate a random initial password per user?" & Chr$(10) & Chr$(10) & _
-		"YES = random password per user (recommended)" & Chr$(10) & _
-		"NO  = leave column 5 empty (you must fill it in before importing; it is required)")
-		genPw = (ans = 1)
-	End If
+	' --- password option ---
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Export", _
+	"Generate a random initial password per user?" & Chr$(10) & Chr$(10) & _
+	"YES = random password per user (recommended)" & Chr$(10) & _
+	"NO  = leave column 5 empty (you must fill it in before importing; it is required)")
+	genPw = (ans = 1)
 	BR_Log LVL_INFO, "Generate initial passwords: " & BR_IIfStr(genPw, "yes", "no")
 
 	secDir = BR_CfgDir("PasswordDir", "secure")
 	If Not BR_DirWritable(secDir) Then Error 3001, "PasswordDir not writable: " & secDir
 	outFile = secDir & "BatchReg_DirSync_" & gRunID & ".txt"
 
-	idDirForImport = CfgS("ImportIDFileDir", "")
-	If idDirForImport = "" Then idDirForImport = BR_CfgDir("IDFileDir", "ids")
+	idDirForImport = BR_CfgDir("IDFileDir", "ids")
 
 	Set st = gSession.CreateStream()
 	If Not st.Open(outFile, "UTF-8") Then Error 3002, "Cannot create " & outFile

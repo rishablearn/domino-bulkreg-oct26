@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent      : 01 | Preflight Check            (READ-ONLY - changes nothing)
-' Trigger    : Windows client: Action menu selection, Target: None
-'              Server (Windows / Linux-RHEL): On schedule, see guide ch. 15
+' Trigger    : Action menu selection, Target: None
+'              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
 '
 ' Checks environment + every DirSync candidate and writes
@@ -47,11 +47,7 @@ Sub Initialize
 		envWarn = envWarn + 1
 	End If
 	If CfgB("DryRun", True) Then BR_Log LVL_INFO, "DryRun=1 (safe mode) is set"
-	BR_Log LVL_INFO, "Platform " & gPlatform & ", mode " & BR_IIfStr(gHeadless, "HEADLESS (server agent)", "INTERACTIVE (client)")
-	If gHeadless And Not CfgB("UseCA", True) Then
-		BR_Log LVL_ERROR, "FAIL  Headless (server) mode requires UseCA=1 - a certifier password cannot be supplied without UI"
-		envErr = envErr + 1
-	End If
+	BR_Log LVL_INFO, "Client platform " & gPlatform & " | operator " & gOperator
 
 	Set db = BR_OpenDirectory()
 	Set usersView = db.GetView("($Users)")
