@@ -1,0 +1,58 @@
+'=====================================================================
+' Agent      : 04 | Verify Registration + ID Vault Status   (READ-ONLY)
+' Trigger    : Windows client: Action menu selection, Target: None
+'              Server (Windows / Linux-RHEL): On schedule, see guide ch. 15
+' Options    : Option Public / Option Declare / Use "BulkRegCommon"
+'
+' For every Person doc with objectGUID (DirSync user) reports:
+'   UNREGISTERED | REGISTERED + IN_VAULT | REGISTERED + NOT_IN_VAULT | CHECK_ERROR
+' Output: <AuditDir>\BulkReg_Verify_<run>_audit.csv (+ debug log)
+' Run it after each registration batch and before deleting local ID files.
+'=====================================================================
+Option Public
+Option Declare
+Use "BulkRegCommon"
+
+Sub Initialize
+	On Error GoTo ErrH
+	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
+	Dim u As BRUser, t0 As Double, res As String
+	Dim nUnreg As Long, nInV As Long, nNotV As Long, nErr As Long
+
+	If Not BR_Init("Verify") Then Exit Sub
+	Set db = BR_OpenDirectory()
+	Set col = BR_GetCandidates(db, False)      ' all DirSync users, registered or not
+	Set doc = col.GetFirstDocument()
+	Do While Not (doc Is Nothing)
+		t0 = Timer
+		Call BR_ReadUser(doc, u)
+		u.FullNameAfter = u.FullNameBefore
+		u.MailSystemAfter = u.MailSystemBefore
+		If Not BR_IsRegistered(doc) Then
+			res = "UNREGISTERED": nUnreg = nUnreg + 1
+			u.VaultStatus = "N/A"
+		Else
+			u.VaultStatus = BR_VaultStatus(u.FullNameBefore)
+			Select Case Left$(u.VaultStatus, 5)
+			Case "IN_VA": res = "REGISTERED": nInV = nInV + 1
+			Case "NOT_I": res = "REGISTERED": nNotV = nNotV + 1
+			Case Else: res = "CHECK_ERROR": nErr = nErr + 1
+			End Select
+		End If
+		Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), "")
+		BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus
+		Set doc = col.GetNextDocument(doc)
+	Loop
+
+	Dim summary As String
+	summary = "DirSync users=" & col.Count & " | unregistered=" & nUnreg & " | registered+in vault=" & nInV & _
+	" | registered NOT in vault=" & nNotV & " | check errors=" & nErr
+	BR_Close summary
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & gAuditFile, 64
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Verify aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Verify aborted: " & Error$, 16
+	Exit Sub
+End Sub

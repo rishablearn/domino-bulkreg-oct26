@@ -1,0 +1,25 @@
+# --- Never commit runtime secrets or outputs (BulkReg) ---
+*.id
+ids/
+secure/
+cert/
+audit/
+BulkReg_InitialPasswords_*.csv
+BatchReg_DirSync_*.txt
+*_audit.csv
+*_debug.log
+bulkreg_admin_actions.log
+*.bak.*
+# Site-specific configs: commit templates only. Put real configs outside the repo
+# or name them *.local.ini
+*.local.ini
+*.local.csv
+# --- Notes/Domino artefacts ---
+*.nsf
+*.ntf
+# --- OS / editor / build ---
+.DS_Store
+Thumbs.db
+~$*
+*.pdf
+node_modules/

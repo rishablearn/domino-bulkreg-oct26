@@ -1,0 +1,8 @@
+MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups
+# Rules are evaluated top-down; FIRST match wins. Pattern uses LotusScript Like (* and ?), case-insensitive.
+# MatchField = any Person document item (Department, InternetAddress, Location, CompanyName, OfficeCity ...)
+# Empty HomeServer/OrgUnit/Policy/Groups = use the defaults from bulkreg.ini
+Department;Finance*;<Mail01/ORG>;Finance;</ORG-DirSync-Vault>;BR-Finance
+InternetAddress;*@emea.example.com;<Mail02/ORG>;EMEA;</ORG-DirSync-Vault-EMEA>;BR-EMEA
+InternetAddress;*@apac.example.com;<Mail03/ORG>;APAC;</ORG-DirSync-Vault-APAC>;BR-APAC
+*;*;<Mail01/ORG>;;;

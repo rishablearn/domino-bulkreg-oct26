@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BulkReg Audit Viewer</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1d2330;--muted:#5d6678;--line:#dfe3ea;--acc:#0f5fdc;
+--ok:#1a7f37;--warn:#b26b00;--err:#c62828;--info:#3b5bdb;--chip:#eef1f6}
+@media (prefers-color-scheme:dark){:root{--bg:#12151b;--card:#1b2029;--fg:#e6e9ef;--muted:#9aa3b5;--line:#2c3340;
+--acc:#6ea8ff;--ok:#4cc26a;--warn:#f0b04a;--err:#ff6b6b;--info:#8aa2ff;--chip:#252b36}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{padding:18px 16px 8px;max-width:1400px;margin:auto}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--muted);font-size:13px}
+main{max-width:1400px;margin:auto;padding:8px 16px 40px}
+#drop{border:2px dashed var(--line);border-radius:10px;padding:22px;text-align:center;background:var(--card);cursor:pointer}
+#drop.hover{border-color:var(--acc)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:14px 0}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer}
+.kpi b{display:block;font-size:22px}
+.kpi.sel{outline:2px solid var(--acc)}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+input[type=search],select{padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--fg);min-width:220px}
+button{padding:7px 12px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--fg);cursor:pointer}
+.wrap{overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;max-height:65vh}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;vertical-align:top}
+td.msg{white-space:normal;min-width:280px;max-width:520px}
+th{position:sticky;top:0;background:var(--chip);cursor:pointer;user-select:none}
+.r{padding:2px 7px;border-radius:20px;font-weight:600;font-size:11.5px;background:var(--chip)}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}.info{color:var(--info)}
+.meta{color:var(--muted);font-size:12px;margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+<h1>BulkReg Audit Viewer</h1>
+<div class="sub">Open any <code>BulkReg_*_audit.csv</code> (Preflight, Export, Register, Verify). Runs fully offline – nothing is uploaded.</div>
+</header>
+<main>
+<div id="drop" tabindex="0">Drop audit CSV file(s) here or click to choose<input id="file" type="file" accept=".csv" multiple hidden></div>
+<div class="kpis" id="kpis"></div>
+<div class="bar">
+<input type="search" id="q" placeholder="Search name, mail, server, message…">
+<select id="col"><option value="">All columns</option></select>
+<button id="exp">Export filtered CSV</button>
+<span class="meta" id="count"></span>
+</div>
+<div class="wrap"><table id="t"><thead></thead><tbody></tbody></table></div>
+<div class="meta" id="runs"></div>
+</main>
+<script>
+(function(){
+let head=[],rows=[],filt=null,sortC=-1,sortD=1;
+const SHOW=["RunID","Timestamp","Tool","Mode","Action","Result","DurationSec","FullNameBefore","FullNameAfter","InternetAddress","HomeServer","OrgUnit","Policy","MailSystemBefore","MailSystemAfter","VaultStatus","Message"];
+const cls=r=>/FAIL|ERROR|CHECK_ERROR|ABORT/.test(r)?"err":/WARN|PENDING|SKIP|NOT_IN|UNREG/.test(r)?"warn":/WOULD|DRY|EXPORTED/.test(r)?"info":"ok";
+function parse(t){t=t.replace(/^﻿/,"");const out=[];let row=[],f="",q=false;
+ for(let i=0;i<t.length;i++){const c=t[i];
+  if(q){if(c=='"'){if(t[i+1]=='"'){f+='"';i++}else q=false}else f+=c}
+  else if(c=='"')q=true;else if(c==','){row.push(f);f=""}
+  else if(c=='\n'||c=='\r'){if(c=='\r'&&t[i+1]=='\n')i++;row.push(f);f="";if(row.length>1||row[0]!=="")out.push(row);row=[]}
+  else f+=c}
+ if(f!==""||row.length){row.push(f);out.push(row)}return out}
+function load(files){let pending=files.length;[...files].forEach(fl=>{const r=new FileReader();
+ r.onload=e=>{const d=parse(e.target.result);if(!d.length)return;
+  if(!head.length){head=d[0];const s=document.getElementById("col");head.forEach((h,i)=>{const o=document.createElement("option");o.value=i;o.textContent=h;s.appendChild(o)})}
+  rows=rows.concat(d.slice(1));if(--pending===0)render()};r.readAsText(fl,"utf-8")})}
+const ix=n=>head.indexOf(n);
+function view(){const q=document.getElementById("q").value.toLowerCase(),c=document.getElementById("col").value,ri=ix("Result");
+ let v=rows.filter(r=>(!filt||r[ri]===filt)&&(!q||(c===""?r.join(" "):(r[c]||"")).toLowerCase().includes(q)));
+ if(sortC>=0)v.sort((a,b)=>(a[sortC]||"").localeCompare(b[sortC]||"",undefined,{numeric:true})*sortD);return v}
+function render(){const ri=ix("Result"),counts={};rows.forEach(r=>counts[r[ri]]=(counts[r[ri]]||0)+1);
+ const k=document.getElementById("kpis");k.innerHTML="";
+ const add=(label,n,key)=>{const d=document.createElement("div");d.className="kpi"+(filt===key?" sel":"");
+  d.innerHTML=`<span class="${key?cls(key):""}">${label}</span><b>${n}</b>`;d.onclick=()=>{filt=(filt===key?null:key);render()};k.appendChild(d)};
+ add("All rows",rows.length,null);Object.keys(counts).sort().forEach(x=>add(x,counts[x],x));
+ const cols=SHOW.map(ix).filter(i=>i>=0),th=document.querySelector("#t thead"),tb=document.querySelector("#t tbody");
+ th.innerHTML="<tr>"+cols.map(i=>`<th data-i="${i}">${head[i]}${sortC===i?(sortD>0?" ▲":" ▼"):""}</th>`).join("")+"</tr>";
+ th.querySelectorAll("th").forEach(h=>h.onclick=()=>{const i=+h.dataset.i;sortD=(sortC===i?-sortD:1);sortC=i;render()});
+ const v=view();const esc=s=>(s||"").replace(/[&<>]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[m]));
+ tb.innerHTML=v.slice(0,5000).map(r=>"<tr>"+cols.map(i=>head[i]==="Result"?`<td><span class="r ${cls(r[i])}">${esc(r[i])}</span></td>`:
+  `<td class="${head[i]==="Message"?"msg":""}">${esc(r[i])}</td>`).join("")+"</tr>").join("");
+ document.getElementById("count").textContent=`${v.length} of ${rows.length} rows`+(v.length>5000?" (first 5000 shown)":"");
+ const runs=[...new Set(rows.map(r=>r[ix("RunID")]+" · "+r[ix("Tool")]+" · "+r[ix("Mode")]))];
+ document.getElementById("runs").textContent="Runs loaded: "+runs.join(" | ")}
+const drop=document.getElementById("drop"),fi=document.getElementById("file");
+drop.onclick=()=>fi.click();fi.onchange=e=>load(e.target.files);
+drop.ondragover=e=>{e.preventDefault();drop.classList.add("hover")};drop.ondragleave=()=>drop.classList.remove("hover");
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove("hover");load(e.dataTransfer.files)};
+document.getElementById("q").oninput=render;document.getElementById("col").onchange=render;
+document.getElementById("exp").onclick=()=>{const qq=s=>'"'+(s||"").replace(/"/g,'""')+'"';
+ const csv="﻿"+[head,...view()].map(r=>r.map(qq).join(",")).join("\r\n");
+ const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="BulkReg_filtered.csv";a.click()};
+})();
+</script>
+</body>
+</html>

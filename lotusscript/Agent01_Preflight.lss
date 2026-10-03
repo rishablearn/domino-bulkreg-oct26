@@ -1,0 +1,128 @@
+'=====================================================================
+' Agent      : 01 | Preflight Check            (READ-ONLY - changes nothing)
+' Trigger    : Windows client: Action menu selection, Target: None
+'              Server (Windows / Linux-RHEL): On schedule, see guide ch. 15
+' Options    : Option Public / Option Declare / Use "BulkRegCommon"
+'
+' Checks environment + every DirSync candidate and writes
+'   <AuditDir>\BulkReg_Preflight_<run>_audit.csv   (per-user status)
+'   <AuditDir>\BulkReg_Preflight_<run>_debug.log
+'=====================================================================
+Option Public
+Option Declare
+Use "BulkRegCommon"
+
+Sub Initialize
+	On Error GoTo ErrH
+	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
+	Dim u As BRUser, issues As String, res As String
+	Dim nOK As Long, nWarn As Long, nErr As Long, envErr As Long, envWarn As Long
+	Dim seenShort List As String, seenMail List As String
+	Dim servers List As String, usersView As NotesView, dupCol As NotesDocumentCollection
+	Dim t0 As Double
+
+	If Not BR_Init("Preflight") Then Exit Sub
+
+	' ---------- 1. Environment checks ----------
+	BR_Log LVL_INFO, "--- Environment checks ---"
+	envErr = envErr + BR_Check(CfgS("RegistrationServer", "") <> "", "RegistrationServer configured")
+	envErr = envErr + BR_Check(BR_ServerReachable(CfgS("RegistrationServer", "")), "Registration server reachable: " & CfgS("RegistrationServer", ""))
+	envErr = envErr + BR_Check(BR_DirWritable(BR_CfgDir("IDFileDir", "ids")), "IDFileDir exists + writable: " & BR_CfgDir("IDFileDir", "ids"))
+	If CfgB("WritePasswordFile", True) Then
+		envErr = envErr + BR_Check(BR_DirWritable(BR_CfgDir("PasswordDir", "secure")), "PasswordDir exists + writable: " & BR_CfgDir("PasswordDir", "secure"))
+	End If
+	If CfgB("UseCA", True) Then
+		envErr = envErr + BR_Check(CfgS("CertifierName", "") <> "", "CertifierName set (UseCA=1): " & CfgS("CertifierName", ""))
+	Else
+		envErr = envErr + BR_Check(Dir$(BR_CfgFile("CertifierIDFile", "cert" & gSep & "none.id")) <> "", "Certifier ID file exists: " & BR_CfgFile("CertifierIDFile", ""))
+	End If
+	If CfgS("VaultServer", "") <> "" Then
+		envWarn = envWarn + BR_Check(BR_ServerReachable(CfgS("VaultServer", "")), "Vault server reachable: " & CfgS("VaultServer", ""))
+	Else
+		BR_Log LVL_WARN, "VaultServer not set - vault verification will be skipped"
+		envWarn = envWarn + 1
+	End If
+	If CfgS("DefaultPolicy", "") = "" Then
+		BR_Log LVL_WARN, "DefaultPolicy empty - make sure an explicit/organizational policy assigns the ID Vault"
+		envWarn = envWarn + 1
+	End If
+	If CfgB("DryRun", True) Then BR_Log LVL_INFO, "DryRun=1 (safe mode) is set"
+	BR_Log LVL_INFO, "Platform " & gPlatform & ", mode " & BR_IIfStr(gHeadless, "HEADLESS (server agent)", "INTERACTIVE (client)")
+	If gHeadless And Not CfgB("UseCA", True) Then
+		BR_Log LVL_ERROR, "FAIL  Headless (server) mode requires UseCA=1 - a certifier password cannot be supplied without UI"
+		envErr = envErr + 1
+	End If
+
+	Set db = BR_OpenDirectory()
+	Set usersView = db.GetView("($Users)")
+
+	' ---------- 2. Candidate checks ----------
+	BR_Log LVL_INFO, "--- Candidate checks (objectGUID present, not yet registered) ---"
+	Set col = BR_GetCandidates(db, True)
+	Set doc = col.GetFirstDocument()
+	Do While Not (doc Is Nothing)
+		t0 = Timer
+		Call BR_ReadUser(doc, u)
+		issues = BR_Validate(u)
+
+		' duplicates inside this batch
+		If u.ShortName <> "" Then
+			If IsElement(seenShort(LCase$(u.ShortName))) Then issues = issues & "ERROR:Duplicate ShortName in batch (" & seenShort(LCase$(u.ShortName)) & "); " Else seenShort(LCase$(u.ShortName)) = u.NoteID
+		End If
+		If u.InternetAddress <> "" Then
+			If IsElement(seenMail(LCase$(u.InternetAddress))) Then issues = issues & "ERROR:Duplicate InternetAddress in batch; " Else seenMail(LCase$(u.InternetAddress)) = u.NoteID
+			' duplicates against the whole directory
+			If Not (usersView Is Nothing) Then
+				Set dupCol = usersView.GetAllDocumentsByKey(u.InternetAddress, True)
+				If dupCol.Count > 1 Then issues = issues & "WARN:InternetAddress used by " & dupCol.Count & " directory entries; "
+			End If
+		End If
+
+		' home server reachability (checked once per server)
+		If u.HomeServer <> "" Then
+			If Not IsElement(servers(LCase$(u.HomeServer))) Then
+				If BR_ServerReachable(u.HomeServer) Then servers(LCase$(u.HomeServer)) = "OK" Else servers(LCase$(u.HomeServer)) = "UNREACHABLE"
+				BR_Log LVL_INFO, "Home server " & u.HomeServer & ": " & servers(LCase$(u.HomeServer))
+			End If
+			If servers(LCase$(u.HomeServer)) <> "OK" Then issues = issues & "ERROR:HomeServer unreachable; "
+		End If
+
+		If InStr(issues, "ERROR:") > 0 Then
+			res = "ERROR": nErr = nErr + 1
+		ElseIf InStr(issues, "WARN:") > 0 Then
+			res = "WARN": nWarn = nWarn + 1
+		Else
+			res = "OK": nOK = nOK + 1
+		End If
+		BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " -> " & u.HomeServer & " / OU=" & u.OrgUnit & " / " & u.Policy & " | " & issues
+		Call BR_Audit(u, "PREFLIGHT", "CHECK", res, BR_Elapsed(t0), issues)
+		Set doc = col.GetNextDocument(doc)
+	Loop
+
+	Dim summary As String
+	summary = "Environment errors=" & envErr & " warnings=" & envWarn & _
+	" | Candidates=" & col.Count & " OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr
+	BR_Close summary
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
+	CInt(BR_IIf(envErr + nErr > 0, 48, 64))
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Preflight aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Preflight aborted: " & Error$, 16
+	Exit Sub
+End Sub
+
+' Logs PASS/FAIL, returns 1 on failure
+Function BR_Check(ok As Boolean, what As String) As Integer
+	If ok Then
+		BR_Log LVL_INFO, "PASS  " & what
+	Else
+		BR_Log LVL_ERROR, "FAIL  " & what
+		BR_Check = 1
+	End If
+End Function
+
+Function BR_IIf(c As Boolean, a As Variant, b As Variant) As Variant
+	If c Then BR_IIf = a Else BR_IIf = b
+End Function

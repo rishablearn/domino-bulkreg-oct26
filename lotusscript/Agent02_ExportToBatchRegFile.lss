@@ -1,0 +1,115 @@
+'=====================================================================
+' Agent      : 02 | Export DirSync users to Registration Text File
+'              (READ-ONLY on names.nsf)
+' Trigger    : Windows client: Action menu selection, Target: None
+'              Server (Windows / Linux-RHEL): On schedule, see guide ch. 15
+' Options    : Option Public / Option Declare / Use "BulkRegCommon"
+'
+' Produces the 20-field ';' separated, UTF-8 BOM file documented in
+' "Registering users from a text file" (Domino 14.5.1) for use with
+'   People > Register > Import Text File   (Domino Administrator, Windows)
+' plus a review CSV (no passwords) in AuditDir.
+' The file always uses CRLF line ends, because it is imported on Windows
+' even when it is produced on a Linux/RHEL server.
+'
+' Field order (HCL doc, Table 1):
+'  1 Last  2 First  3 MI  4 OrgUnit  5 Password  6 IDFileDir  7 IDFileName
+'  8 MailServer  9 MailFileDir  10 MailFileName  11 Location  12 Comment
+' 13 ForwardingAddress  14 Profile  15 LocalAdmin  16 InternetAddress
+' 17 ShortName  18 AltName  19 AltOrgUnit  20 MailTemplate
+'
+' Column 6 (ID file directory) is taken from ImportIDFileDir - the folder as
+' seen by the Windows admin client that performs the import - and falls
+' back to IDFileDir.
+'
+' !! The output file contains INITIAL PASSWORDS. It is written to
+'    PasswordDir (restricted folder). Delete it after registration.
+'=====================================================================
+Option Public
+Option Declare
+Use "BulkRegCommon"
+
+Sub Initialize
+	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace
+	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
+	Dim u As BRUser, st As NotesStream, outFile As String, ln As String, secDir As String
+	Dim nOut As Long, nSkip As Long, issues As String, pw As String, idDirForImport As String
+	Dim genPw As Boolean, ans As Variant, t0 As Double
+
+	If Not BR_Init("ExportBatchReg") Then Exit Sub
+
+	' --- password option: dialog in the client, config value on a server ---
+	If gHeadless Then
+		genPw = CfgB("ExportGeneratePasswords", True)
+	Else
+		Set ws = New NotesUIWorkspace
+		ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Export", _
+		"Generate a random initial password per user?" & Chr$(10) & Chr$(10) & _
+		"YES = random password per user (recommended)" & Chr$(10) & _
+		"NO  = leave column 5 empty (you must fill it in before importing; it is required)")
+		genPw = (ans = 1)
+	End If
+	BR_Log LVL_INFO, "Generate initial passwords: " & BR_IIfStr(genPw, "yes", "no")
+
+	secDir = BR_CfgDir("PasswordDir", "secure")
+	If Not BR_DirWritable(secDir) Then Error 3001, "PasswordDir not writable: " & secDir
+	outFile = secDir & "BatchReg_DirSync_" & gRunID & ".txt"
+
+	idDirForImport = CfgS("ImportIDFileDir", "")
+	If idDirForImport = "" Then idDirForImport = BR_CfgDir("IDFileDir", "ids")
+
+	Set st = gSession.CreateStream()
+	If Not st.Open(outFile, "UTF-8") Then Error 3002, "Cannot create " & outFile
+	Call st.Truncate()
+	' U+FEFF written as UTF-8 = EF BB BF  -> the "UTF-8 BOM" the import requires
+	Call st.WriteText(Uchr$(&HFEFF), EOL_NONE)
+
+	Set db = BR_OpenDirectory()
+	Set col = BR_GetCandidates(db, True)
+	Set doc = col.GetFirstDocument()
+	Do While Not (doc Is Nothing)
+		t0 = Timer
+		Call BR_ReadUser(doc, u)
+		issues = BR_Validate(u)
+		If InStr(issues, "ERROR:") > 0 Then
+			nSkip = nSkip + 1
+			BR_Log LVL_WARN, "SKIP " & u.FullNameBefore & " : " & issues
+			Call BR_Audit(u, "EXPORT", "EXPORT", "SKIPPED", BR_Elapsed(t0), issues)
+		Else
+			If genPw Then pw = BR_GenPassword(CInt(CfgL("InitialPasswordLength", 16))) Else pw = ""
+			ln = u.LastName & ";" & u.FirstName & ";" & u.MiddleInitial & ";" & u.OrgUnit & ";" & _
+			pw & ";" & idDirForImport & ";" & BR_SafeFile(u) & ".id" & ";" & _
+			u.HomeServer & ";" & "" & ";" & "" & ";" & _
+			"" & ";" & "DirSync objectGUID " & u.GUID & ";" & "" & ";" & _
+			"" & ";" & "" & ";" & u.InternetAddress & ";" & u.ShortName & ";" & _
+			"" & ";" & "" & ";" & ""
+			Call st.WriteText(ln, EOL_CRLF)
+			pw = ""
+			nOut = nOut + 1
+			Call BR_Audit(u, "EXPORT", "EXPORT", "EXPORTED", BR_Elapsed(t0), issues)
+		End If
+		Set doc = col.GetNextDocument(doc)
+	Loop
+	Call st.Close()
+
+	Dim summary As String
+	summary = "Exported=" & nOut & " Skipped=" & nSkip
+	BR_Log LVL_INFO, "Registration text file: " & outFile
+	BR_Log LVL_WARN, "File contains initial passwords - restrict access and delete after use."
+	BR_Close summary
+	BR_Msg summary & Chr$(10) & Chr$(10) & _
+	"Text file (contains passwords!):" & Chr$(10) & outFile & Chr$(10) & Chr$(10) & _
+	"Review CSV (no passwords): " & gAuditFile & Chr$(10) & Chr$(10) & _
+	"Next (Windows Domino Administrator): People & Groups > People > Register >" & Chr$(10) & _
+	"select the ID-Vault explicit policy > Import Text File > Register All." & Chr$(10) & _
+	"Test with 1-2 users first (see guide section 7.2).", 64
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Export aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	On Error Resume Next
+	If Not (st Is Nothing) Then Call st.Close()
+	BR_Close "ABORTED"
+	BR_Msg "Export aborted: " & Error$, 16
+	Exit Sub
+End Sub

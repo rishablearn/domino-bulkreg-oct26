@@ -1,0 +1,636 @@
+'=====================================================================
+' Script Library : BulkRegCommon            Version 1.1.0 (multi-OS)
+' Purpose        : Shared code for the BulkReg framework
+'                  (config, multi-server mapping, logging, audit, helpers,
+'                   platform + run-mode abstraction)
+' Used by        : Agent01_Preflight, Agent02_ExportToBatchRegFile,
+'                  Agent03_BulkRegister, Agent04_VerifyVaultStatus
+' Runs in        : INTERACTIVE - Domino Administrator / Notes client on Windows
+'                    (agent trigger: Action menu selection, Target: None)
+'                  HEADLESS    - Domino server on Windows or Linux/RHEL
+'                    (agent trigger: On schedule, run on demand with
+'                     tell amgr run "bulkreg.nsf" 'agent name')
+'                  Mode is detected with NotesSession.IsOnServer; paths are
+'                  normalised for the platform reported by NotesSession.Platform.
+'
+' Paste this into  Designer > Code > Script Libraries > New LotusScript
+' Library, name it exactly "BulkRegCommon".
+'=====================================================================
+Option Public
+Option Declare
+
+Public Const BR_VERSION = "1.1.0"
+
+' ---------- log levels ----------
+Public Const LVL_DEBUG = 10
+Public Const LVL_INFO = 20
+Public Const LVL_WARN = 30
+Public Const LVL_ERROR = 40
+
+' ---------- one mapping rule (server_mapping.csv) ----------
+Public Type BRMapRule
+	MatchField As String
+	MatchPattern As String
+	HomeServer As String
+	OrgUnit As String
+	Policy As String
+	Groups As String
+End Type
+
+' ---------- one candidate user ----------
+Public Type BRUser
+	NoteID As String
+	UNID As String
+	GUID As String
+	FullNameBefore As String
+	FullNameAfter As String
+	FirstName As String
+	LastName As String
+	MiddleInitial As String
+	ShortName As String
+	InternetAddress As String
+	MailSystemBefore As String
+	MailFileBefore As String
+	MailSystemAfter As String
+	HomeServer As String
+	OrgUnit As String
+	Policy As String
+	Groups As String
+	MapRule As String
+	IDFile As String
+	VaultStatus As String
+	Issues As String
+End Type
+
+' ---------- globals ----------
+Public gCfg List As String
+Public gMap() As BRMapRule
+Public gMapCount As Integer
+Public gRunID As String
+Public gTool As String
+Public gOperator As String
+Public gLogLevel As Integer
+Public gDebugFile As String
+Public gAuditFile As String
+Public gNLog As NotesLog
+Public gSession As NotesSession
+
+' ---------- platform / run mode (multi-OS) ----------
+Public gHeadless As Boolean      ' True = server agent (Windows or Linux/RHEL server), no UI
+Public gIsWindows As Boolean
+Public gPlatform As String       ' NotesSession.Platform: "Windows/64", "Linux/64", "UNIX", ...
+Public gSep As String            ' path separator for this platform
+Public gBase As String           ' default base folder (C:\BulkReg\ or /local/bulkreg/)
+
+Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' notes.ini variable (client or server)
+
+'=====================================================================
+' INITIALISATION
+'=====================================================================
+' Interactive (Windows Notes/Admin client): prompts for and remembers the
+'   config path in the client notes.ini.
+' Headless (scheduled / "tell amgr run" agent on a Windows or Linux/RHEL
+'   Domino server): reads the config path from the SERVER notes.ini
+'   variable BulkRegConfigPath (console: set config BulkRegConfigPath=...).
+Function BR_Init(toolName As String) As Boolean
+	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace           ' created only in interactive mode
+	Dim cfgPath As Variant
+	Dim lastPath As String
+
+	Set gSession = New NotesSession
+	gTool = toolName
+	gRunID = Format$(Now, "yyyymmdd-hhnnss")
+	gOperator = gSession.EffectiveUserName
+	gLogLevel = LVL_INFO
+	Randomize
+	Call BR_DetectPlatform()
+
+	lastPath = gSession.GetEnvironmentString(BR_ENV_CFG, True)
+	If lastPath = "" Then lastPath = gBase & "config" & gSep & "bulkreg.ini"
+	If gHeadless Then
+		cfgPath = lastPath
+		Print "BulkReg " & BR_VERSION & " " & toolName & " (headless on " & gSession.Platform & ") config=" & lastPath
+	Else
+		Set ws = New NotesUIWorkspace
+		cfgPath = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg " & BR_VERSION & " - " & toolName, _
+		"Path to bulkreg.ini:", lastPath)
+		If IsEmpty(cfgPath) Then Exit Function
+		If Trim$(CStr(cfgPath)) = "" Then Exit Function
+		Call gSession.SetEnvironmentVar(BR_ENV_CFG, CStr(cfgPath), True)
+	End If
+
+	If Not BR_LoadConfig(BR_Path(CStr(cfgPath))) Then Exit Function
+	gLogLevel = BR_LevelFromName(CfgS("LogLevel", "INFO"))
+	If CfgS("BaseDir", "") <> "" Then gBase = BR_Dir(CfgS("BaseDir", ""))
+
+	' headless runs must be explicitly enabled in the config (kill switch)
+	If gHeadless And Not CfgB("ServerRunEnabled", False) Then
+		Print "BulkReg: ServerRunEnabled=0 in " & CStr(cfgPath) & " - headless run refused."
+		Exit Function
+	End If
+
+	' --- output files ---
+	Dim auditDir As String
+	auditDir = BR_CfgDir("AuditDir", "audit")
+	If Not BR_DirWritable(auditDir) Then
+		BR_Msg "Audit folder is missing or not writable:" & Chr$(10) & auditDir, 16
+		Exit Function
+	End If
+	gDebugFile = auditDir & "BulkReg_" & toolName & "_" & gRunID & "_debug.log"
+	gAuditFile = auditDir & "BulkReg_" & toolName & "_" & gRunID & "_audit.csv"
+	Call BR_AppendLine(gAuditFile, Uchr$(&HFEFF) & BR_AuditHeader())   ' BOM so Excel reads UTF-8
+
+	' --- optional central Agent Log database ---
+	If CfgS("LogDb", "") <> "" Then
+		On Error Resume Next
+		Set gNLog = New NotesLog("BulkReg " & toolName & " " & gRunID)
+		Call gNLog.OpenNotesLog(CfgS("LogServer", ""), CfgS("LogDb", ""))
+		If Err <> 0 Then
+			Set gNLog = Nothing
+			Err = 0
+		End If
+		On Error GoTo ErrH
+	End If
+
+	BR_Log LVL_INFO, "==== BulkReg " & BR_VERSION & " | tool=" & toolName & " | run=" & gRunID & _
+	" | operator=" & gOperator & " | platform=" & gPlatform & " | mode=" & BR_IIfStr(gHeadless, "HEADLESS(server)", "INTERACTIVE(client)") & _
+	" | config=" & CStr(cfgPath) & " ===="
+	If gNLog Is Nothing And CfgS("LogDb", "") <> "" Then
+		BR_Log LVL_WARN, "Could not open Agent Log db " & CfgS("LogServer", "") & "!!" & CfgS("LogDb", "") & " - continuing with file logging only."
+	End If
+	BR_DumpConfig
+
+	If Not BR_LoadMapping(BR_CfgFile("MappingFile", "config" & gSep & "server_mapping.csv")) Then Exit Function
+	BR_Init = True
+	Exit Function
+ErrH:
+	BR_Msg "BR_Init failed: " & Error$ & " (err " & Err & ", line " & Erl & ")", 16
+	Exit Function
+End Function
+
+'=====================================================================
+' PLATFORM / UI ABSTRACTION  (Windows + Linux/RHEL)
+'=====================================================================
+Sub BR_DetectPlatform()
+	gPlatform = gSession.Platform
+	gIsWindows = (InStr(1, gPlatform, "Windows", 5) > 0)
+	gHeadless = gSession.IsOnServer
+	If gIsWindows Then
+		gSep = "\"
+		gBase = "C:\BulkReg\"
+	Else
+		gSep = "/"
+		gBase = "/local/bulkreg/"
+	End If
+End Sub
+
+' Converts any path to the separators of the current platform
+Function BR_Path(p As String) As String
+	If gSep = "/" Then BR_Path = Replace(p, "\", "/") Else BR_Path = Replace(p, "/", "\")
+End Function
+
+' Folder from config (or <BaseDir>/<defSub>/), normalised, trailing separator
+Function BR_CfgDir(k As String, defSub As String) As String
+	BR_CfgDir = BR_Dir(CfgS(k, gBase & defSub))
+End Function
+
+' File path from config (or <BaseDir>/<defRel>), normalised
+Function BR_CfgFile(k As String, defRel As String) As String
+	BR_CfgFile = BR_Path(CfgS(k, gBase & defRel))
+End Function
+
+' Message to the operator: dialog in the client, log/console line on a server
+Sub BR_Msg(txt As String, mbType As Integer)
+	If gHeadless Then
+		Print "BulkReg: " & Replace(txt, Chr$(10), " | ")
+		If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [MSG  ] " & Replace(txt, Chr$(10), " | "))
+	Else
+		Messagebox txt, mbType, "BulkReg " & gTool
+	End If
+End Sub
+
+Function BR_IIfStr(c As Boolean, a As String, b As String) As String
+	If c Then BR_IIfStr = a Else BR_IIfStr = b
+End Function
+
+Sub BR_Close(summary As String)
+	On Error Resume Next
+	BR_Log LVL_INFO, "==== END run " & gRunID & " | " & summary & " ===="
+	If Not (gNLog Is Nothing) Then Call gNLog.Close
+	Set gNLog = Nothing
+End Sub
+
+'=====================================================================
+' CONFIG
+'=====================================================================
+Function BR_LoadConfig(path As String) As Boolean
+	On Error GoTo ErrH
+	Dim fh As Integer, txt As String, p As Integer, k As String, v As String
+	Erase gCfg
+	If Dir$(path) = "" Then
+		BR_Msg "Config file not found: " & path, 16
+		Exit Function
+	End If
+	fh = FreeFile()
+	Open path For Input As #fh Charset = "UTF-8"
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		txt = Trim$(Replace(txt, Uchr$(&HFEFF), ""))   ' strip BOM if present
+		If Len(txt) > 0 Then
+			If Left$(txt, 1) <> "#" And Left$(txt, 1) <> ";" And Left$(txt, 1) <> "[" Then
+				p = InStr(txt, "=")
+				If p > 1 Then
+					k = LCase$(Trim$(Left$(txt, p - 1)))
+					v = Trim$(Mid$(txt, p + 1))
+					gCfg(k) = v
+				End If
+			End If
+		End If
+	Loop
+	Close #fh
+	BR_LoadConfig = True
+	Exit Function
+ErrH:
+	On Error Resume Next
+	Close #fh
+	BR_Msg "Cannot read config " & path & ": " & Error$, 16
+End Function
+
+Function CfgS(k As String, def As String) As String
+	If IsElement(gCfg(LCase$(k))) Then CfgS = gCfg(LCase$(k)) Else CfgS = def
+End Function
+
+Function CfgL(k As String, def As Long) As Long
+	Dim s As String
+	s = CfgS(k, "")
+	If s = "" Or Not IsNumeric(s) Then CfgL = def Else CfgL = CLng(s)
+End Function
+
+Function CfgB(k As String, def As Boolean) As Boolean
+	Dim s As String
+	s = LCase$(CfgS(k, ""))
+	If s = "" Then
+		CfgB = def
+	Else
+		CfgB = (s = "1" Or s = "true" Or s = "yes" Or s = "y")
+	End If
+End Function
+
+Sub BR_DumpConfig()
+	' Logs the effective configuration (no secrets are kept in config by design)
+	ForAll v In gCfg
+		BR_Log LVL_DEBUG, "cfg " & ListTag(v) & " = " & v
+	End ForAll
+End Sub
+
+'=====================================================================
+' MULTI-SERVER MAPPING  (server_mapping.csv, ';' separated)
+'=====================================================================
+Function BR_LoadMapping(path As String) As Boolean
+	On Error GoTo ErrH
+	Dim fh As Integer, txt As String, parts As Variant, n As Integer
+	gMapCount = 0
+	ReDim gMap(0) As BRMapRule
+	If path = "" Then
+		BR_Log LVL_WARN, "No MappingFile configured - all users get the defaults from bulkreg.ini"
+		BR_LoadMapping = True
+		Exit Function
+	End If
+	If Dir$(path) = "" Then
+		BR_Msg "Mapping file not found: " & path, 16
+		Exit Function
+	End If
+	fh = FreeFile()
+	Open path For Input As #fh Charset = "UTF-8"
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		txt = Trim$(Replace(txt, Uchr$(&HFEFF), ""))
+		If txt <> "" And Left$(txt, 1) <> "#" And LCase$(Left$(txt, 10)) <> "matchfield" Then
+			parts = Split(txt, ";")
+			If UBound(parts) >= 2 Then
+				ReDim Preserve gMap(gMapCount) As BRMapRule
+				gMap(gMapCount).MatchField = Trim$(parts(0))
+				gMap(gMapCount).MatchPattern = LCase$(Trim$(parts(1)))
+				gMap(gMapCount).HomeServer = BR_Part(parts, 2)
+				gMap(gMapCount).OrgUnit = BR_Part(parts, 3)
+				gMap(gMapCount).Policy = BR_Part(parts, 4)
+				gMap(gMapCount).Groups = BR_Part(parts, 5)
+				gMapCount = gMapCount + 1
+			Else
+				BR_Log LVL_WARN, "Mapping line ignored (needs >= 3 columns): " & txt
+			End If
+		End If
+	Loop
+	Close #fh
+	BR_Log LVL_INFO, "Loaded " & gMapCount & " mapping rule(s) from " & path
+	BR_LoadMapping = True
+	Exit Function
+ErrH:
+	On Error Resume Next
+	Close #fh
+	BR_Msg "Cannot read mapping " & path & ": " & Error$, 16
+End Function
+
+Function BR_Part(parts As Variant, i As Integer) As String
+	If UBound(parts) >= i Then BR_Part = Trim$(parts(i)) Else BR_Part = ""
+End Function
+
+' Applies defaults, then the first matching mapping rule
+Sub BR_ResolveMapping(doc As NotesDocument, u As BRUser)
+	Dim i As Integer, fv As String
+	u.HomeServer = CfgS("DefaultHomeServer", "")
+	u.OrgUnit = CfgS("DefaultOrgUnit", "")
+	u.Policy = CfgS("DefaultPolicy", "")
+	u.Groups = CfgS("DefaultGroups", "")
+	u.MapRule = "defaults"
+	For i = 0 To gMapCount - 1
+		If gMap(i).MatchField = "*" Then
+			fv = ""
+		Else
+			fv = LCase$(BR_Item(doc, gMap(i).MatchField))
+		End If
+		If gMap(i).MatchField = "*" Or fv Like gMap(i).MatchPattern Then
+			If gMap(i).HomeServer <> "" Then u.HomeServer = gMap(i).HomeServer
+			If gMap(i).OrgUnit <> "" Then u.OrgUnit = gMap(i).OrgUnit
+			If gMap(i).Policy <> "" Then u.Policy = gMap(i).Policy
+			If gMap(i).Groups <> "" Then u.Groups = gMap(i).Groups
+			u.MapRule = "rule#" & (i + 1) & " " & gMap(i).MatchField & "=" & gMap(i).MatchPattern
+			Exit For
+		End If
+	Next
+End Sub
+
+'=====================================================================
+' DIRECTORY / CANDIDATES
+'=====================================================================
+Function BR_OpenDirectory() As NotesDatabase
+	Dim db As NotesDatabase
+	Set db = gSession.GetDatabase(CfgS("DirectoryServer", ""), CfgS("DirectoryFile", "names.nsf"), False)
+	If Not db.IsOpen Then Call db.Open("", "")
+	If Not db.IsOpen Then Error 2001, "Cannot open directory " & CfgS("DirectoryServer", "") & "!!" & CfgS("DirectoryFile", "names.nsf")
+	BR_Log LVL_INFO, "Directory opened: " & db.Server & "!!" & db.FilePath & " (" & db.Title & ")"
+	Set BR_OpenDirectory = db
+End Function
+
+' Selection rule documented for NotesRegistration.ContactNoteID:
+'   Person doc HAS item objectGUID and has NO (non-empty) Certificate
+Function BR_SelectionFormula(onlyUnregistered As Boolean) As String
+	Dim f As String
+	f = |Form = "Person" & @IsAvailable(objectGUID)|
+	If onlyUnregistered Then f = f & | & (!@IsAvailable(Certificate) | @Trim(@Text(Certificate)) = "")|
+	If CfgS("ExtraSelection", "") <> "" Then f = "(" & f & ") & (" & CfgS("ExtraSelection", "") & ")"
+	BR_SelectionFormula = f
+End Function
+
+Function BR_GetCandidates(db As NotesDatabase, onlyUnregistered As Boolean) As NotesDocumentCollection
+	Dim f As String, maxScan As Long, col As NotesDocumentCollection
+	f = BR_SelectionFormula(onlyUnregistered)
+	maxScan = CfgL("MaxScan", 5000)
+	If maxScan < 0 Or maxScan > 32767 Then maxScan = 0   ' Search() maxDocs is an Integer; 0 = no limit
+	BR_Log LVL_INFO, "Search formula: " & f & "  (MaxScan=" & maxScan & ")"
+	Set col = db.Search(f, Nothing, maxScan)
+	BR_Log LVL_INFO, "Documents found: " & col.Count
+	If maxScan > 0 And col.Count >= maxScan Then
+		BR_Log LVL_WARN, "Result hit MaxScan limit (" & maxScan & ") - more users may exist. Run again after this batch or raise MaxScan."
+	End If
+	Set BR_GetCandidates = col
+End Function
+
+Function BR_IsRegistered(doc As NotesDocument) As Boolean
+	If Not doc.HasItem("Certificate") Then Exit Function
+	BR_IsRegistered = (Trim$(doc.GetFirstItem("Certificate").Text) <> "")
+End Function
+
+' Reads a Person document into a BRUser and applies mapping
+Sub BR_ReadUser(doc As NotesDocument, u As BRUser)
+	Dim blank As BRUser
+	u = blank
+	u.NoteID = doc.NoteID
+	u.UNID = doc.UniversalID
+	u.GUID = BR_Item(doc, "objectGUID")
+	u.FullNameBefore = BR_Item(doc, "FullName")
+	u.FirstName = BR_Clean(BR_Item(doc, "FirstName"))
+	u.LastName = BR_Clean(BR_Item(doc, "LastName"))
+	u.MiddleInitial = BR_Clean(BR_Item(doc, "MiddleInitial"))
+	u.ShortName = BR_Clean(BR_Item(doc, "ShortName"))
+	u.InternetAddress = BR_Clean(BR_Item(doc, "InternetAddress"))
+	u.MailSystemBefore = BR_Item(doc, "MailSystem")
+	u.MailFileBefore = BR_Item(doc, "MailFile")
+	Call BR_ResolveMapping(doc, u)
+	u.IDFile = BR_CfgDir("IDFileDir", "ids") & BR_SafeFile(u) & ".id"
+End Sub
+
+' Basic data-quality validation; returns "" when OK, otherwise issues list
+Function BR_Validate(u As BRUser) As String
+	Dim s As String
+	If u.LastName = "" Then s = s & "ERROR:LastName missing; "
+	If u.FirstName = "" Then s = s & "WARN:FirstName missing; "
+	If u.InternetAddress = "" Then s = s & "WARN:InternetAddress missing; "
+	If u.HomeServer = "" Then s = s & "ERROR:No HomeServer (mapping/default); "
+	If u.Policy = "" Then s = s & "WARN:No explicit policy - ID Vault deposit depends on org/dynamic policy; "
+	If u.GUID = "" Then s = s & "ERROR:objectGUID empty; "
+	BR_Validate = s
+End Function
+
+'=====================================================================
+' LOGGING
+'=====================================================================
+Function BR_LevelFromName(n As String) As Integer
+	Select Case UCase$(n)
+	Case "DEBUG": BR_LevelFromName = LVL_DEBUG
+	Case "WARN": BR_LevelFromName = LVL_WARN
+	Case "ERROR": BR_LevelFromName = LVL_ERROR
+	Case Else: BR_LevelFromName = LVL_INFO
+	End Select
+End Function
+
+Function BR_LevelName(l As Integer) As String
+	Select Case l
+	Case LVL_DEBUG: BR_LevelName = "DEBUG"
+	Case LVL_WARN: BR_LevelName = "WARN "
+	Case LVL_ERROR: BR_LevelName = "ERROR"
+	Case Else: BR_LevelName = "INFO "
+	End Select
+End Function
+
+Sub BR_Log(lvl As Integer, msg As String)
+	On Error Resume Next
+	Dim txt As String
+	If lvl < gLogLevel Then Exit Sub
+	txt = Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [" & BR_LevelName(lvl) & "] " & msg
+	Print txt                                    ' status bar / client console
+	If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, txt)
+	If Not (gNLog Is Nothing) Then
+		If lvl >= LVL_ERROR Then
+			Call gNLog.LogError(1, msg)
+		Else
+			Call gNLog.LogAction(BR_LevelName(lvl) & " " & msg)
+		End If
+	End If
+End Sub
+
+' Open-append-close per line so the audit trail survives a crash
+Sub BR_AppendLine(path As String, txt As String)
+	Dim fh As Integer
+	fh = FreeFile()
+	Open path For Append As #fh Charset = "UTF-8"
+	Print #fh, txt
+	Close #fh
+End Sub
+
+'=====================================================================
+' AUDIT CSV  (one row per user per action - never contains passwords)
+'=====================================================================
+Function BR_AuditHeader() As String
+	BR_AuditHeader = "RunID,Timestamp,Tool,Operator,Mode,Action,Result,DurationSec,NoteID,UNID,objectGUID," & _
+	"FullNameBefore,FullNameAfter,InternetAddress,ShortName,HomeServer,OrgUnit,Policy,MapRule," & _
+	"MailSystemBefore,MailSystemAfter,VaultStatus,IDFile,Message"
+End Function
+
+Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, dur As Double, msg As String)
+	On Error GoTo ErrH
+	Dim r As String
+	r = Q(gRunID) & "," & Q(Format$(Now, "yyyy-mm-dd hh:nn:ss")) & "," & Q(gTool) & "," & Q(gOperator) & "," & _
+	Q(mode) & "," & Q(action) & "," & Q(result) & "," & Q(Format$(dur, "0.00")) & "," & _
+	Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FullNameAfter) & "," & _
+	Q(u.InternetAddress) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & _
+	Q(u.MapRule) & "," & Q(u.MailSystemBefore) & "," & Q(u.MailSystemAfter) & "," & Q(u.VaultStatus) & "," & _
+	Q(u.IDFile) & "," & Q(msg)
+	Call BR_AppendLine(gAuditFile, r)
+	Exit Sub
+ErrH:
+	Print "BulkReg: audit write failed: " & Error$
+	Exit Sub
+End Sub
+
+Function Q(v As String) As String
+	Dim s As String
+	s = Replace(Replace(v, Chr$(13), " "), Chr$(10), " ")
+	Q = """" & Replace(s, """", """""") & """"
+End Function
+
+'=====================================================================
+' ID VAULT
+'=====================================================================
+Function BR_VaultStatus(fullName As String) As String
+	On Error GoTo ErrH
+	Dim vault As NotesIDVault
+	If CfgS("VaultServer", "") = "" Then
+		BR_VaultStatus = "NOT_CHECKED(no VaultServer)"
+		Exit Function
+	End If
+	Set vault = gSession.GetIDVault()
+	If vault.IsIDInVault(CfgS("VaultServer", ""), fullName) Then
+		BR_VaultStatus = "IN_VAULT"
+	Else
+		BR_VaultStatus = "NOT_IN_VAULT"
+	End If
+	Exit Function
+ErrH:
+	BR_VaultStatus = "CHECK_ERROR(" & Err & ": " & Error$ & ")"
+	Exit Function
+End Function
+
+'=====================================================================
+' HELPERS
+'=====================================================================
+Function BR_Item(doc As NotesDocument, itemName As String) As String
+	On Error GoTo ErrH
+	Dim v As Variant
+	If Not doc.HasItem(itemName) Then Exit Function
+	v = doc.GetItemValue(itemName)
+	If IsArray(v) Then BR_Item = Trim$(CStr(v(0))) Else BR_Item = Trim$(CStr(v))
+	Exit Function
+ErrH:
+	BR_Item = ""
+	Exit Function
+End Function
+
+' Removes characters that break the registration text file / names
+Function BR_Clean(s As String) As String
+	BR_Clean = Trim$(Replace(Replace(Replace(s, ";", " "), Chr$(13), ""), Chr$(10), ""))
+End Function
+
+' Normalises a folder for the current OS and guarantees a trailing separator
+Function BR_Dir(p As String) As String
+	Dim s As String
+	If p = "" Then Exit Function
+	s = BR_Path(p)
+	If Right$(s, 1) = gSep Then BR_Dir = s Else BR_Dir = s & gSep
+End Function
+
+Function BR_DirWritable(p As String) As Boolean
+	On Error GoTo ErrH
+	Dim t As String, fh As Integer
+	t = p & "bulkreg_write_test_" & gRunID & ".tmp"
+	fh = FreeFile()
+	Open t For Output As #fh
+	Print #fh, "test"
+	Close #fh
+	Kill t                                  ' removes only our own temp test file
+	BR_DirWritable = True
+	Exit Function
+ErrH:
+	BR_DirWritable = False
+	Exit Function
+End Function
+
+' Unique, file-system-safe ID file base name
+Function BR_SafeFile(u As BRUser) As String
+	Dim src As String, i As Integer, c As String, out As String
+	If u.ShortName <> "" Then src = u.ShortName Else src = u.FirstName & "_" & u.LastName
+	For i = 1 To Len(src)
+		c = Mid$(src, i, 1)
+		If c Like "[A-Za-z0-9_.-]" Then out = out & c
+	Next
+	If out = "" Then out = "user"
+	BR_SafeFile = out & "_" & u.NoteID
+End Function
+
+' Random initial password (upper/lower/digit/symbol).
+' NOTE: LotusScript Rnd is NOT a cryptographic RNG. Users must change the
+' password at first use (enforce via Security policy password settings).
+Function BR_GenPassword(n As Integer) As String
+	Const UPP = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+	Const LOW = "abcdefghijkmnopqrstuvwxyz"
+	Const DIG = "23456789"
+	Const SYM = "!#%+-=?@"           ' no ';' (text-file separator) or quotes
+	Dim all As String, pw As String, i As Integer, j As Integer, tmp As String
+	If n < 12 Then n = 12
+	all = UPP & LOW & DIG & SYM
+	pw = BR_Pick(UPP) & BR_Pick(LOW) & BR_Pick(DIG) & BR_Pick(SYM)
+	For i = 5 To n
+		pw = pw & BR_Pick(all)
+	Next
+	For i = Len(pw) To 2 Step -1     ' Fisher-Yates shuffle
+		j = Int(Rnd() * i) + 1
+		tmp = Mid$(pw, i, 1)
+		Mid$(pw, i, 1) = Mid$(pw, j, 1)
+		Mid$(pw, j, 1) = tmp
+	Next
+	BR_GenPassword = pw
+End Function
+
+Function BR_Pick(s As String) As String
+	BR_Pick = Mid$(s, Int(Rnd() * Len(s)) + 1, 1)
+End Function
+
+Function BR_Elapsed(t0 As Double) As Double
+	Dim t As Double
+	t = Timer - t0
+	If t < 0 Then t = t + 86400#     ' midnight wrap
+	BR_Elapsed = t
+End Function
+
+Function BR_ServerReachable(server As String) As Boolean
+	On Error GoTo ErrH
+	Dim db As NotesDatabase
+	Set db = gSession.GetDatabase(server, "names.nsf", False)
+	If Not db.IsOpen Then Call db.Open("", "")
+	BR_ServerReachable = db.IsOpen
+	Exit Function
+ErrH:
+	BR_ServerReachable = False
+	Exit Function
+End Function
