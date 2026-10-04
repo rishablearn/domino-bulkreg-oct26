@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.5.0
+' Script Library : BulkRegAgents            Version 3.6.0
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -214,7 +214,7 @@ Sub BR_RunPreflight()
 	Loop
 
 	' ---------- mapping test: users per rule ----------
-	mapFile = BR_CfgDir("AuditDir", "audit") & "BulkReg_Preflight_" & gRunID & "_mapping.txt"
+	mapFile = gRunDir & "BulkReg_Preflight_" & gRunID & "_mapping.txt"
 	Call BR_AppendLine(mapFile, "BulkReg " & BR_VERSION & " - mapping test (which rule each candidate matched)")
 	Call BR_AppendLine(mapFile, "Mapping file: " & BR_CfgFile("MappingFile", "config\server_mapping.csv"))
 	Call BR_AppendLine(mapFile, "Rules are checked top-down; the first match wins. Per-user detail: MapRule column of " & gAuditFile)
@@ -247,7 +247,7 @@ Sub BR_RunPreflight()
 	Dim keyUsers List As Long, keyRep List As String, keyHomes List As String, mk As String, onSrv As String
 	prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
 	fmax = CfgL("MailFolderMax", 0)
-	fldFile = BR_CfgDir("AuditDir", "audit") & "BulkReg_Preflight_" & gRunID & "_mailfolders.txt"
+	fldFile = gRunDir & "BulkReg_Preflight_" & gRunID & "_mailfolders.txt"
 	ForAll c In srvCount
 		srvText = srvText & "   " & ListTag(c) & " : " & c & Chr$(10)
 		BR_Log LVL_INFO, "Candidates for home server " & ListTag(c) & " : " & c
@@ -1374,7 +1374,7 @@ End Sub
 Function BR_LogViewDefs() As Variant
 	Dim d(7) As String
 	d(0) = {BulkReg\1. Runs - by date||SELECT DocType = "Run"||} & _
-	{Date^Day^CD^12~Start^TimeText^SD^9~Tool^Tool^^14~DryRun^DryRun^^7~Batch^BatchID^^22~Operator^@Name([Abbreviate]; Operator)^^20~Status^Status^^11~Summary^Summary^^60~Version^Version^^8}
+	{Date^Day^CD^12~Start^TimeText^SD^9~Tool^Tool^^14~Mode^@If(RunMode != ""; RunMode; DryRun = "0"; "LIVE"; "DryRun=1")^^16~Batch^BatchID^^22~Operator^@Name([Abbreviate]; Operator)^^20~Status^Status^^11~Summary^Summary^^60~Version^Version^^8}
 	d(1) = {BulkReg\2. Batches - by batch, tool, result||SELECT DocType = "Audit" & BatchID != ""||} & _
 	{Batch^BatchID^CD^22~Tool^Tool^C^14~Result^Result^C^20~User^@Name([Abbreviate]; FullName)^S^28~Internet address^InternetAddress^^28~Home server^@Name([Abbreviate]; HomeServer)^^20~Mail file^MailFile^^22~Vault^VaultStatus^^14~Replicas^ReplicaStatus^^22~When^Day + " " + TimeText^^18~Message^Message^^60}
 	d(2) = {BulkReg\3. Users - by name||SELECT DocType = "Audit"||} & _

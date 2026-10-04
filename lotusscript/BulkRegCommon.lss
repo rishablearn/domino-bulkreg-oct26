@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.5.0
+' Script Library : BulkRegCommon            Version 3.6.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.5.0"
+Public Const BR_VERSION = "3.6.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -82,6 +82,8 @@ Public gOperator As String
 Public gLogLevel As Integer
 Public gDebugFile As String
 Public gAuditFile As String
+Public gRunDir As String          ' <AuditDir>\<yyyy-mm-dd_hhnnss>_<NN-Tool>_<MODE>\  - one folder per run
+Public gRunMode As String         ' DRYRUN | LIVE-PRODUCTION | READ-ONLY | SETUP
 Public gLogDb As NotesDatabase    ' central log database (structured documents, views by 00 - Set Up Log Database)
 Public gRunDoc As NotesDocument   ' the Run document of this run
 Public gRunTitle As String
@@ -129,6 +131,8 @@ Function BR_Init(toolName As String) As Boolean
 	gResultsFile = ""
 	gDebugFile = ""
 	gAuditFile = ""
+	gRunDir = ""
+	gRunMode = ""
 	Set gAdminP = Nothing
 	Set gLogDb = Nothing
 	Set gRunDoc = Nothing
@@ -176,8 +180,29 @@ Function BR_Init(toolName As String) As Boolean
 		BR_Msg "Audit folder is missing or not writable:" & Chr$(10) & auditDir, 16
 		Exit Function
 	End If
-	gDebugFile = auditDir & "BulkReg_" & toolName & "_" & gRunID & "_debug.log"
-	gAuditFile = auditDir & "BulkReg_" & toolName & "_" & gRunID & "_audit.csv"
+	' one folder per run, named so that dry runs and production runs cannot be mixed up:
+	'   <AuditDir>\2026-10-05_093015_03-RegisterBatch_DRYRUN\
+	'   <AuditDir>\2026-10-05_101500_03-RegisterBatch_LIVE-PRODUCTION\
+	'   <AuditDir>\2026-10-05_090000_01-Preflight_READ-ONLY\
+	gRunMode = BR_RunModeLabel(toolName)
+	gRunDir = auditDir & Format$(Now, "yyyy-mm-dd_hhnnss") & "_" & BR_ToolLabel(toolName) & "_" & gRunMode & gSep
+	On Error Resume Next
+	MkDir Left$(gRunDir, Len(gRunDir) - 1)
+	Err = 0
+	On Error GoTo ErrH
+	If Not BR_DirWritable(gRunDir) Then
+		BR_Msg "Cannot create the run folder:" & Chr$(10) & gRunDir, 16
+		Exit Function
+	End If
+	gDebugFile = gRunDir & "BulkReg_" & toolName & "_" & gRunMode & "_" & gRunID & "_debug.log"
+	gAuditFile = gRunDir & "BulkReg_" & toolName & "_" & gRunMode & "_" & gRunID & "_audit.csv"
+	Call BR_AppendLine(gRunDir & "RUN_INFO.txt", "BulkReg " & BR_VERSION & " - run information" & Chr$(13) & Chr$(10) & _
+	"Agent      : " & BR_ToolLabel(toolName) & Chr$(13) & Chr$(10) & _
+	"Mode       : " & gRunMode & BR_IIfStr(gRunMode = "LIVE-PRODUCTION", "   (users ARE registered)", BR_IIfStr(gRunMode = "DRYRUN", "   (simulation - nothing changed in Domino)", "")) & Chr$(13) & Chr$(10) & _
+	"Run ID     : " & gRunID & Chr$(13) & Chr$(10) & _
+	"Operator   : " & gOperator & Chr$(13) & Chr$(10) & _
+	"Started    : " & Format$(Now, "yyyy-mm-dd hh:nn:ss") & Chr$(13) & Chr$(10) & _
+	"Config     : " & CStr(cfgPath))
 	Call BR_AppendLine(gAuditFile, Uchr$(&HFEFF) & BR_AuditHeader())   ' BOM so Excel reads UTF-8
 
 	' --- central BulkReg log database (REQUIRED, guide B15) ---
@@ -241,8 +266,40 @@ Function BR_IIfStr(c As Boolean, a As String, b As String) As String
 	If c Then BR_IIfStr = a Else BR_IIfStr = b
 End Function
 
+' Agent label used in run folder names: 01-Preflight, 03-RegisterBatch ...
+Function BR_ToolLabel(toolName As String) As String
+	Select Case LCase$(toolName)
+	Case "setuplog": BR_ToolLabel = "00-SetUpLogDatabase"
+	Case "preflight": BR_ToolLabel = "01-Preflight"
+	Case "buildbatch": BR_ToolLabel = "02-BuildBatch"
+	Case "register": BR_ToolLabel = "03-RegisterBatch"
+	Case "verify": BR_ToolLabel = "04-Verify"
+	Case "exportbatchreg": BR_ToolLabel = "05-Export"
+	Case Else: BR_ToolLabel = toolName
+	End Select
+End Function
+
+' Mode label: only 03 - Register Batch changes Domino, so only it is DRYRUN or LIVE-PRODUCTION
+Function BR_RunModeLabel(toolName As String) As String
+	Select Case LCase$(toolName)
+	Case "register": BR_RunModeLabel = BR_IIfStr(CfgB("DryRun", True), "DRYRUN", "LIVE-PRODUCTION")
+	Case "setuplog": BR_RunModeLabel = "SETUP"
+	Case "verify": BR_RunModeLabel = "VERIFY"            ' read-only, except the optional title fix it asks for
+	Case Else: BR_RunModeLabel = "READ-ONLY"
+	End Select
+End Function
+
 Sub BR_Close(summary As String)
 	On Error Resume Next
+	' run folder: finish RUN_INFO.txt and keep a copy of the batch results / dry-run report
+	If gRunDir <> "" Then
+		If gResultsFile <> "" Then
+			If Dir$(gResultsFile) <> "" Then FileCopy gResultsFile, gRunDir & StrRightBack(gResultsFile, gSep)
+		End If
+		Call BR_AppendLine(gRunDir & "RUN_INFO.txt", "Batch      : " & gBatchID & Chr$(13) & Chr$(10) & _
+		"Finished   : " & Format$(Now, "yyyy-mm-dd hh:nn:ss") & Chr$(13) & Chr$(10) & _
+		"Result     : " & summary)
+	End If
 	BR_Log LVL_INFO, "==== END run " & gRunID & " | " & summary & " ===="
 	Call BR_LogClose(summary)
 	Set gRunDoc = Nothing
@@ -1186,7 +1243,7 @@ Function BR_LogOpen(logSrv As String, logDb As String, cfgPath As String) As Str
 		Set gLogDb = Nothing
 		Exit Function
 	End If
-	gRunTitle = Format$(Now, "yyyy-mm-dd hh:nn") & "  " & gTool & "  " & BR_IIfStr(CfgB("DryRun", True), "DryRun=1", "DryRun=0") & "  " & BR_Abbr(gOperator)
+	gRunTitle = Format$(Now, "yyyy-mm-dd hh:nn") & "  " & BR_ToolLabel(gTool) & "  " & gRunMode & "  " & BR_Abbr(gOperator)
 	Set gRunDoc = BR_LogNewDoc("Run")
 	Call gRunDoc.ReplaceItemValue("Status", "RUNNING")
 	Call gRunDoc.ReplaceItemValue("StartTime", Now)
@@ -1215,6 +1272,8 @@ Function BR_LogNewDoc(docType As String) As NotesDocument
 	Call d.ReplaceItemValue("Tool", gTool)
 	Call d.ReplaceItemValue("Operator", gOperator)
 	Call d.ReplaceItemValue("DryRun", CfgS("DryRun", "1"))
+	Call d.ReplaceItemValue("RunMode", gRunMode)
+	Call d.ReplaceItemValue("RunFolder", gRunDir)
 	Call d.ReplaceItemValue("BatchID", gBatchID)
 	Call d.ReplaceItemValue("Version", BR_VERSION)
 	Call d.ReplaceItemValue("LogTime", Now)

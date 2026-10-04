@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.6.0", "**Release 3.6.0.** **One audit folder per run**, named `<date>_<time>_<NN-Agent>_<MODE>` with MODE **DRYRUN** or **LIVE-PRODUCTION** for 03 (READ-ONLY / VERIFY / SETUP for the other agents). File names carry the mode too; each folder has a RUN_INFO.txt and a copy of the batch results or dry-run report. The log database shows the mode in view 1 and in the run titles. PowerShell helper searches the run folders."],
   ["3.5.0", "**Release 3.5.0.** **Notes names fixed:** CertifierName is passed to the registration as `/Demo` (any of /Demo, Demo, O=Demo accepted), so users become **Neha Arora/Demo** instead of Neha Arora/O=Demo/Demo; OrgUnit values with `=` or `/` are rejected; the batch file shows the **NotesName** each user will get; 03 checks the name after every registration and **stops the run** at the first wrong name (REGISTERED_WRONG_NAME); Verify reports wrong names. **Mail file title:** set to the user's name right after registration (MailFileTitle={CN}); Verify reports empty titles and offers to set them. D6: how to correct users registered with a wrong name."],
   ["3.4.1", "**Release 3.4.1.** Guide only: B18 warns that Designer proposes Target *All selected documents*; D6 row for the message *to run this agent you must have at least one document selected* (set Target: None). Agent headers say the same. No code change."],
   ["3.4.0", "**Release 3.4.0.** **Users without an Internet address are skipped and flagged** (SkipNoInternetAddress=1): not put into a batch, listed in `BATCH-<id>_skipped_no_internet_address.csv`, result SKIPPED_NO_INET; 03 also skips them. **Structured log database:** BulkReg writes its own Run, Entry and Audit documents; new agent **00 - Set Up Log Database** creates a form and 8 categorized views (runs by date, batches, users, results, home servers, problems, skipped users, full log). B15 (blank template), new B20a and D4a."],
@@ -311,7 +312,7 @@ tbl(["Users on that home server (or in the whole mail cluster)", "Folders to cre
   ["10,000", "10", "mail1 … mail10"],
   ["N", "N ÷ 1000, rounded up", "mail1 … mailN"],
 ], [3200, 2600, 3560]);
-note("If the folders already contain mail files, you may need more. After B11/B12, Preflight (C1) calculates the exact number per server, counting the existing files, and writes the commands to `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt`. Create any extra folders it lists.");
+note("If the folders already contain mail files, you may need more. After B11/B12, Preflight (C1) calculates the exact number per server, counting the existing files, and writes the commands to `C:\\BulkReg\\audit\\<run folder>\\BulkReg_Preflight_<run>_mailfolders.txt`. Create any extra folders it lists.");
 ol(
   "Find the Domino **data directory** of the home server. It is the `Directory=` setting in that server's notes.ini, for example `D:\\Domino\\Data` (Windows) or `/local/notesdata` (Linux). In Domino Administrator, select the server; the **Files** tab shows its contents.",
   "Sign in to the server's operating system as an administrator (Windows) or as root (Linux).",
@@ -445,7 +446,7 @@ tbl(["Folder", "Holds", "Access"], [
   ["`C:\\BulkReg\\batches`", "Batch files, summaries, results (names and email addresses)", "**Restricted**"],
   ["`C:\\BulkReg\\ids`", "ID files created during registration", "**Restricted**"],
   ["`C:\\BulkReg\\secure`", "Initial-password files", "**Restricted**"],
-  ["`C:\\BulkReg\\audit`", "Audit CSVs, debug logs", "Admins and auditors (read)"],
+  ["`C:\\BulkReg\\audit`", "One sub-folder per run, e.g. `2026-10-05_101500_03-RegisterBatch_LIVE-PRODUCTION`, with audit CSV, debug log and RUN_INFO.txt", "Admins and auditors (read)"],
   ["`C:\\BulkReg\\cert`", "Certifier ID (only with B5 Option 2)", "**Restricted**"],
 ], [2400, 4500, 2460]);
 h3("Steps (PowerShell)");
@@ -668,7 +669,7 @@ tbl(["User", "Example 2 result", "Why"], [
 h3("B12.8 Test the mapping before any batch");
 ol(
   "Run **01 - Preflight Check** (C1).",
-  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt`. For every rule it shows **how many users matched** and the values the rule gives. A rule with **0 users** usually means a wrong field name or pattern. At the end, **Result per home server** shows the users per home server and the servers that will receive their replicas.",
+  "Open `C:\\BulkReg\\audit\\<run folder>\\BulkReg_Preflight_<run>_mapping.txt`. For every rule it shows **how many users matched** and the values the rule gives. A rule with **0 users** usually means a wrong field name or pattern. At the end, **Result per home server** shows the users per home server and the servers that will receive their replicas.",
   "For individual users, open the Preflight audit CSV. The **MapRule** column shows which rule each user matched, and HomeServer / OrgUnit / Policy / ClusterReplicas show the result.",
   "Correct server_mapping.csv (or MailClusterServers) and run Preflight again until every group lands where intended."
 );
@@ -858,7 +859,7 @@ done("bulkreg_log.nsf shows the view folder BulkReg with the 8 views, and Prefli
 h2("B21 Smoke test");
 ol(
   "Let Preflight finish. *Result:* a dialog showing Environment errors, candidate counts (OK / WARN / ERROR) and **candidates per home server**.",
-  "Open `C:\\BulkReg\\audit`. *Result:* a file `BulkReg_Preflight_<date-time>_audit.csv` and a `_debug.log`.",
+  "Open `C:\\BulkReg\\audit`. *Result:* a new folder `<date>_<time>_01-Preflight_READ-ONLY` containing RUN_INFO.txt, `BulkReg_Preflight_READ-ONLY_<run>_audit.csv`, the `_debug.log`, `_mapping.txt` and `_mailfolders.txt`.",
   "Open **bulkreg_log.nsf** on the log server. *Result:* a new entry for `BulkReg Preflight <date-time> by <your name>` containing the run's actions.",
   "In the debug log, check the lines **PASS Tool database is local** and **PASS Log database: Author with Create documents (or higher)**. A warning about Editor/Manager or Delete documents on the log database means your ACL entry is higher than B15 recommends.",
   "If Environment errors is not 0, open the debug log, find the lines marked `FAIL`, fix the cause (D6), and run Preflight again."
@@ -875,10 +876,10 @@ meta("Domino administrator", "bulkreg.nsf", "nothing");
 ol(
   "Open `bulkreg.nsf` and click **Actions > BulkReg > 01 - Preflight Check**. Confirm the config path.",
   "Note the totals: candidates, OK / WARN / ERROR, and **candidates per home server**.",
-  "Open the newest `C:\\BulkReg\\audit\\BulkReg_Preflight_*_audit.csv` (D4 lists the columns).",
+  "Open the newest run folder `C:\\BulkReg\\audit\\<date>_<time>_01-Preflight_READ-ONLY` and its `…_audit.csv` (D4 lists the columns).",
   "For each **ERROR** row, read the Message column. Fix the cause in Active Directory, for example a missing last name or a duplicate email address, and let DirSync synchronise.",
-  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt` (the mapping test): users per rule and the values each rule gives. If a group lands on the wrong server (also visible in the HomeServer / MapRule columns of the audit CSV), correct server_mapping.csv (B12) and run Preflight again.",
-  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt`. For each home server, or for the whole **mail cluster**, it lists the users, the folders needed (for example `mail1 .. mail5`) and **the servers to create them on** (with a cluster: all members), with the create commands. Create any folder that does not exist yet (B4), and make sure `MailFolderMax` is high enough. Preflight warns if it is too low.",
+  "Open `C:\\BulkReg\\audit\\<run folder>\\BulkReg_Preflight_<run>_mapping.txt` (the mapping test): users per rule and the values each rule gives. If a group lands on the wrong server (also visible in the HomeServer / MapRule columns of the audit CSV), correct server_mapping.csv (B12) and run Preflight again.",
+  "Open `C:\\BulkReg\\audit\\<run folder>\\BulkReg_Preflight_<run>_mailfolders.txt`. For each home server, or for the whole **mail cluster**, it lists the users, the folders needed (for example `mail1 .. mail5`) and **the servers to create them on** (with a cluster: all members), with the create commands. Create any folder that does not exist yet (B4), and make sure `MailFolderMax` is high enough. Preflight warns if it is too low.",
   "With a mail cluster, check the environment lines in the debug log: every member **reachable**, and no warning about `MailACLManager`."
 );
 done("0 environment errors, every user lands on the intended home server (with the intended replica servers), and every mail folder listed in the _mailfolders.txt file exists on every server named there.");
@@ -932,7 +933,7 @@ ol(
   "Click **Actions > BulkReg > 03 - Register Batch**.",
   "In **Batch file to register**, accept the proposed path (the newest open batch) or type the path of your batch. Click **OK**.",
   "Read the summary: users to register, users excluded, **users per home server**, **cluster replicas per home server**, registration server, certification. Click **Yes**.",
-  "Wait for the end dialog. Open `C:\\BulkReg\\batches\\BATCH-<id>_dryrun_<run>.csv`.",
+  "Wait for the end dialog. Open `C:\\BulkReg\\batches\\BATCH-<id>_dryrun_<run>.csv` (a copy is in the run folder `C:\\BulkReg\\audit\\<date>_<time>_03-RegisterBatch_DRYRUN`).",
   "Check that every row shows **WOULD_REGISTER**, that the Message column shows the right **Notes name** (e.g. `Notes name: Neha Arora/Demo`) and **mail file title**, and with a cluster that ReplicaStatus shows **WOULD_REQUEST 3** (one per other member). For SKIPPED or FAILED_VALIDATION rows, read the Message column, then correct the batch row or rebuild the batch (C2)."
 );
 done("All approved rows show WOULD_REGISTER. The batch is still OPEN.");
@@ -1202,11 +1203,12 @@ h2("D4 Outputs, audit and result codes");
 tbl(["Output", "Location", "Content"], [
   ["**Central log database (required)**", "LogServer!!bulkreg_log.nsf", "Structured Run, Entry and Audit documents in 8 categorized views (D4a). The shared record for administrators and auditors."],
   ["Skipped users list", "C:\\BulkReg\\batches\\BATCH-<id>_skipped_no_internet_address.csv", "Users left out of the batch because the InternetAddress is empty (SKIPPED_NO_INET)"],
-  ["Preflight mapping test", "C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt", "Users matched by each mapping rule, and the values per rule (B12.8)"],
-  ["Preflight mail folders", "C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt", "Mail folders needed per home server or mail cluster, the servers to create them on, and the create commands (B4)"],
+  ["Preflight mapping test", "C:\\BulkReg\\audit\\<run folder>\\BulkReg_Preflight_<run>_mapping.txt", "Users matched by each mapping rule, and the values per rule (B12.8)"],
+  ["Preflight mail folders", "C:\\BulkReg\\audit\\<run folder>\\BulkReg_Preflight_<run>_mailfolders.txt", "Mail folders needed per home server or mail cluster, the servers to create them on, and the create commands (B4)"],
   ["Batch files", "C:\\BulkReg\\batches\\", "D2"],
-  ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_audit.csv", "One row per user per action, including BatchID, MailFile, MailFileStatus, MailFileNote, ClusterReplicas and ReplicaStatus. **No passwords.**"],
-  ["Debug log", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_debug.log", "Every step, the approval line, and the batch file size and time"],
+  ["Run folder (one per run)", "C:\\BulkReg\\audit\\<yyyy-mm-dd>_<hhnnss>_<NN-Agent>_<MODE>\\", "All files of one run, plus RUN_INFO.txt (agent, mode, operator, config, start, end, batch, result) and a copy of the batch results or dry-run report. MODE shows at a glance what the run did: **DRYRUN** or **LIVE-PRODUCTION** (03 only), READ-ONLY (01, 02, 05), VERIFY (04), SETUP (00). Example: `2026-10-05_101500_03-RegisterBatch_LIVE-PRODUCTION`."],
+  ["Audit CSV", "<run folder>\\BulkReg_<Tool>_<MODE>_<run>_audit.csv", "One row per user per action, including BatchID, MailFile, MailFileStatus, MailFileNote, ClusterReplicas and ReplicaStatus. **No passwords.**"],
+  ["Debug log", "<run folder>\\BulkReg_<Tool>_<MODE>_<run>_debug.log", "Every step, the approval line, and the batch file size and time"],
   ["Password file", "C:\\BulkReg\\secure\\BulkReg_InitialPasswords_<batch>_<run>.csv", "Initial passwords (delete in C8)"],
   ["Certification Log", "certlog.nsf on the registration server", "Domino's record of every certification and registration (written because RegistrationLog is not empty)"],
   ["Administration Requests", "admin4.nsf (any server in the domain)", "The AdminP Create Replica requests posted by 03 and their results (D3c)"],

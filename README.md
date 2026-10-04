@@ -1,7 +1,7 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 3.5.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), same version as the kit (3.5.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+BulkReg 3.6.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), same version as the kit (3.6.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## Updating to a new release
 A release only changes the two script libraries. In Designer replace the whole content of **BulkRegCommon**, then **BulkRegAgents**: click in the editor, Ctrl+A, paste the whole .lss file (Designer puts Options, Declarations and every Sub/Function in place automatically), Ctrl+S, run **Tools > Recompile All LotusScript** and re-sign the database (guide B17a). The agents stay as they are.
@@ -134,7 +134,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (3.5.0)   ·   CHANGELOG.md   release history
+VERSION      current release (3.6.0)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv                 (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (ALL code - the two script libraries)
              Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile (.lss)
@@ -144,6 +144,8 @@ tools/       BulkReg_AuditViewer.html                          (optional, offlin
 docs/        BulkReg_Admin_Guide.docx/.html + build sources
 archive/     linux-server-mode/                                (retired, not used)
 ```
+**Audit folders:** every run writes into its own folder `C:\BulkReg\audit\<date>_<time>_<NN-Agent>_<MODE>` - for 03 the MODE is `DRYRUN` or `LIVE-PRODUCTION`, so simulations and production runs are never mixed up. Each folder has a `RUN_INFO.txt`.
+
 Batch files, ID files, passwords and audit logs contain personal data or secrets. They live in `C:\BulkReg\` and are blocked by `.gitignore`. Never commit them.
 
 ## Push updates to your existing GitHub repo
