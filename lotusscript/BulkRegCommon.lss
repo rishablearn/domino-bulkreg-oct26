@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.2.3
+' Script Library : BulkRegCommon            Version 3.2.4
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "3.2.3"
+Public Const BR_VERSION = "3.2.4"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -437,6 +437,15 @@ Function BR_SrvList(s As String, exclude As String) As String
 	BR_SrvList = out
 End Function
 
+' Number of entries in a comma separated list ("a,b,c" -> 3, "" -> 0).
+' UBound needs an array VARIABLE - UBound(Split(...)) does not compile (Type mismatch).
+Function BR_ListCount(s As String) As Integer
+	Dim v As Variant
+	If Trim$(s) = "" Then Exit Function
+	v = Split(s, ",")
+	BR_ListCount = UBound(v) + 1
+End Function
+
 ' True when <server> is listed in MailClusterServers
 Function BR_InMailCluster(server As String) As Boolean
 	Dim parts As Variant, i As Integer
@@ -820,7 +829,7 @@ Function BR_CheckMailFolderConfig() As String
 	Dim cl As String, nCl As Integer
 	cl = BR_SrvList(CfgS("MailClusterServers", ""), "")
 	If cl <> "" Then
-		nCl = UBound(Split(cl, ",")) + 1
+		nCl = BR_ListCount(cl)
 		If nCl < 2 Then e = e & "MailClusterServers lists only one server. List ALL members of the mail cluster (e.g. 2 in DC + 2 in DR), comma separated, or leave it empty." & Chr$(10)
 		If nCl > 6 Then e = e & "MailClusterServers lists " & nCl & " servers - a Domino cluster has at most 6 members." & Chr$(10)
 	End If
