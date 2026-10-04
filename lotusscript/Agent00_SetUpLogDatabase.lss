@@ -1,0 +1,30 @@
+'=====================================================================
+' Agent name : BulkReg\00 - Set Up Log Database
+' Version    : 3.4.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.4.0)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunSetupLog).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: open the agent, click in the editor, Ctrl+A, Delete, paste this
+'              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunSetupLog):
+'   Creates the form and the 8 categorized "BulkReg\..." views in the central
+'   log database (LogServer!!LogDb). Run it once after creating the log database
+'   and after releases that change the views. Needs Designer/Manager access to
+'   the log database (normally the database owner). Changes no log documents.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunSetupLog()
+End Sub

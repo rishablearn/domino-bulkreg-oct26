@@ -1,6 +1,6 @@
 <#
 =====================================================================
- bulkreg.ps1  -  BulkReg 3.3.2 OPTIONAL helper for the Windows admin workstation
+ bulkreg.ps1  -  BulkReg 3.4.0 OPTIONAL helper for the Windows admin workstation
                  (the machine running the HCL Domino Administrator client)
 
  Registration runs entirely inside the Domino Administrator client
@@ -33,7 +33,7 @@ param(
 )
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$Version = '3.3.2'
+$Version = '3.4.0'
 if (-not $Config) { $Config = if ($env:BULKREG_CONFIG) { $env:BULKREG_CONFIG } else { Join-Path $Base 'config\bulkreg.ini' } }
 $KitConfig = Join-Path $PSScriptRoot '..\..\config'
 $script:Fails = 0; $script:Warns = 0
@@ -170,6 +170,7 @@ function Test-Versions {
     $checks = @(
         @{ File = 'lotusscript\BulkRegCommon.lss';             Pattern = 'BR_VERSION = "([0-9.]+)"' },
         @{ File = 'lotusscript\BulkRegAgents.lss';             Pattern = 'BulkRegAgents\s+Version ([0-9.]+)' },
+        @{ File = 'lotusscript\Agent00_SetUpLogDatabase.lss';  Pattern = 'Version\s*:\s*([0-9.]+)' },
         @{ File = 'lotusscript\Agent01_Preflight.lss';         Pattern = 'Version\s*:\s*([0-9.]+)' },
         @{ File = 'lotusscript\Agent02_BuildBatch.lss';        Pattern = 'Version\s*:\s*([0-9.]+)' },
         @{ File = 'lotusscript\Agent03_RegisterBatch.lss';     Pattern = 'Version\s*:\s*([0-9.]+)' },
@@ -206,7 +207,7 @@ function Show-Status([string]$File) {
     Write-Host ("Run {0}  tool={1}  mode={2}  operator={3}  rows={4}" -f $rows[0].RunID, $rows[0].Tool, $rows[0].Mode, $rows[0].Operator, $rows.Count)
     $rows | Group-Object Result | Sort-Object Count -Descending | Format-Table @{n = 'Result'; e = { $_.Name } }, Count -AutoSize
     if ($rows[0].PSObject.Properties.Name -contains 'ReplicaStatus') {
-        # cluster replicas (3.3.2+): group by status without the server details
+        # cluster replicas (3.4.0+): group by status without the server details
         $rows | Where-Object { $_.ReplicaStatus } | Group-Object { ($_.ReplicaStatus -split ' \(')[0] } | Sort-Object Count -Descending |
             Format-Table @{n = 'ReplicaStatus'; e = { $_.Name } }, Count -AutoSize
     }

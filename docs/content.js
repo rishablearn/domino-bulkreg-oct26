@@ -46,11 +46,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg " + KIT_VERSION + ": script libraries BulkRegCommon and BulkRegAgents, 5 one-line agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg " + KIT_VERSION + ": script libraries BulkRegCommon and BulkRegAgents, 6 one-line agents (00–05), config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.4.0", "**Release 3.4.0.** **Users without an Internet address are skipped and flagged** (SkipNoInternetAddress=1): not put into a batch, listed in `BATCH-<id>_skipped_no_internet_address.csv`, result SKIPPED_NO_INET; 03 also skips them. **Structured log database:** BulkReg writes its own Run, Entry and Audit documents; new agent **00 - Set Up Log Database** creates a form and 8 categorized views (runs by date, batches, users, results, home servers, problems, skipped users, full log). B15 (blank template), new B20a and D4a."],
   ["3.3.2", "**Release 3.3.2.** Users without an Internet address are a **warning only**, never an error: they stay Include=Y and are registered. Preflight, the Build Batch dialog and the batch summary count them separately (`No Internet addr`). C3 and D6 explain what it means."],
   ["3.3.1", "**Release 3.3.1.** Installation simplified: Domino Designer distributes pasted LotusScript automatically, so B17, B17a and B18 now say **paste the whole file** (Ctrl+A, Ctrl+V) instead of pasting STEP blocks into each section. The STEP markers in the .lss files are replaced by `--- part …` labels and a HOW TO INSTALL note. No code change."],
   ["3.3.0", "**Release 3.3.0.** **All code moved into script libraries.** New library **BulkRegAgents** holds the code of the five agents (BR_RunPreflight … BR_RunExport); each agent now contains only `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, so future releases replace only the two libraries (B17a). B17 and B18 rewritten; Appendix B shows the Sub per agent. Library variables are reset at the start of every run. **One-time migration from 3.2: B17 (create BulkRegAgents) and B18 (reduce each agent to 3 + 3 lines).**"],
@@ -121,7 +122,7 @@ pb();
 
 // ================================================================ RUN ORDER
 h1("Agent Run Order (read this first)");
-p("BulkReg has **five agents**. Only **four** are used, always in this order: **01 → 02 → (you review) → 03 dry run → 03 live → 04**. Agent **05 is not part of the process**; it is only for the manual alternative in Appendix A. Run every agent from bulkreg.nsf > **Actions > BulkReg**.");
+p("BulkReg has **six agents**. Agent **00** is run once by the log database owner (B20a). In every batch **four** are used, always in this order: **01 → 02 → (you review) → 03 dry run → 03 live → 04**. Agent **05 is not part of the process**; it is only for the manual alternative in Appendix A. Run every agent from bulkreg.nsf > **Actions > BulkReg**.");
 code(`FOR EVERY BATCH:
 
  1. Actions > BulkReg > 01 - Preflight Check        (read-only)
@@ -201,7 +202,8 @@ tbl(["Item", "Where", "Created in"], [
   ["Numbered mail folders and replica rights on every mail cluster member", "Domino data directory and Server documents", "B4"],
   ["Tool database bulkreg.nsf", "Local Notes data directory", "B13, B14"],
   ["Central log database bulkreg_log.nsf (required)", "A Domino server, e.g. the registration server", "B15"],
-  ["Script libraries BulkRegCommon + BulkRegAgents, and 5 one-line agents", "Inside bulkreg.nsf", "B17, B18"],
+  ["Script libraries BulkRegCommon + BulkRegAgents, and 6 one-line agents", "Inside bulkreg.nsf", "B17, B18"],
+  ["Categorized views in the log database", "bulkreg_log.nsf", "B20a"],
 ], [4300, 3200, 1860]);
 h2("A4 Organizational or explicit policy: which one assigns the vault?");
 p("The ID reaches the vault because the user's **effective policy** includes a Security Settings document that assigns the vault. HCL: *“If you create an organizational policy, it automatically applies when you register users. If you create an explicit policy, you assign it manually during user registration, in the Person document or by using the Policy Assignment tool.”*");
@@ -476,7 +478,7 @@ ol(
 p("Then copy the two templates into the working folder:");
 code(`Copy-Item C:\\BulkReg-kit\\config\\bulkreg.ini        C:\\BulkReg\\config\\
 Copy-Item C:\\BulkReg-kit\\config\\server_mapping.csv C:\\BulkReg\\config\\`);
-done("`C:\\BulkReg-kit\\lotusscript` contains 7 .lss files (2 libraries, 5 agents), and `C:\\BulkReg\\config` contains bulkreg.ini and server_mapping.csv.");
+done("`C:\\BulkReg-kit\\lotusscript` contains 8 .lss files (2 libraries, 6 agents), and `C:\\BulkReg\\config` contains bulkreg.ini and server_mapping.csv.");
 
 // ---------- B11
 h2("B11 Fill in bulkreg.ini");
@@ -683,7 +685,7 @@ h2("B13 Create the tool database bulkreg.nsf");
 meta("Domino administrator", "Domino Administrator (or Notes client)", "creates a local database");
 p("bulkreg.nsf only **holds the code** (library and agents). It is created **locally** on the admin workstation on purpose: the agents use the Notes client user interface (dialogs, prompts), run with **your** admin ID and rights, and refuse to run on a server. They never store documents in bulkreg.nsf; everything they produce goes to `C:\\BulkReg\\…` and to the central log database on the server (B15).");
 tbl(["Database", "Where", "Why there", "Contains"], [
-  ["bulkreg.nsf (tool)", "**Local**, admin workstation", "Agents need the client UI and your ID; NotesRegistration runs from the client", "Code only (2 libraries + 5 one-line agents)"],
+  ["bulkreg.nsf (tool)", "**Local**, admin workstation", "Agents need the client UI and your ID; NotesRegistration runs from the client", "Code only (2 libraries + 6 one-line agents)"],
   ["bulkreg_log.nsf (log)", "**Server**, e.g. the registration server", "Shared, permanent, backed-up record for all administrators and auditors", "One entry per run, action and user"],
 ], [2200, 2300, 2900, 1960]);
 ol(
@@ -711,20 +713,20 @@ done("bulkreg.nsf has -Default- and Anonymous = No Access, consistent ACL enforc
 // ---------- B15
 h2("B15 Create the central BulkReg log database (required)");
 meta("Domino administrator", "Domino Administrator", "creates one database on a server");
-p("This Notes database is the **shared, permanent record** of everything BulkReg does. Every run of every agent writes to it: the start and end of the run (agent, operator, batch, DryRun), every action and error, and one **AUDIT** entry per user (result, home server, mail file, vault status, batch). The CSV and .log files on the admin PC are local working copies; this database is what other administrators and auditors use. If it cannot be opened, every agent stops **before** reading or changing anything.");
+p("This Notes database is the **shared, permanent record** of everything BulkReg does. Every run of every agent writes structured documents to it: one **Run** document (agent, operator, batch, DryRun, start, end, status, summary), one **Entry** per log line, and one **Audit** document per user and action (result, home server, mail file, vault, replicas, batch). Agent 00 creates **categorized views** over them (B20a, D4a). The CSV and .log files on the admin PC are local working copies; this database is what other administrators and auditors use. If it cannot be opened, every agent stops **before** reading or changing anything.");
 ol(
   "Choose **File > Application > New**.",
   "In **Server**, select the server that will hold the log, for example the registration server `DominoAdmin/Demo`. Do not keep Local.",
   "In **Title**, type `BulkReg Log`. In **File Name**, type `bulkreg_log.nsf`.",
-  "Tick **Show advanced templates** and select the **Agent Log** template (file `alog4.ntf`; some releases list it as alog.ntf). If it is not listed, click **Template Server**, choose **Local** and look again: the template is then taken from your client. Click **OK**. *Result:* the empty log database opens.",
+  "Select the template **-Blank-**. Click **OK**. *Result:* the empty log database opens. (A log database created earlier from the Agent Log template alog4.ntf also works: its old entries stay in its own views, new documents appear in the BulkReg views.)",
   "Choose **File > Application > Access Control** and set the entries below. Click **OK**."
 );
 tbl(["ACL entry", "Access", "Why"], [
   ["-Default-, Anonymous", "No Access", "Nobody else reads the audit trail"],
-  ["BulkReg operators (your admin ID or their group)", "**Author**, **Create documents** ticked, **Delete documents** NOT ticked", "Agents can add entries but cannot change or delete earlier ones"],
+  ["BulkReg operators (your admin ID or their group)", "**Author**, **Create documents** ticked, **Delete documents** NOT ticked", "Agents can add documents but cannot change or delete earlier ones (each Run document lists its operator in an Authors field so the run can be closed)"],
   ["Auditors / reviewers", "Reader", "Read the record"],
   ["LocalDomainServers", "Manager", "Replication and server tasks"],
-  ["Database owner (a group the operators are NOT in, e.g. the platform owner)", "Manager", "Separation of duties: the people who run BulkReg cannot alter its log"],
+  ["Database owner (a group the operators are NOT in, e.g. the platform owner)", "Manager", "Separation of duties: the people who run BulkReg cannot alter its log. The owner creates the views (B20a)."],
 ], [3400, 3100, 2860]);
 note("When you create the database you become its Manager. After setting the owner entry, lower your own entry to Author. If your ID is still Manager or Editor (for example through LocalDomainAdmins), Preflight shows a **warning**, not an error: decide with your auditor whether that is acceptable.");
 olc(
@@ -732,7 +734,7 @@ olc(
   "Include the database in the server backup. Optional: replicate it to a second server (for example in DR) for resilience.",
   "Size: every run writes one entry per action and per user (at LogLevel=INFO, roughly 3–8 entries per registered user, more with DEBUG). For 5000 users expect tens of thousands of entries; keep LogLevel=INFO for normal batches and archive the database when the project is closed."
 );
-done("bulkreg_log.nsf exists on the server, its ACL is set, and bulkreg.ini names it. The smoke test (B21) creates its first entries.");
+done("bulkreg_log.nsf exists on the server, its ACL is set, and bulkreg.ini names it. The views are created in B20a; the smoke test (B21) creates the first documents.");
 
 // ---------- B16 / B17
 h2("B16 Open bulkreg.nsf in Domino Designer");
@@ -743,10 +745,10 @@ ol(
 );
 h2("B17 Create the two script libraries");
 meta("Domino administrator", "Domino Designer", "adds 2 script libraries to bulkreg.nsf");
-p("All BulkReg code lives in **two script libraries**. The five agents (B18) contain only one line that calls the library, so they never change between releases.");
+p("All BulkReg code lives in **two script libraries**. The six agents (B18) contain only one line that calls the library, so they never change between releases.");
 tbl(["Library (type the name exactly)", "Source file in C:\\BulkReg-kit\\lotusscript", "Contains"], [
   ["`BulkRegCommon`", "BulkRegCommon.lss", "Shared functions: configuration, mapping, mail files, cluster replicas, logging, audit, batch files"],
-  ["`BulkRegAgents`", "BulkRegAgents.lss", "The code of the five agents: BR_RunPreflight, BR_RunBuildBatch, BR_RunRegisterBatch, BR_RunVerify, BR_RunExport. It uses BulkRegCommon."],
+  ["`BulkRegAgents`", "BulkRegAgents.lss", "The code of the six agents: BR_RunSetupLog, BR_RunPreflight, BR_RunBuildBatch, BR_RunRegisterBatch, BR_RunVerify, BR_RunExport. It uses BulkRegCommon."],
 ], [2400, 2600, 4360]);
 note("**Paste the whole file.** When you paste LotusScript into the editor, Domino Designer puts each part in its place automatically: `Option` and `Use` lines into **(Options)**, constants, types and variables into **(Declarations)**, and every Sub and Function into its own entry. The `--- part …` comment lines in the files only show where each part begins.");
 warn("Create and save **BulkRegCommon first**. BulkRegAgents contains `Use \"BulkRegCommon\"` and does not compile until BulkRegCommon exists.");
@@ -774,11 +776,12 @@ ol(
 done("Both libraries save without errors, Recompile All finishes without errors, and the first line of the next debug log shows the new version (`==== BulkReg <version> | tool=…`).");
 
 // ---------- B18
-h2("B18 Create the five agents");
-meta("Domino administrator", "Domino Designer", "adds 5 agents to bulkreg.nsf");
+h2("B18 Create the six agents");
+meta("Domino administrator", "Domino Designer", "adds 6 agents to bulkreg.nsf");
 warn("Type the names exactly as shown. The backslash `\\` creates the **Actions > BulkReg** submenu. Do **not** use `|` in agent names: Notes treats it as the separator between a name and its alias.");
 p("Every agent has the same two parts: three lines in **(Options)** and three lines in **Initialize**. Only the name of the `BR_Run…` Sub differs.");
 tbl(["Agent name (type exactly)", "Line in Initialize", "Source file (same content)"], [
+  ["`BulkReg\\00 - Set Up Log Database`", "`Call BR_RunSetupLog()`", "Agent00_SetUpLogDatabase.lss (run by the log database owner, B20a)"],
   ["`BulkReg\\01 - Preflight Check`", "`Call BR_RunPreflight()`", "Agent01_Preflight.lss"],
   ["`BulkReg\\02 - Build Batch`", "`Call BR_RunBuildBatch()`", "Agent02_BuildBatch.lss"],
   ["`BulkReg\\03 - Register Batch`", "`Call BR_RunRegisterBatch()`", "Agent03_RegisterBatch.lss"],
@@ -806,7 +809,7 @@ olc(
   "Close the agent and repeat for the next row."
 );
 note("The agent files contain only these lines plus a description in comments. **(Declarations)** of an agent stays empty. You can also type the 3 + 3 lines by hand instead of pasting.");
-done("All five agents are listed under Code > Agents with the exact names, trigger 'Action menu selection', target 'None', each contains `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, and they save without errors.");
+done("All six agents are listed under Code > Agents with the exact names, trigger 'Action menu selection', target 'None', each contains `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, and they save without errors.");
 pb();
 
 // ---------- B19
@@ -825,12 +828,26 @@ done("bulkreg.nsf is signed with the admin ID that will run it.");
 h2("B20 First start and the security alert");
 ol(
   "In Domino Administrator (or Notes), open `bulkreg.nsf` (**File > Open > HCL Notes Application > Local > bulkreg.nsf**).",
-  "Click **Actions > BulkReg**. *Result:* the five agents appear in the submenu, in number order.",
+  "Click **Actions > BulkReg**. *Result:* the six agents appear in the submenu, in number order (00 … 05).",
   "Click **01 - Preflight Check**.",
   "If an **Execution Security Alert** appears, read the signer. It must be your admin ID. Choose **Execute the action this one time**, or trust the signer if your ECL policy allows it.",
   "When asked for the **Path to bulkreg.ini**, type `C:\\BulkReg\\config\\bulkreg.ini` and click **OK**. The path is remembered for later runs."
 );
 done("Preflight starts without a security block and accepts the config path.");
+
+// ---------- B20a
+h2("B20a Set up the log database views (database owner, once)");
+meta("Owner of the log database (Designer or Manager access to bulkreg_log.nsf)", "bulkreg.nsf", "creates a form and 8 views in bulkreg_log.nsf; no documents are changed");
+p("The views are design elements, so they are created by the **owner** of the log database, not by the operators (Author). The owner needs bulkreg.nsf too (a copy with the same libraries and agents is enough) and a bulkreg.ini with the same LogServer / LogDb.");
+ol(
+  "Open bulkreg.nsf and click **Actions > BulkReg > 00 - Set Up Log Database**. Confirm the config path.",
+  "Read the question (database name, 8 views) and click **Yes**.",
+  "Read the result: one line per view, each **OK**. *Result:* the form BRLogEntry and the views exist.",
+  "Open bulkreg_log.nsf. In the navigator, expand **BulkReg**: the views 1–8 are listed (D4a).",
+  "Run 00 again after a release whose notes say that the views changed. It replaces only its own views; your other views are kept."
+);
+note("If the form import reports an error, the views still work; documents then open without the BulkReg form. Send the message from the result dialog.");
+done("bulkreg_log.nsf shows the view folder BulkReg with the 8 views, and Preflight shows **PASS Log database views present**.");
 
 // ---------- B21
 h2("B21 Smoke test");
@@ -889,7 +906,7 @@ tbl(["Check", "How", "If wrong"], [
   ["Right OU / policy / vault", "Read OrgUnit, Policy and VaultServer", "Correct the value in the row"],
   ["Right replica servers", "Read ClusterReplicas: all other cluster members, comma separated (e.g. `DominoADMail2/Demo,DominoADMailDR1/Demo,DominoADMailDR2/Demo`)", "Correct MailClusterServers and rebuild, or edit the row (empty = no replicas)"],
   ["Warnings", "Filter Check = WARN and read Issues", "Accept them, or set Include to `N`"],
-  ["No Internet address", "Issues shows **WARN: InternetAddress missing**. The summary counts these users (`No Internet addr`).", "**Not an error:** the row stays Include=Y and the user is registered (Notes ID, vault, mail file). Internet mail cannot reach the user until the address is added in AD and DirSync has synchronised it. Set Include=N if you prefer to wait."],
+  ["No Internet address", "These users are **not in the batch** (SkipNoInternetAddress=1). The summary shows `No Internet addr: N SKIPPED` and the list `BATCH-<id>_skipped_no_internet_address.csv`; the log view **7. Skipped - no Internet address** shows them too.", "Add the address in AD. After DirSync has written it, the next Build Batch offers the user again. Never an error."],
   ["Errors", "Check = ERROR rows already have Include=N", "Fix in AD and include them in a later batch"],
 ], [2200, 3700, 3460]);
 h3("Save");
@@ -1031,6 +1048,7 @@ tbl(["Key", "Default", "Meaning"], [
   ["VaultServer / VaultCheckAfterReg", "– / 1", "Default vault server for the check; check after each user"],
   ["MappingFile", "C:\\BulkReg\\config\\server_mapping.csv", "Multi-server rules"],
   ["ExtraSelection / BatchServerFilter", "(empty)", "Narrow a batch: formula / one home server"],
+  ["SkipNoInternetAddress", "1", "1 = users without an Internet address are skipped and flagged (SKIPPED_NO_INET, own list and log view); 0 = registered without an address (WARN)"],
   ["BatchSize / MaxScan", "1000 / 0", "Rows per batch; directory search limit (0 = no limit; keep 0 for 5000+ users)"],
   ["BatchDir / MaxBatchRows", "C:\\BulkReg\\batches\\ / 1000", "Batch folder; largest accepted batch"],
   ["PauseMs / MaxConsecutiveErrors", "500 / 5", "Pause between users; circuit breaker"],
@@ -1050,7 +1068,7 @@ tbl(["Key", "Default", "Meaning"], [
   ["CreateClusterReplicas", "1", "1 = 03 posts AdminP Create Replica requests; 0 = you create the replicas (04 still checks them)"],
   ["IDFileDir / PasswordDir / AuditDir / WritePasswordFile", "C:\\BulkReg\\… / 1", "Output folders; write passwords to a restricted file"],
   ["IsNorthAmerican / EnforceUniqueShortName / StoreIDInAddressBook / SyncInternetPassword", "1 / 1 / 0 / 0", "NotesRegistration options"],
-  ["LogServer / LogDb", "– / bulkreg_log.nsf", "**Required** central log database (B15). Agents stop if it cannot be opened."],
+  ["LogServer / LogDb", "– / bulkreg_log.nsf", "**Required** central log database (B15) with its views (B20a). Agents stop if it cannot be opened."],
   ["LogLevel", "INFO", "Detail written to the debug log and the log database (DEBUG / INFO / WARN / ERROR)"],
 ], [3900, 2200, 3260]);
 
@@ -1173,7 +1191,8 @@ ol(
 
 h2("D4 Outputs, audit and result codes");
 tbl(["Output", "Location", "Content"], [
-  ["**Central log database (required)**", "LogServer!!bulkreg_log.nsf", "One entry per run: start/end, every action and error, and an AUDIT line per user (result, home server, mail file, vault, batch). The shared record for administrators and auditors."],
+  ["**Central log database (required)**", "LogServer!!bulkreg_log.nsf", "Structured Run, Entry and Audit documents in 8 categorized views (D4a). The shared record for administrators and auditors."],
+  ["Skipped users list", "C:\\BulkReg\\batches\\BATCH-<id>_skipped_no_internet_address.csv", "Users left out of the batch because the InternetAddress is empty (SKIPPED_NO_INET)"],
   ["Preflight mapping test", "C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt", "Users matched by each mapping rule, and the values per rule (B12.8)"],
   ["Preflight mail folders", "C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt", "Mail folders needed per home server or mail cluster, the servers to create them on, and the create commands (B4)"],
   ["Batch files", "C:\\BulkReg\\batches\\", "D2"],
@@ -1195,9 +1214,24 @@ tbl(["Result", "Meaning", "Action"], [
   ["FAILED", "Registration error (Message: stage + error)", "D6"],
   ["SKIPPED", "Already registered, document gone, or objectGUID mismatch", "None, or rebuild"],
   ["NOT_PROCESSED", "Stopped by the circuit breaker", "Next batch"],
+  ["SKIPPED_NO_INET", "No Internet address: left out of the batch (Build), not registered (Register), flagged in log view 7", "Add the address in AD; the next batch picks the user up"],
   ["UNREGISTERED / NOT_FOUND", "Verify: no ID yet / document missing", "Next batch / investigate"],
 ], [2900, 3800, 2660]);
 p("To read the results, open any audit or results CSV in `C:\\BulkReg-kit\\tools\\BulkReg_AuditViewer.html` (offline), in Excel (as text), or with `bulkreg.cmd Status <file>`.");
+
+h2("D4a Log database views");
+p("Agent 00 (B20a) creates these views in bulkreg_log.nsf, in the view folder **BulkReg**. Categories open and close with a click (or **View > Expand All / Collapse All**). Newest dates and batches are at the top.");
+tbl(["View", "Shows", "Grouped by", "Use it to"], [
+  ["1. Runs - by date", "One line per agent run: start time, agent, DryRun, batch, operator, status (RUNNING / FINISHED / CANCELLED / ABORTED), summary", "Date", "See what was run, when and by whom; spot runs that did not finish"],
+  ["2. Batches - by batch, tool, result", "One line per user and action", "Batch > agent > result", "Follow one batch from Build through dry run, live run and Verify; count results per step"],
+  ["3. Users - by name", "Every action for a user, oldest first", "User", "Answer \"what happened to John Smith?\" in one place"],
+  ["4. Results - by result, batch", "Users per result", "Result > batch", "List all REGISTERED, FAILED, SKIPPED_NO_INET … users"],
+  ["5. Home servers - by server, batch", "Users per home server with mail file and replica status", "Home server > batch", "Check the load per server and the cluster replicas"],
+  ["6. Problems - errors, failures, skipped", "ERROR/WARN log lines, failed/skipped/pending users, missing or failed replicas, runs not FINISHED", "Date > agent", "Daily check: everything that needs attention"],
+  ["7. Skipped - no Internet address", "Users skipped because the InternetAddress is empty, with Person NoteID and objectGUID", "User", "Hand the list to the AD team; once fixed, the users are picked up by the next batch"],
+  ["8. Full log - by run", "Every log line of a run, in time order", "Run (date, agent, DryRun, operator)", "Read a complete run like the debug log, for troubleshooting"],
+], [2300, 3300, 1700, 2060]);
+p("Every document can be opened (form **BRLogEntry**) and shows all its fields. Documents are written as: **Run** (one per run, closed at the end with status and summary), **Entry** (one per log line) and **Audit** (one per user and action, with the same columns as the audit CSV).");
 
 h2("D5 PowerShell helper (optional)");
 p("Run it from `C:\\BulkReg-kit\\scripts\\windows\\`. Registration does not need it.");
@@ -1239,7 +1273,9 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["\"Mail folder setting error\" at start-up", "MailFolderPrefix written with a number (mail1) or a path (mail\\mail)", "Set MailFolderPrefix=mail. The folders mail1, mail2 … sit directly in the data directory."],
   ["ERROR: All pre-created mail folders … are full", "More users than the folders you created can hold", "Create the next folder(s) on that server (B4), raise MailFolderMax, rebuild the batch"],
   ["Preflight: MailFolderMax too low", "The users need more folders than MailFolderMax", "Create the folders listed in _mailfolders.txt and raise MailFolderMax"],
-  ["WARN: InternetAddress missing", "The AD user has no e-mail address, so the DirSync Person document has no InternetAddress", "Warning only: the user is included and registered. Add the address in AD; DirSync writes it to the Person document. Until then Internet mail to this user is not delivered."],
+  ["SKIPPED_NO_INET / users missing from the batch", "The AD user has no e-mail address, so the DirSync Person document has no InternetAddress (SkipNoInternetAddress=1)", "Add the address in AD; after DirSync the next Build Batch includes the user. To register such users without an address, set SkipNoInternetAddress=0 (they are then flagged WARN)."],
+  ["Preflight: 'The log database has no BulkReg views yet'", "B20a not done", "The log database owner runs 00 - Set Up Log Database"],
+  ["00 - Set Up Log Database: 'needs Designer or Manager access'", "Run by an operator (Author)", "The database owner runs it (B20a)"],
   ["WARN: mail file renamed", "The last-name file already exists on that server, in the directory or in an open batch", "Normal with SUFFIX. Review the new name, or edit MailFile"],
   ["\"Could not scan <server>\" in the debug log", "No access to the server's database list", "Uniqueness then uses the directory and the direct file check. Fix access and rebuild for full checking."],
   ["MAILFILE_PENDING / MAILFILE_MISSING", "Mail file creation queued (Administration Process) or failed: template missing, no Create databases right, server unreachable", "Check admin4.nsf on the home server, B4 rights and template; re-run Verify"],
@@ -1285,7 +1321,7 @@ tbl(["#", "Item", "How to confirm"], [
   ["5a", "Numbered mail folders must exist before registration", "Pre-created in B4 and enforced by MailFolderMax; Preflight lists what is needed"],
   ["5", "Mail file creation through NotesRegistration (immediate or via the Administration Process) and the DirSync mapping of mail fields", "Mail file present after the pilot and Person document unchanged after the next DirSync"],
   ["5b", "Cluster replicas through `NotesAdministrationProcess.CreateReplica` (HCL: requires unrestricted rights; accelerated for cluster mates)", "Pilot: REPLICAS_OK 3/3, replicas at the same path on every member (C5)"],
-  ["6", "The Agent Log template file name differs between releases (alog4.ntf / alog.ntf)", "B15"],
+  ["6", "Views are created with NotesDatabase.CreateView / NotesView.CreateColumn and the form with NotesDXLImporter", "B20a: all lines OK, views open with categories"],
   ["7", "bulkreg.ps1 was reviewed but not executed", "Run `bulkreg.cmd Check` once"],
   ["8", "One Domino Directory per config file", "D1"],
 ], [500, 5600, 3260]);
@@ -1321,6 +1357,7 @@ p("**Registration text file:** Agent 05 writes `C:\\BulkReg\\secure\\BatchReg_Di
 
 h2("Appendix B – Agent reference");
 tbl(["Agent (code in BulkRegAgents)", "Reads", "Writes", "Asks for"], [
+  ["00 - Set Up Log Database (BR_RunSetupLog)", "bulkreg.ini, log database", "Form and 8 views in the log database", "Config path, Yes/No; Designer access"],
   ["01 - Preflight Check (BR_RunPreflight)", "names.nsf, servers", "Audit, debug log", "Config path"],
   ["02 - Build Batch (BR_RunBuildBatch)", "names.nsf, open batches, servers", "BATCH-<id>.csv, _summary.txt, audit", "Config path"],
   ["03 - Register Batch (BR_RunRegisterBatch)", "One batch file, names.nsf", "names.nsf (LIVE), ID files, AdminP Create Replica requests (admin4.nsf), _results/_dryrun, password file, audit", "Config path, batch file, Yes/No, batch ID (LIVE), certifier password (UseCA=0)"],

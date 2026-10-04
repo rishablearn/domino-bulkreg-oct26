@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.3.2
+' Script Library : BulkRegCommon            Version 3.4.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.3.2"
+Public Const BR_VERSION = "3.4.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -82,7 +82,10 @@ Public gOperator As String
 Public gLogLevel As Integer
 Public gDebugFile As String
 Public gAuditFile As String
-Public gNLog As NotesLog
+Public gLogDb As NotesDatabase    ' central log database (structured documents, views by 00 - Set Up Log Database)
+Public gRunDoc As NotesDocument   ' the Run document of this run
+Public gRunTitle As String
+Public gLogWriteErr As Integer
 Public gSession As NotesSession
 Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
 Public gBatchID As String        ' batch being built / registered (BATCH-yyyymmdd-hhnnss)
@@ -94,6 +97,8 @@ Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
 Public gBase As String
 Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes.ini
 ' columns of a batch file (BATCH-<id>.csv) written by Agent 02, read by Agents 03/04
+Public Const BR_SKIP_NO_INET = "SKIP:InternetAddress missing - user skipped and flagged (add the address in AD; after DirSync the next Build Batch picks the user up); "
+Public Const BR_RESULT_NO_INET = "SKIPPED_NO_INET"
 Public Const BR_WARN_NO_INET = "WARN:InternetAddress missing - registered without an Internet address (add it in AD, DirSync syncs it); "
 Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues"
 
@@ -125,7 +130,10 @@ Function BR_Init(toolName As String) As Boolean
 	gDebugFile = ""
 	gAuditFile = ""
 	Set gAdminP = Nothing
-	Set gNLog = Nothing
+	Set gLogDb = Nothing
+	Set gRunDoc = Nothing
+	gRunTitle = ""
+	gLogWriteErr = 0
 	Erase gCfg
 	Randomize
 
@@ -172,7 +180,7 @@ Function BR_Init(toolName As String) As Boolean
 	gAuditFile = auditDir & "BulkReg_" & toolName & "_" & gRunID & "_audit.csv"
 	Call BR_AppendLine(gAuditFile, Uchr$(&HFEFF) & BR_AuditHeader())   ' BOM so Excel reads UTF-8
 
-	' --- central BulkReg log database (REQUIRED, Agent Log template alog4.ntf) ---
+	' --- central BulkReg log database (REQUIRED, guide B15) ---
 	'     Every run of every agent is recorded there for all administrators and auditors.
 	'     If it cannot be opened, the run stops BEFORE anything is read or changed.
 	Dim logSrv As String, logDb As String, logErr As String
@@ -180,18 +188,12 @@ Function BR_Init(toolName As String) As Boolean
 	logDb = Trim$(CfgS("LogDb", ""))
 	If logSrv = "" Or logDb = "" Then
 		BR_Msg "LogServer and LogDb are required in " & CStr(cfgPath) & "." & Chr$(10) & _
-		"Create the BulkReg log database from the Agent Log template (alog4.ntf) on a server (guide B15)" & Chr$(10) & _
+		"Create the BulkReg log database on a server (guide B15)" & Chr$(10) & _
 		"and set e.g.  LogServer=DominoAdmin/Demo  and  LogDb=bulkreg_log.nsf", 16
 		Exit Function
 	End If
-	On Error Resume Next
-	Set gNLog = New NotesLog("BulkReg " & toolName & " " & gRunID & " by " & gOperator)
-	Call gNLog.OpenNotesLog(logSrv, logDb)
-	If Err <> 0 Then logErr = Error$
-	Err = 0
-	On Error GoTo ErrH
+	logErr = BR_LogOpen(logSrv, logDb, CStr(cfgPath))
 	If logErr <> "" Then
-		Set gNLog = Nothing
 		BR_Msg "Cannot open the BulkReg log database " & logSrv & "!!" & logDb & ":" & Chr$(10) & logErr & Chr$(10) & Chr$(10) & _
 		"Check that it exists (guide B15) and that your ID has at least Author access with 'Create documents'." & Chr$(10) & _
 		"Nothing has been read or changed.", 16
@@ -242,8 +244,9 @@ End Function
 Sub BR_Close(summary As String)
 	On Error Resume Next
 	BR_Log LVL_INFO, "==== END run " & gRunID & " | " & summary & " ===="
-	If Not (gNLog Is Nothing) Then Call gNLog.Close
-	Set gNLog = Nothing
+	Call BR_LogClose(summary)
+	Set gRunDoc = Nothing
+	Set gLogDb = Nothing
 End Sub
 
 '=====================================================================
@@ -993,10 +996,13 @@ Function BR_Validate(u As BRUser) As String
 	Dim s As String
 	If u.LastName = "" Then s = s & "ERROR:LastName missing; "
 	If u.FirstName = "" Then s = s & "WARN:FirstName missing; "
-	' Missing Internet address is a WARNING only (never an error): the user is registered and
-	' gets a Notes ID, vault entry and mail file, but no Internet address in the Person
-	' document - Internet mail to this user cannot be routed until it is added (AD / DirSync).
-	If u.InternetAddress = "" Then s = s & BR_WARN_NO_INET
+	' Missing Internet address is never an ERROR:
+	'   SkipNoInternetAddress=1 (default) -> SKIP: the user is left out of batches and flagged
+	'     (SKIPPED_NO_INET) until the address exists in AD and DirSync has written it;
+	'   SkipNoInternetAddress=0           -> WARN: the user is registered without an address.
+	If u.InternetAddress = "" Then
+		If CfgB("SkipNoInternetAddress", True) Then s = s & BR_SKIP_NO_INET Else s = s & BR_WARN_NO_INET
+	End If
 	If u.HomeServer = "" Then s = s & "ERROR:No HomeServer (mapping/default); "
 	If u.MailFile = "" Then
 		s = s & "ERROR:No MailFile; "
@@ -1044,13 +1050,7 @@ Sub BR_Log(lvl As Integer, msg As String)
 	txt = Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [" & BR_LevelName(lvl) & "] " & msg
 	Print txt                                    ' status bar / client console
 	If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, txt)
-	If Not (gNLog Is Nothing) Then
-		If lvl >= LVL_ERROR Then
-			Call gNLog.LogError(1, msg)
-		Else
-			Call gNLog.LogAction(BR_LevelName(lvl) & " " & msg)
-		End If
-	End If
+	If Not (gLogDb Is Nothing) Then Call BR_LogEntry(lvl, msg)
 End Sub
 
 ' Open-append-close per line so the audit trail survives a crash
@@ -1061,6 +1061,154 @@ Sub BR_AppendLine(path As String, txt As String)
 	Print #fh, txt
 	Close #fh
 End Sub
+
+'=====================================================================
+' CENTRAL LOG DATABASE  (LogServer!!LogDb, e.g. bulkreg_log.nsf)
+'   BulkReg writes its own structured documents (Form "BRLogEntry"):
+'     DocType "Run"    one per agent run: start, end, status, summary
+'     DocType "Entry"  one per log line (INFO / WARN / ERROR ...)
+'     DocType "Audit"  one per user per action, with every audit column
+'   The categorized views are created by  Actions > BulkReg > 00 - Set Up Log Database.
+'   Operators need Author + Create documents; the Run document carries an
+'   Authors field so the operator can close it, all other documents cannot be
+'   changed by Authors afterwards.
+'=====================================================================
+' Opens the log database and creates the Run document. Returns "" or an error text.
+Function BR_LogOpen(logSrv As String, logDb As String, cfgPath As String) As String
+	On Error GoTo ErrH
+	Dim it As NotesItem
+	Set gLogDb = gSession.GetDatabase(logSrv, logDb, False)
+	If Not gLogDb.IsOpen Then Call gLogDb.Open("", "")
+	If Not gLogDb.IsOpen Then
+		BR_LogOpen = "database not found or no access"
+		Set gLogDb = Nothing
+		Exit Function
+	End If
+	gRunTitle = Format$(Now, "yyyy-mm-dd hh:nn") & "  " & gTool & "  " & BR_IIfStr(CfgB("DryRun", True), "DryRun=1", "DryRun=0") & "  " & BR_Abbr(gOperator)
+	Set gRunDoc = BR_LogNewDoc("Run")
+	Call gRunDoc.ReplaceItemValue("Status", "RUNNING")
+	Call gRunDoc.ReplaceItemValue("StartTime", Now)
+	Call gRunDoc.ReplaceItemValue("Config", cfgPath)
+	Call gRunDoc.ReplaceItemValue("Platform", gPlatform)
+	Call gRunDoc.ReplaceItemValue("Summary", "")
+	Set it = gRunDoc.ReplaceItemValue("DocAuthors", gOperator)   ' lets the operator (Author) close the run
+	it.IsAuthors = True
+	Call gRunDoc.Save(True, False)
+	Exit Function
+ErrH:
+	BR_LogOpen = Error$ & " (err " & Err & ")"
+	Set gRunDoc = Nothing
+	Set gLogDb = Nothing
+	Exit Function
+End Function
+
+' New log document with the fields every log document has
+Function BR_LogNewDoc(docType As String) As NotesDocument
+	Dim d As NotesDocument
+	Set d = gLogDb.CreateDocument()
+	Call d.ReplaceItemValue("Form", "BRLogEntry")
+	Call d.ReplaceItemValue("DocType", docType)
+	Call d.ReplaceItemValue("RunID", gRunID)
+	Call d.ReplaceItemValue("RunTitle", gRunTitle)
+	Call d.ReplaceItemValue("Tool", gTool)
+	Call d.ReplaceItemValue("Operator", gOperator)
+	Call d.ReplaceItemValue("DryRun", CfgS("DryRun", "1"))
+	Call d.ReplaceItemValue("BatchID", gBatchID)
+	Call d.ReplaceItemValue("Version", BR_VERSION)
+	Call d.ReplaceItemValue("LogTime", Now)
+	Call d.ReplaceItemValue("Day", Format$(Now, "yyyy-mm-dd"))
+	Call d.ReplaceItemValue("TimeText", Format$(Now, "hh:nn:ss"))
+	Set BR_LogNewDoc = d
+End Function
+
+' One log line -> Entry document (failures never stop the run)
+Sub BR_LogEntry(lvl As Integer, msg As String)
+	On Error GoTo ErrH
+	Dim d As NotesDocument
+	If gLogDb Is Nothing Then Exit Sub
+	Set d = BR_LogNewDoc("Entry")
+	Call d.ReplaceItemValue("Level", Trim$(BR_LevelName(lvl)))
+	Call d.ReplaceItemValue("Message", msg)
+	Call d.Save(True, False)
+	Exit Sub
+ErrH:
+	BR_LogWriteFailed Error$
+	Exit Sub
+End Sub
+
+' One audit row -> Audit document with every audit column as a field
+Sub BR_LogAudit(u As BRUser, mode As String, action As String, result As String, dur As Double, msg As String)
+	On Error GoTo ErrH
+	Dim d As NotesDocument
+	If gLogDb Is Nothing Then Exit Sub
+	Set d = BR_LogNewDoc("Audit")
+	Call d.ReplaceItemValue("Mode", mode)
+	Call d.ReplaceItemValue("Action", action)
+	Call d.ReplaceItemValue("Result", result)
+	Call d.ReplaceItemValue("Level", BR_IIfStr(InStr(result, "FAIL") > 0 Or result = "ERROR", "ERROR", BR_IIfStr(InStr(result, "SKIP") > 0 Or InStr(result, "PENDING") > 0 Or result = "WARN" Or result = "NOT_PROCESSED", "WARN", "INFO")))
+	Call d.ReplaceItemValue("DurationSec", dur)
+	Call d.ReplaceItemValue("FullName", BR_IIfStr(u.FullNameAfter <> "", u.FullNameAfter, u.FullNameBefore))
+	Call d.ReplaceItemValue("FullNameBefore", u.FullNameBefore)
+	Call d.ReplaceItemValue("FullNameAfter", u.FullNameAfter)
+	Call d.ReplaceItemValue("InternetAddress", u.InternetAddress)
+	Call d.ReplaceItemValue("ShortName", u.ShortName)
+	Call d.ReplaceItemValue("NoteIDPerson", u.NoteID)
+	Call d.ReplaceItemValue("UNIDPerson", u.UNID)
+	Call d.ReplaceItemValue("objectGUID", u.GUID)
+	Call d.ReplaceItemValue("HomeServer", u.HomeServer)
+	Call d.ReplaceItemValue("OrgUnit", u.OrgUnit)
+	Call d.ReplaceItemValue("Policy", u.Policy)
+	Call d.ReplaceItemValue("MapRule", u.MapRule)
+	Call d.ReplaceItemValue("MailFile", u.MailFile)
+	Call d.ReplaceItemValue("MailFileStatus", u.MailFileStatus)
+	Call d.ReplaceItemValue("MailFileNote", u.MailFileNote)
+	Call d.ReplaceItemValue("VaultStatus", u.VaultStatus)
+	Call d.ReplaceItemValue("ClusterReplicas", u.ClusterReplicas)
+	Call d.ReplaceItemValue("ReplicaStatus", u.ReplicaStatus)
+	Call d.ReplaceItemValue("Message", msg)
+	Call d.Save(True, False)
+	Exit Sub
+ErrH:
+	BR_LogWriteFailed Error$
+	Exit Sub
+End Sub
+
+' Closes the Run document (end time, status, summary)
+Sub BR_LogClose(summary As String)
+	On Error GoTo ErrH
+	If gRunDoc Is Nothing Then Exit Sub
+	Call gRunDoc.ReplaceItemValue("EndTime", Now)
+	Call gRunDoc.ReplaceItemValue("BatchID", gBatchID)
+	Call gRunDoc.ReplaceItemValue("Summary", summary)
+	If InStr(summary, "ABORTED") > 0 Then
+		Call gRunDoc.ReplaceItemValue("Status", "ABORTED")
+	ElseIf InStr(LCase$(summary), "cancel") > 0 Or InStr(summary, "Not approved") > 0 Then
+		Call gRunDoc.ReplaceItemValue("Status", "CANCELLED")
+	Else
+		Call gRunDoc.ReplaceItemValue("Status", "FINISHED")
+	End If
+	Call gRunDoc.ReplaceItemValue("LogWriteErrors", gLogWriteErr)
+	Call gRunDoc.Save(True, False)
+	Exit Sub
+ErrH:
+	Print "BulkReg: could not close the run document in the log database: " & Error$
+	Exit Sub
+End Sub
+
+' A failed write to the log database is reported in the debug log (max. 5 times)
+Sub BR_LogWriteFailed(e As String)
+	gLogWriteErr = gLogWriteErr + 1
+	If gLogWriteErr <= 5 And gDebugFile <> "" Then
+		Call BR_AppendLine(gDebugFile, Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [WARN ] could not write to the log database: " & e)
+	End If
+End Sub
+
+Function BR_Abbr(n As String) As String
+	Dim nn As NotesName
+	If Trim$(n) = "" Then Exit Function
+	Set nn = New NotesName(n)
+	BR_Abbr = nn.Abbreviated
+End Function
 
 '=====================================================================
 ' AUDIT CSV  (one row per user per action - never contains passwords)
@@ -1082,11 +1230,8 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(u.MailFile) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote) & "," & Q(u.ClusterReplicas) & "," & Q(u.ReplicaStatus)
 	Call BR_AppendLine(gAuditFile, r)
 	If gResultsFile <> "" Then Call BR_AppendLine(gResultsFile, r)
-	' same row, compact, in the central log database (one entry per user per action)
-	If Not (gNLog Is Nothing) Then
-		Call gNLog.LogAction("AUDIT " & mode & " " & action & " " & result & " | " & BR_IIfStr(u.FullNameAfter <> "", u.FullNameAfter, u.FullNameBefore) & _
-		" | " & u.InternetAddress & " | " & u.HomeServer & " | " & u.MailFile & " | vault " & u.VaultStatus & BR_IIfStr(u.ReplicaStatus <> "", " | replicas " & u.ReplicaStatus, "") & " | batch " & gBatchID & " | " & msg)
-	End If
+	' same row as a structured Audit document in the central log database
+	If Not (gLogDb Is Nothing) Then Call BR_LogAudit(u, mode, action, result, dur, msg)
 	Exit Sub
 ErrH:
 	Print "BulkReg: audit write failed: " & Error$

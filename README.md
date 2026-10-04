@@ -1,7 +1,7 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 3.3.2 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), same version as the kit (3.3.2). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+BulkReg 3.4.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), same version as the kit (3.4.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## Updating to a new release
 A release only changes the two script libraries. In Designer replace the whole content of **BulkRegCommon**, then **BulkRegAgents**: click in the editor, Ctrl+A, paste the whole .lss file (Designer puts Options, Declarations and every Sub/Function in place automatically), Ctrl+S, run **Tools > Recompile All LotusScript** and re-sign the database (guide B17a). The agents stay as they are.
@@ -25,7 +25,8 @@ All agents run from bulkreg.nsf > **Actions > BulkReg** in the Windows Domino Ad
 - **Agent 05** (text-file export) is **not** part of this sequence.
 - **DryRun** only affects agent 03. `1` = simulate everything and change nothing (the batch stays open). `0` = register for real (the batch is closed). Always dry-run first, then run live on the same batch file, then set it back to `1`.
 - **Where the databases live:** `bulkreg.nsf` (code only) is **local** on the admin workstation, locally encrypted (guide B13–B14). `bulkreg_log.nsf` is on a **server** (guide B15): operators get Author + Create documents, no Delete. Preflight checks both.
-- **Central log database is required:** create `bulkreg_log.nsf` from the Agent Log template (`alog4.ntf`) on a server and set `LogServer` / `LogDb`. Every run, every action and one AUDIT entry per user are written there. If it can't be opened, the agents stop before doing anything.
+- **Central log database is required:** create `bulkreg_log.nsf` (template -Blank-) on a server and set `LogServer` / `LogDb`. BulkReg writes structured Run, Entry and Audit documents; the database owner runs **00 - Set Up Log Database** once to create 8 categorized views (runs by date, batches, users, results, home servers, problems, skipped users, full log - guide B20a, D4a). If the database can't be opened, the agents stop before doing anything.
+- **Users without an Internet address are skipped and flagged** (`SkipNoInternetAddress=1`): not put into a batch, listed in `BATCH-<id>_skipped_no_internet_address.csv` and in log view 7. They are picked up automatically once AD/DirSync provides the address.
 - **03 cannot run without a batch file from 02**, and each batch can be registered live only once.
 
 ## What it does
@@ -118,7 +119,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 | 1 | Prerequisites: rights on the registration server; numbered mail folders pre-created on every home server **and every cluster member** (1 per 1000 users); AdminP may create replicas on the cluster members; CA (you are an RA) or certifier ID; every home server reachable; one explicit policy per group that assigns the vault; backups | Confirmed in the change ticket |
 | 2 | Folders `C:\BulkReg\{config,batches,ids,secure,audit,cert}`; restrict batches/ids/secure/cert (`bulkreg.cmd Init`) | Restricted |
 | 3 | Configure `bulkreg.ini` + `server_mapping.csv` | No `<PLACEHOLDER>`; DryRun=1 |
-| 4 | Build bulkreg.nsf: libraries `BulkRegCommon` then `BulkRegAgents` (all code), + 5 one-line agents named `BulkReg\01 - Preflight Check` … `BulkReg\05 - Export to Registration Text File` (Shared, On event > Action menu selection, Target None; each contains `Use "BulkRegAgents"` and `Call BR_Run…()`). Do **not** use `\|` in agent names: it is the Notes alias separator. | Compiles, signed |
+| 4 | Build bulkreg.nsf: libraries `BulkRegCommon` then `BulkRegAgents` (all code), + 6 one-line agents named `BulkReg\00 - Set Up Log Database`, `BulkReg\01 - Preflight Check` … `BulkReg\05 - Export to Registration Text File` (Shared, On event > Action menu selection, Target None; each contains `Use "BulkRegAgents"` and `Call BR_Run…()`). Do **not** use `\|` in agent names: it is the Notes alias separator. | Compiles, signed |
 | 5 | `01 - Preflight Check`: environment + candidates per home server | 0 environment errors; batch plan |
 | 6 | `02 - Build Batch` → review `BATCH-<id>.csv` + summary | Reviewed file approved |
 | 7 | `03 - Register Batch` with DryRun=1 | All rows WOULD_REGISTER |
@@ -131,10 +132,11 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (3.3.2)   ·   CHANGELOG.md   release history
+VERSION      current release (3.4.0)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv                 (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (ALL code - the two script libraries)
-             Agent01_Preflight ... Agent05_ExportToBatchRegFile (.lss)   (3 + 3 lines each: Use + Call BR_Run...)
+             Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile (.lss)
+                                                 (3 + 3 lines each: Use + Call BR_Run...)
 scripts/     windows/bulkreg.ps1 + bulkreg.cmd                 (optional helper)
 tools/       BulkReg_AuditViewer.html                          (optional, offline)
 docs/        BulkReg_Admin_Guide.docx/.html + build sources

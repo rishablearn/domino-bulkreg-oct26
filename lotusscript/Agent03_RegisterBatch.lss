@@ -1,6 +1,6 @@
 '=====================================================================
 ' Agent name : BulkReg\03 - Register Batch
-' Version    : 3.3.2  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.3.2)
+' Version    : 3.4.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.4.0)
 ' Code       : ALL logic is in the script library BulkRegAgents (BR_RunRegisterBatch).
 '              This agent only calls it, so it never changes between releases.
 '

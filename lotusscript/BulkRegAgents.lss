@@ -1,7 +1,8 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.3.2
-' Purpose        : The code of the five BulkReg agents. Each agent in bulkreg.nsf
+' Script Library : BulkRegAgents            Version 3.4.0
+' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
+'                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
 '                    BulkReg\01 - Preflight Check                -> BR_RunPreflight
 '                    BulkReg\02 - Build Batch                    -> BR_RunBuildBatch
 '                    BulkReg\03 - Register Batch                 -> BR_RunRegisterBatch
@@ -129,6 +130,15 @@ Sub BR_RunPreflight()
 		End If
 	End If
 	On Error GoTo ErrH
+	' structured views of the log database (created by 00 - Set Up Log Database)
+	If Not (gLogDb Is Nothing) Then
+		If gLogDb.GetView("BulkReg\1. Runs - by date") Is Nothing Then
+			BR_Log LVL_WARN, "The log database has no BulkReg views yet - ask its owner to run Actions > BulkReg > 00 - Set Up Log Database (guide B15)"
+			envWarn = envWarn + 1
+		Else
+			BR_Log LVL_INFO, "PASS  Log database views present"
+		End If
+	End If
 	If CfgB("DryRun", True) Then BR_Log LVL_INFO, "DryRun=1 (safe mode) is set"
 	BR_Log LVL_INFO, "Client platform " & gPlatform & " | operator " & gOperator
 
@@ -185,7 +195,9 @@ Sub BR_RunPreflight()
 		If hk = "" Then hk = "(none)"
 		If IsElement(srvCount(hk)) Then srvCount(hk) = srvCount(hk) + 1 Else srvCount(hk) = 1
 		If u.InternetAddress = "" Then nNoInet = nNoInet + 1
-		If InStr(issues, "ERROR:") > 0 Then
+		If InStr(issues, "SKIP:") > 0 Then
+			res = BR_RESULT_NO_INET              ' will be skipped by Build Batch (flagged, not an error)
+		ElseIf InStr(issues, "ERROR:") > 0 Then
 			res = "ERROR": nErr = nErr + 1
 		ElseIf InStr(issues, "WARN:") > 0 Then
 			res = "WARN": nWarn = nWarn + 1
@@ -268,7 +280,7 @@ Sub BR_RunPreflight()
 	Dim summary As String
 	summary = "Environment errors=" & envErr & " warnings=" & envWarn & _
 	" | Candidates=" & col.Count & " OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr & _
-	" | without InternetAddress (WARN only, will be registered)=" & nNoInet
+	" | without InternetAddress=" & nNoInet & BR_IIfStr(CfgB("SkipNoInternetAddress", True), " (SKIPPED - not registered until the address exists)", " (WARN - registered without address)")
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Candidates per home server:" & Chr$(10) & srvText & Chr$(10) & "Mapping test: " & mapFile & Chr$(10) & BR_IIf(UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED", "Mail folders to create: " & fldFile & Chr$(10), "") & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
 	CInt(BR_IIf(envErr + nErr > 0, 48, 64))
@@ -335,7 +347,7 @@ Sub BR_RunBuildBatch()
 	Dim openIds List As String, srvCache List As String
 	Dim seenShort List As String, seenMail List As String, seenMF List As String, checkMF As Boolean
 	Dim srvInc List As Long, srvExcl List As Long, polInc List As Long
-	Dim nRows As Long, nInc As Long, nWarn As Long, nErr As Long, nNoInet As Long
+	Dim nRows As Long, nInc As Long, nWarn As Long, nErr As Long, nNoInet As Long, skipFile As String, skipNoInet As Boolean
 	Dim nInOpen As Long, nOtherSrv As Long, nLeft As Long, r As String, hk As String, pk As String
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String, newInFolder List As Long, aIssue As String, fkey As String
 	Dim repByHome List As String, rl As Variant, ri As Integer, foundOn As String
@@ -351,6 +363,8 @@ Sub BR_RunBuildBatch()
 	gBatchID = "BATCH-" & gRunID
 	bfile = bdir & gBatchID & ".csv"
 	sumFile = bdir & gBatchID & "_summary.txt"
+	skipFile = bdir & gBatchID & "_skipped_no_internet_address.csv"
+	skipNoInet = CfgB("SkipNoInternetAddress", True)
 
 	Set db = BR_OpenDirectory()
 	' mail file names already in use: open batches, Person documents, files on servers (scanned per server)
@@ -366,6 +380,12 @@ Sub BR_RunBuildBatch()
 		Call BR_ReadUser(doc, u)
 		If IsElement(openIds(u.NoteID)) Then
 			nInOpen = nInOpen + 1                                   ' already in a pending batch
+		ElseIf skipNoInet And u.InternetAddress = "" Then
+			' no Internet address: SKIPPED and flagged - not in the batch, offered again once DirSync has the address
+			nNoInet = nNoInet + 1
+			If nNoInet = 1 Then Call BR_AppendLine(skipFile, Uchr$(&HFEFF) & "BatchID,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,HomeServer,Result,Reason")
+			Call BR_AppendLine(skipFile, Q(gBatchID) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(BR_RESULT_NO_INET) & "," & Q(BR_SKIP_NO_INET))
+			Call BR_Audit(u, "BUILD", "SELECT", BR_RESULT_NO_INET, BR_Elapsed(t0), BR_SKIP_NO_INET)
 		ElseIf srvFilter <> "" And Not BR_SameServer(u.HomeServer, srvFilter) Then
 			nOtherSrv = nOtherSrv + 1                               ' belongs to another server wave
 		ElseIf nRows >= batchMax Then
@@ -406,7 +426,7 @@ Sub BR_RunBuildBatch()
 				End If
 			End If
 
-			If u.InternetAddress = "" Then nNoInet = nNoInet + 1
+			If u.InternetAddress = "" Then nNoInet = nNoInet + 1     ' only when SkipNoInternetAddress=0 (WARN)
 			If InStr(issues, "ERROR:") > 0 Then
 				chk = "ERROR": inc = "N": nErr = nErr + 1
 			ElseIf InStr(issues, "WARN:") > 0 Then
@@ -446,7 +466,12 @@ Sub BR_RunBuildBatch()
 	Call BR_AppendLine(sumFile, "Batch size limit: " & batchMax)
 	Call BR_AppendLine(sumFile, "")
 	Call BR_AppendLine(sumFile, "Rows in batch   : " & nRows & "   Include=Y: " & nInc & "   (WARN: " & nWarn & ")   Include=N (ERROR): " & nErr)
-	Call BR_AppendLine(sumFile, "No Internet addr: " & nNoInet & "   (WARN only - included and registered; add the address in AD later)")
+	If skipNoInet Then
+		Call BR_AppendLine(sumFile, "No Internet addr: " & nNoInet & "   SKIPPED and flagged - not in this batch. List: " & BR_IIfStr(nNoInet > 0, skipFile, "(none)"))
+		Call BR_AppendLine(sumFile, "                  Add the address in AD; after DirSync the next Build Batch offers the user again.")
+	Else
+		Call BR_AppendLine(sumFile, "No Internet addr: " & nNoInet & "   (WARN - included and registered without an address; SkipNoInternetAddress=0)")
+	End If
 	Call BR_AppendLine(sumFile, "Not selected    : already in an open batch: " & nInOpen & " | other home server: " & nOtherSrv & " | left for next batch: " & nLeft)
 	Call BR_AppendLine(sumFile, "")
 	Call BR_AppendLine(sumFile, "Included users per home server:")
@@ -480,10 +505,10 @@ Sub BR_RunBuildBatch()
 	Call BR_AppendLine(sumFile, "Next: review " & gBatchID & ".csv (Include / HomeServer / MailFile / ClusterReplicas / Policy),")
 	Call BR_AppendLine(sumFile, "      then run Actions > BulkReg > 03 - Register Batch and choose this file.")
 
-	BR_Close "batch=" & gBatchID & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft
+	BR_Close "batch=" & gBatchID & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft & " skipped_no_inet=" & BR_IIfStr(skipNoInet, CStr(nNoInet), "0")
 	BR_Msg "Batch " & gBatchID & " created." & Chr$(10) & Chr$(10) & _
 	"Rows: " & nRows & "   Include=Y: " & nInc & "   WARN: " & nWarn & "   ERROR (Include=N): " & nErr & Chr$(10) & _
-	"Without InternetAddress (WARN, included): " & nNoInet & Chr$(10) & _
+	BR_IIfStr(skipNoInet, "Skipped - no InternetAddress: " & nNoInet & BR_IIfStr(nNoInet > 0, "  (list: " & skipFile & ")", ""), "Without InternetAddress (WARN, included): " & nNoInet) & Chr$(10) & _
 	"Not selected - in open batch: " & nInOpen & ", other server: " & nOtherSrv & ", left for next batch: " & nLeft & Chr$(10) & Chr$(10) & _
 	"Review:  " & bfile & Chr$(10) & "Summary: " & sumFile & Chr$(10) & Chr$(10) & _
 	"Nothing has been registered. Run Actions > BulkReg > 03 - Register Batch after review.", BR_IIfInt(nErr > 0, 48, 64)
@@ -791,6 +816,14 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	u.MailFileNote = bMailNote
 	If bReplicas <> "*auto" Then u.ClusterReplicas = bReplicas     ' reviewed list from the batch file
 	u.MapRule = "batch " & gBatchID
+
+	' no Internet address: SKIPPED and flagged (SkipNoInternetAddress=1), never registered by mistake
+	If u.InternetAddress = "" And CfgB("SkipNoInternetAddress", True) Then
+		Call BR_Audit(u, gMode, "REGISTER", BR_RESULT_NO_INET, BR_Elapsed(t0), BR_SKIP_NO_INET)
+		BR_Log LVL_WARN, "SKIP no InternetAddress: " & u.FullNameBefore
+		BR_RegisterOne = "SKIP:noinet"
+		Exit Function
+	End If
 
 	' idempotency: fresh re-check (someone may have registered it meanwhile)
 	If BR_IsRegistered(doc) Then
@@ -1107,7 +1140,7 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 		Case Else: res = "CHECK_ERROR": gVErr = gVErr + 1
 		End Select
 	End If
-	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), "")
+	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), BR_IIfStr(res = "UNREGISTERED" And u.InternetAddress = "", "no InternetAddress - " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped until the address exists in AD", "will be registered without address"), ""))
 	BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus & " mail=" & u.MailFileStatus & " replicas=" & u.ReplicaStatus
 End Sub
 
@@ -1183,10 +1216,10 @@ Sub BR_RunExport()
 		t0 = Timer
 		Call BR_ReadUser(doc, u)
 		issues = BR_Validate(u)
-		If InStr(issues, "ERROR:") > 0 Then
+		If InStr(issues, "ERROR:") > 0 Or InStr(issues, "SKIP:") > 0 Then
 			nSkip = nSkip + 1
 			BR_Log LVL_WARN, "SKIP " & u.FullNameBefore & " : " & issues
-			Call BR_Audit(u, "EXPORT", "EXPORT", "SKIPPED", BR_Elapsed(t0), issues)
+			Call BR_Audit(u, "EXPORT", "EXPORT", BR_IIfStr(InStr(issues, "SKIP:") > 0 And InStr(issues, "ERROR:") = 0, BR_RESULT_NO_INET, "SKIPPED"), BR_Elapsed(t0), issues)
 		Else
 			If genPw Then pw = BR_GenPassword(CInt(CfgL("InitialPasswordLength", 16))) Else pw = ""
 			ln = u.LastName & ";" & u.FirstName & ";" & u.MiddleInitial & ";" & u.OrgUnit & ";" & _
@@ -1224,3 +1257,143 @@ ErrH:
 	BR_Msg "Export aborted: " & Error$, 16
 	Exit Sub
 End Sub
+'=====================================================================
+' BR_RunSetupLog  -  runs agent BulkReg\00 - Set Up Log Database
+'   The agent itself only contains:  Call BR_RunSetupLog()
+'
+' Creates (or re-creates) in the central log database (LogServer!!LogDb):
+'   - the form "BRLogEntry" (to open any log document), via DXL import
+'   - 8 categorized views under "BulkReg\" (runs, batches, users, results,
+'     home servers, problems, skipped users, full log).
+' Run it ONCE after creating the log database (guide B15) and again after a
+' release that changes the views. Needs Designer (or Manager) access to the
+' log database - normally the database owner, not the BulkReg operator.
+' Documents are never changed or deleted by this agent.
+'=====================================================================
+Sub BR_RunSetupLog()
+	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace, ans As Variant, res As String, report As String, nBad As Integer
+	Dim i As Integer, defs As Variant, parts As Variant
+
+	If Not BR_Init("SetupLog") Then Exit Sub
+	If gLogDb.CurrentAccessLevel < ACLLEVEL_DESIGNER Then
+		BR_Close "No Designer access to the log database"
+		BR_Msg "Setting up the views needs Designer or Manager access to the log database" & Chr$(10) & _
+		gLogDb.Server & "!!" & gLogDb.FilePath & Chr$(10) & Chr$(10) & _
+		"Ask the database owner (guide B15) to run Actions > BulkReg > 00 - Set Up Log Database.", 48
+		Exit Sub
+	End If
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Set up log database", _
+	"Create or replace the BulkReg form and the 8 views ""BulkReg\..."" in" & Chr$(10) & _
+	gLogDb.Server & "!!" & gLogDb.FilePath & " ?" & Chr$(10) & Chr$(10) & _
+	"Existing log documents are not changed. Other views in the database are not touched.")
+	If ans <> 1 Then
+		BR_Close "Cancelled by operator"
+		Exit Sub
+	End If
+
+	res = BR_LogImportForm(gLogDb)
+	report = "Form BRLogEntry: " & res & Chr$(10)
+	If res <> "OK" Then nBad = nBad + 1
+
+	defs = BR_LogViewDefs()
+	For i = 0 To UBound(defs)
+		parts = Split(CStr(defs(i)), "||")
+		res = BR_MakeView(gLogDb, CStr(parts(0)), CStr(parts(1)), CStr(parts(2)))
+		report = report & CStr(parts(0)) & ": " & res & Chr$(10)
+		BR_Log BR_IIfInt2(res = "OK", LVL_INFO, LVL_ERROR), "View " & CStr(parts(0)) & ": " & res
+		If res <> "OK" Then nBad = nBad + 1
+	Next
+
+	BR_Close "Log database set up: " & (UBound(defs) + 1) & " views, problems=" & nBad
+	BR_Msg "Log database " & gLogDb.Server & "!!" & gLogDb.FilePath & Chr$(10) & Chr$(10) & report & Chr$(10) & _
+	"Open the database and expand the view folder ""BulkReg"" in the navigator.", CInt(BR_IIfStr(nBad > 0, "48", "64"))
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Set up log database aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Set up log database aborted: " & Error$, 16
+	Exit Sub
+End Sub
+
+' View definitions:  name || selection formula || columns
+'   columns separated by ~ ; each column  Title^Formula^Flags^Width
+'   Flags: C = categorized, S = sorted, D = descending
+Function BR_LogViewDefs() As Variant
+	Dim d(7) As String
+	d(0) = {BulkReg\1. Runs - by date||SELECT DocType = "Run"||} & _
+	{Date^Day^CD^12~Start^TimeText^SD^9~Tool^Tool^^14~DryRun^DryRun^^7~Batch^BatchID^^22~Operator^@Name([Abbreviate]; Operator)^^20~Status^Status^^11~Summary^Summary^^60~Version^Version^^8}
+	d(1) = {BulkReg\2. Batches - by batch, tool, result||SELECT DocType = "Audit" & BatchID != ""||} & _
+	{Batch^BatchID^CD^22~Tool^Tool^C^14~Result^Result^C^20~User^@Name([Abbreviate]; FullName)^S^28~Internet address^InternetAddress^^28~Home server^@Name([Abbreviate]; HomeServer)^^20~Mail file^MailFile^^22~Vault^VaultStatus^^14~Replicas^ReplicaStatus^^22~When^Day + " " + TimeText^^18~Message^Message^^60}
+	d(2) = {BulkReg\3. Users - by name||SELECT DocType = "Audit"||} & _
+	{User^@Name([Abbreviate]; FullName)^C^30~When^Day + " " + TimeText^S^18~Tool^Tool^^14~Mode^Mode^^9~Result^Result^^20~Batch^BatchID^^22~Home server^@Name([Abbreviate]; HomeServer)^^20~Mail file^MailFile^^22~Vault^VaultStatus^^14~Replicas^ReplicaStatus^^22~Message^Message^^60}
+	d(3) = {BulkReg\4. Results - by result, batch||SELECT DocType = "Audit"||} & _
+	{Result^Result^C^24~Batch^BatchID^CD^22~User^@Name([Abbreviate]; FullName)^S^28~Tool^Tool^^14~When^Day + " " + TimeText^^18~Message^Message^^60}
+	d(4) = {BulkReg\5. Home servers - by server, batch||SELECT DocType = "Audit" & HomeServer != ""||} & _
+	{Home server^@Name([Abbreviate]; HomeServer)^C^24~Batch^BatchID^CD^22~User^@Name([Abbreviate]; FullName)^S^28~Tool^Tool^^14~Result^Result^^20~Mail file^MailFile^^22~Replicas^ReplicaStatus^^22~Vault^VaultStatus^^14}
+	d(5) = {BulkReg\6. Problems - errors, failures, skipped||SELECT (DocType = "Entry" & (Level = "ERROR" | Level = "WARN")) | (DocType = "Audit" & (@Contains(Result; "FAIL" : "SKIP" : "PENDING" : "NOT_" : "ERROR" : "UNREGISTERED") | @Contains(ReplicaStatus; "MISSING" : "FAILED"))) | (DocType = "Run" & Status != "FINISHED")||} & _
+	{Date^Day^CD^12~Tool^Tool^C^14~Time^TimeText^SD^9~Level^Level^^7~Result / status^@If(DocType = "Run"; Status; Result)^^20~User^@Name([Abbreviate]; FullName)^^28~Batch^BatchID^^22~Message^@If(DocType = "Run"; Summary; Message)^^80}
+	d(6) = {BulkReg\7. Skipped - no Internet address||SELECT DocType = "Audit" & Result = "SKIPPED_NO_INET"||} & _
+	{User^@Name([Abbreviate]; FullName)^C^30~When^Day + " " + TimeText^SD^18~Tool^Tool^^14~Batch^BatchID^^22~Person NoteID^NoteIDPerson^^10~objectGUID^objectGUID^^36~Message^Message^^60}
+	d(7) = {BulkReg\8. Full log - by run||SELECT DocType = "Entry" | DocType = "Run"||} & _
+	{Run^RunTitle^CD^50~Time^TimeText^S^9~Level^@If(DocType = "Run"; "RUN"; Level)^^7~Message^@If(DocType = "Run"; Status + "  " + Summary; Message)^^120}
+	BR_LogViewDefs = d
+End Function
+
+' Creates or replaces one view with the given selection and columns. Returns "OK" or an error.
+Function BR_MakeView(db As NotesDatabase, vname As String, sel As String, spec As String) As String
+	On Error GoTo ErrH
+	Dim v As NotesView, c As NotesViewColumn, cols As Variant, p As Variant, i As Integer, n0 As Integer, flags As String
+	Set v = db.GetView(vname)
+	If Not (v Is Nothing) Then Call v.Remove
+	Set v = db.CreateView(vname, sel)
+	n0 = v.ColumnCount                       ' default column(s) of a new view - removed below
+	cols = Split(spec, "~")
+	For i = 0 To UBound(cols)
+		p = Split(CStr(cols(i)), "^")
+		Set c = v.CreateColumn(n0 + i + 1, CStr(p(0)), CStr(p(1)))
+		flags = UCase$(CStr(p(2)))
+		If InStr(flags, "S") > 0 Or InStr(flags, "C") > 0 Then c.IsSorted = True
+		If InStr(flags, "C") > 0 Then c.IsCategory = True
+		If InStr(flags, "D") > 0 Then c.IsSortDescending = True
+		c.Width = CInt(p(3))
+	Next
+	For i = 1 To n0
+		Call v.RemoveColumn(1)
+	Next
+	BR_MakeView = "OK"
+	Exit Function
+ErrH:
+	BR_MakeView = "ERROR " & Error$ & " (err " & Err & ")"
+	Exit Function
+End Function
+
+' Imports the form BRLogEntry (shows every field of a log document). Returns "OK" or an error.
+Function BR_LogImportForm(db As NotesDatabase) As String
+	On Error GoTo ErrH
+	Dim imp As NotesDXLImporter, dxl As String, flds As Variant, i As Integer
+	flds = Split("DocType,RunTitle,RunID,Tool,Operator,DryRun,Mode,BatchID,Day,TimeText,Level,Status,Summary,Action,Result,FullName,InternetAddress,ShortName,HomeServer,OrgUnit,Policy,MapRule,MailFile,MailFileStatus,MailFileNote,VaultStatus,ClusterReplicas,ReplicaStatus,NoteIDPerson,UNIDPerson,objectGUID,DurationSec,Message,Config,Platform,Version,LogWriteErrors", ",")
+	dxl = "<?xml version='1.0' encoding='utf-8'?>" & _
+	"<database xmlns='http://www.lotus.com/dxl'>" & _
+	"<form name='BRLogEntry' default='true'><body><richtext>" & _
+	"<par><run><font size='12pt' style='bold'/>BulkReg log entry</run></par>"
+	For i = 0 To UBound(flds)
+		dxl = dxl & "<par>" & CStr(flds(i)) & ": <field type='text' kind='editable' name='" & CStr(flds(i)) & "'/></par>"
+	Next
+	dxl = dxl & "</richtext></body></form></database>"
+	Set imp = gSession.CreateDXLImporter()
+	imp.DesignImportOption = DXLIMPORTOPTION_REPLACE_ELSE_CREATE
+	imp.ReplaceDBProperties = False
+	imp.ReplicaRequiredForReplaceOrUpdate = False
+	Call imp.Import(dxl, db)
+	BR_LogImportForm = "OK"
+	Exit Function
+ErrH:
+	BR_LogImportForm = "ERROR " & Error$ & " (err " & Err & ") - the views still work; documents open without a form"
+	Exit Function
+End Function
+
+Function BR_IIfInt2(c As Boolean, a As Integer, b As Integer) As Integer
+	If c Then BR_IIfInt2 = a Else BR_IIfInt2 = b
+End Function
