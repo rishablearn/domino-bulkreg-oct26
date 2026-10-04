@@ -1,6 +1,6 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 3.2.5 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+BulkReg 3.2.6 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
 **Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v3.2. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## Agent run order (per batch)
@@ -128,7 +128,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (3.2.5)   ·   CHANGELOG.md   release history
+VERSION      current release (3.2.6)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv                 (templates – no secrets)
 lotusscript/ BulkRegCommon.lss, Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
              Agent04_VerifyVaultStatus, Agent05_ExportToBatchRegFile (.lss)

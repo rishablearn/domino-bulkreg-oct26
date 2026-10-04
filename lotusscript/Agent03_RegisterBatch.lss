@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent name : BulkReg\03 - Register Batch   (ID -> ID Vault)
 '              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.2.5  (BulkReg release; library BulkRegCommon 3.2.5)
+' Version    : 3.2.6  (BulkReg release; library BulkRegCommon 3.2.6)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -130,7 +130,7 @@ Sub Initialize
 				vs(n) = BR_CsvGet(parts, cols, "VaultServer")
 				If vs(n) = "" Then vs(n) = CfgS("VaultServer", "")
 				hs(n) = BR_SrvAbbr(hs(n))          ' accept CN=Srv/O=Org or Srv/Org
-				' reviewed replica list; a batch built before 3.2.5 has no such column -> from the mapping
+				' reviewed replica list; a batch built before 3.2.6 has no such column -> from the mapping
 				If IsElement(cols("clusterreplicas")) Then cr(n) = BR_SrvList(BR_CsvGet(parts, cols, "ClusterReplicas"), hs(n)) Else cr(n) = "*auto"
 				If Not IsElement(repSeen(LCase$(hs(n)))) Then
 					repSeen(LCase$(hs(n))) = "1"
@@ -378,6 +378,7 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 	End If
 	' ---- Domino mail file: always created on the user's home server ----
 	reg.CreateMailDb = True
+	reg.MailSystem = REG_MAILSYSTEM_NOTES                ' HCL default, set explicitly: DirSync users had Other Internet Mail
 	If CfgS("MailTemplate", "") <> "" Then reg.MailTemplateName = CfgS("MailTemplate", "")
 	If CfgS("MailACLManager", "") <> "" Then reg.MailACLManager = CfgS("MailACLManager", "")
 	reg.MailCreateFTIndex = CfgB("MailCreateFTIndex", False)

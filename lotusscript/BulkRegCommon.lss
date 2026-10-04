@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.2.5
+' Script Library : BulkRegCommon            Version 3.2.6
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "3.2.5"
+Public Const BR_VERSION = "3.2.6"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -632,10 +632,10 @@ End Function
 Function BR_GetCandidates(db As NotesDatabase, onlyUnregistered As Boolean) As NotesDocumentCollection
 	Dim f As String, maxScan As Long, col As NotesDocumentCollection
 	f = BR_SelectionFormula(onlyUnregistered)
-	maxScan = CfgL("MaxScan", 5000)
+	maxScan = CfgL("MaxScan", 0)
 	If maxScan < 0 Or maxScan > 32767 Then maxScan = 0   ' Search() maxDocs is an Integer; 0 = no limit
 	BR_Log LVL_INFO, "Search formula: " & f & "  (MaxScan=" & maxScan & ")"
-	Set col = db.Search(f, Nothing, maxScan)
+	Set col = db.Search(f, Nothing, CInt(maxScan))   ' maxDocs is an Integer
 	BR_Log LVL_INFO, "Documents found: " & col.Count
 	If maxScan > 0 And col.Count >= maxScan Then
 		BR_Log LVL_WARN, "Result hit MaxScan limit (" & maxScan & ") - more users may exist. Run again after this batch or raise MaxScan."

@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "3.2",  // release 3.2.5
+  version: "3.2",  // release 3.2.6
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -38,11 +38,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 3.2.5: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 3.2.6: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["3.2.6", "**Release 3.2.6.** Review round: log database opened before the access check (Agent 01), MailSystem set to Notes explicitly (Agent 03), MaxScan default 0. New B17a: how to update the code to a new release."],
   ["3.2.5", "**Release 3.2.5.** Compile fix in Agent 01 (constants DBACL_CREATE_DOCUMENTS / DBACL_DELETE_DOCUMENTS); all Domino constants and NotesRegistration properties checked against the HCL reference."],
   ["3.2.4", "**Release 3.2.4.** Compile fix in BulkRegCommon and Agent 03: `UBound(Split(...))` replaced by the new helper BR_ListCount (Type mismatch)."],
   ["3.2.3", "**Release 3.2.3.** Full syntax review of the code: reserved word `base` renamed, Type assignment replaced by BR_ClearUser, **IsIDInVault arguments corrected** (username, servername). Re-paste the library and Agent 03 (and recompile all agents)."],
@@ -741,6 +742,18 @@ ol(
 );
 done("BulkRegCommon saves without errors, and its outline shows (Options), (Declarations) and the BR_… functions.");
 
+h3("B17a Updating the code to a new release (every time the kit changes)");
+p("When you receive a new release (the CHANGELOG says which files changed), **replace the whole code** of each changed design element. Do not paste single functions on top of old ones: a function that exists twice gives **Duplicate procedure** errors, and a missing one gives **Not declared** errors.");
+ol(
+  "In Designer, open the design element (the library BulkRegCommon, or an agent).",
+  "Click anywhere in the LotusScript editor, press **Ctrl+A** and then **Delete**. In the outline, (Options), (Declarations), Initialize and Terminate stay; all other entries disappear. Make sure (Options) and (Declarations) are empty and Initialize contains only `Sub Initialize` / `End Sub`.",
+  "Paste the blocks from the new .lss file exactly as in B17 (library: STEP A, B, C) or B18 (agents: STEP A, B if present, C, D if present).",
+  "Press **Ctrl+S**. Fix nothing by hand: if a compile error appears, note the element, the line and the message, and report it.",
+  "**Library first, agents after.** When the library changed, save it first, then open and save each agent (or use **Tools > Recompile All LotusScript**), so every agent compiles against the new library.",
+  "Re-sign the database (B19)."
+);
+done("Every changed element saves without errors, the agents recompile, and the first line of the next debug log shows the new version (`==== BulkReg <version> | tool=…`).");
+
 // ---------- B18
 h2("B18 Create the five agents");
 meta("Domino administrator", "Domino Designer", "adds 5 agents to bulkreg.nsf");
@@ -990,7 +1003,7 @@ tbl(["Key", "Default", "Meaning"], [
   ["VaultServer / VaultCheckAfterReg", "– / 1", "Default vault server for the check; check after each user"],
   ["MappingFile", "C:\\BulkReg\\config\\server_mapping.csv", "Multi-server rules"],
   ["ExtraSelection / BatchServerFilter", "(empty)", "Narrow a batch: formula / one home server"],
-  ["BatchSize / MaxScan", "1000 / 5000", "Rows per batch; directory search limit (0 = none)"],
+  ["BatchSize / MaxScan", "1000 / 0", "Rows per batch; directory search limit (0 = no limit; keep 0 for 5000+ users)"],
   ["BatchDir / MaxBatchRows", "C:\\BulkReg\\batches\\ / 1000", "Batch folder; largest accepted batch"],
   ["PauseMs / MaxConsecutiveErrors", "500 / 5", "Pause between users; circuit breaker"],
   ["DryRun", "1", "1 = simulate, 0 = live"],
@@ -1177,6 +1190,8 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["Agents not in the Actions menu", "Private agent, or wrong trigger", "B18: Shared, On event > Action menu selection"],
   ["Execution Security Alert every time", "Signer not trusted in the ECL", "B19 sign; trust the signer if your policy allows"],
   ["Compile error when saving", "A block was pasted into the wrong section", "Redo B17/B18 steps A–D"],
+  ["Duplicate procedure … / Not declared …", "A new release was pasted on top of the old code, so functions exist twice or are missing", "Replace the whole element as in B17a"],
+  ["Unexpected / Type mismatch / Variable not declared in BulkReg code", "A defect in the kit", "Note element, line and message and report it; do not edit the code by hand"],
   ["\"supported only in the Domino Administrator client on Windows\"", "Run outside the Windows client", "Run from the admin workstation"],
   ["Audit folder not writable", "B9 not done, or wrong permissions", "Redo B9; `bulkreg.cmd Check`"],
   ["Build Batch selects 0 users", "All registered, in OPEN batches, or filtered", "Read the summary's 'Not selected' line"],
