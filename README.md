@@ -80,7 +80,7 @@ Explicit policy names are written as Domino stores them: `*/PolicyName`. Agent 0
 | Object | Accepted forms |
 |---|---|
 | Servers (registration, home, vault) | `CN=DominoADMail/O=Demo` **or** `DominoADMail/Demo` (also with an OU: `CN=DominoADMail/OU=EMEA/O=Demo`) |
-| CA certifier (`CertifierName`) | `O=Demo` or `OU=Sales/O=Demo` |
+| CA certifier (`CertifierName`) | `/Demo` (users become `Neha Arora/Demo`) or `/Sales/Demo`; `Demo` and `O=Demo` are accepted and converted to `/Demo` |
 | **Organizational policy** | `*/Demo`, `*/Sales/Demo`. Domino applies it **automatically** at registration. Leave Policy empty (`-` in the mapping) and set `OrgPolicyAssignsVault=1`. |
 | **Explicit policy** | `*/DirSync-Vault`. Name it in `DefaultPolicy` or in the mapping's Policy column. |
 
