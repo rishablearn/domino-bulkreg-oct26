@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.3.2", "**Release 3.3.2.** Users without an Internet address are a **warning only**, never an error: they stay Include=Y and are registered. Preflight, the Build Batch dialog and the batch summary count them separately (`No Internet addr`). C3 and D6 explain what it means."],
   ["3.3.1", "**Release 3.3.1.** Installation simplified: Domino Designer distributes pasted LotusScript automatically, so B17, B17a and B18 now say **paste the whole file** (Ctrl+A, Ctrl+V) instead of pasting STEP blocks into each section. The STEP markers in the .lss files are replaced by `--- part …` labels and a HOW TO INSTALL note. No code change."],
   ["3.3.0", "**Release 3.3.0.** **All code moved into script libraries.** New library **BulkRegAgents** holds the code of the five agents (BR_RunPreflight … BR_RunExport); each agent now contains only `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, so future releases replace only the two libraries (B17a). B17 and B18 rewritten; Appendix B shows the Sub per agent. Library variables are reset at the start of every run. **One-time migration from 3.2: B17 (create BulkRegAgents) and B18 (reduce each agent to 3 + 3 lines).**"],
   ["3.2.7", "**Release 3.2.7.** Version numbers made fully consistent: the guide now carries the full release number (read from the VERSION file) instead of 3.2; revision history and CHANGELOG use full numbers; new helper command `bulkreg.cmd Versions` checks every file against VERSION. No change to the LotusScript logic (only the version lines)."],
@@ -888,6 +889,7 @@ tbl(["Check", "How", "If wrong"], [
   ["Right OU / policy / vault", "Read OrgUnit, Policy and VaultServer", "Correct the value in the row"],
   ["Right replica servers", "Read ClusterReplicas: all other cluster members, comma separated (e.g. `DominoADMail2/Demo,DominoADMailDR1/Demo,DominoADMailDR2/Demo`)", "Correct MailClusterServers and rebuild, or edit the row (empty = no replicas)"],
   ["Warnings", "Filter Check = WARN and read Issues", "Accept them, or set Include to `N`"],
+  ["No Internet address", "Issues shows **WARN: InternetAddress missing**. The summary counts these users (`No Internet addr`).", "**Not an error:** the row stays Include=Y and the user is registered (Notes ID, vault, mail file). Internet mail cannot reach the user until the address is added in AD and DirSync has synchronised it. Set Include=N if you prefer to wait."],
   ["Errors", "Check = ERROR rows already have Include=N", "Fix in AD and include them in a later batch"],
 ], [2200, 3700, 3460]);
 h3("Save");
@@ -1237,6 +1239,7 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["\"Mail folder setting error\" at start-up", "MailFolderPrefix written with a number (mail1) or a path (mail\\mail)", "Set MailFolderPrefix=mail. The folders mail1, mail2 … sit directly in the data directory."],
   ["ERROR: All pre-created mail folders … are full", "More users than the folders you created can hold", "Create the next folder(s) on that server (B4), raise MailFolderMax, rebuild the batch"],
   ["Preflight: MailFolderMax too low", "The users need more folders than MailFolderMax", "Create the folders listed in _mailfolders.txt and raise MailFolderMax"],
+  ["WARN: InternetAddress missing", "The AD user has no e-mail address, so the DirSync Person document has no InternetAddress", "Warning only: the user is included and registered. Add the address in AD; DirSync writes it to the Person document. Until then Internet mail to this user is not delivered."],
   ["WARN: mail file renamed", "The last-name file already exists on that server, in the directory or in an open batch", "Normal with SUFFIX. Review the new name, or edit MailFile"],
   ["\"Could not scan <server>\" in the debug log", "No access to the server's database list", "Uniqueness then uses the directory and the direct file check. Fix access and rebuild for full checking."],
   ["MAILFILE_PENDING / MAILFILE_MISSING", "Mail file creation queued (Administration Process) or failed: template missing, no Create databases right, server unreachable", "Check admin4.nsf on the home server, B4 rights and template; re-run Verify"],

@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.3.1
+' Script Library : BulkRegCommon            Version 3.3.2
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.3.1"
+Public Const BR_VERSION = "3.3.2"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -94,6 +94,7 @@ Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
 Public gBase As String
 Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes.ini
 ' columns of a batch file (BATCH-<id>.csv) written by Agent 02, read by Agents 03/04
+Public Const BR_WARN_NO_INET = "WARN:InternetAddress missing - registered without an Internet address (add it in AD, DirSync syncs it); "
 Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues"
 
 '#####################################################################
@@ -992,7 +993,10 @@ Function BR_Validate(u As BRUser) As String
 	Dim s As String
 	If u.LastName = "" Then s = s & "ERROR:LastName missing; "
 	If u.FirstName = "" Then s = s & "WARN:FirstName missing; "
-	If u.InternetAddress = "" Then s = s & "WARN:InternetAddress missing; "
+	' Missing Internet address is a WARNING only (never an error): the user is registered and
+	' gets a Notes ID, vault entry and mail file, but no Internet address in the Person
+	' document - Internet mail to this user cannot be routed until it is added (AD / DirSync).
+	If u.InternetAddress = "" Then s = s & BR_WARN_NO_INET
 	If u.HomeServer = "" Then s = s & "ERROR:No HomeServer (mapping/default); "
 	If u.MailFile = "" Then
 		s = s & "ERROR:No MailFile; "

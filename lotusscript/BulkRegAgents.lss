@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.3.1
+' Script Library : BulkRegAgents            Version 3.3.2
 ' Purpose        : The code of the five BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\01 - Preflight Check                -> BR_RunPreflight
@@ -51,7 +51,7 @@ Sub BR_RunPreflight()
 	On Error GoTo ErrH
 	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
 	Dim u As BRUser, issues As String, res As String
-	Dim nOK As Long, nWarn As Long, nErr As Long, envErr As Long, envWarn As Long
+	Dim nOK As Long, nWarn As Long, nErr As Long, envErr As Long, envWarn As Long, nNoInet As Long
 	Dim seenShort List As String, seenMail List As String
 	Dim servers List As String, usersView As NotesView, dupCol As NotesDocumentCollection
 	Dim t0 As Double, srvCount List As Long, hk As String, srvText As String
@@ -184,6 +184,7 @@ Sub BR_RunPreflight()
 		hk = u.HomeServer
 		If hk = "" Then hk = "(none)"
 		If IsElement(srvCount(hk)) Then srvCount(hk) = srvCount(hk) + 1 Else srvCount(hk) = 1
+		If u.InternetAddress = "" Then nNoInet = nNoInet + 1
 		If InStr(issues, "ERROR:") > 0 Then
 			res = "ERROR": nErr = nErr + 1
 		ElseIf InStr(issues, "WARN:") > 0 Then
@@ -266,7 +267,8 @@ Sub BR_RunPreflight()
 	End If
 	Dim summary As String
 	summary = "Environment errors=" & envErr & " warnings=" & envWarn & _
-	" | Candidates=" & col.Count & " OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr
+	" | Candidates=" & col.Count & " OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr & _
+	" | without InternetAddress (WARN only, will be registered)=" & nNoInet
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Candidates per home server:" & Chr$(10) & srvText & Chr$(10) & "Mapping test: " & mapFile & Chr$(10) & BR_IIf(UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED", "Mail folders to create: " & fldFile & Chr$(10), "") & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
 	CInt(BR_IIf(envErr + nErr > 0, 48, 64))
@@ -333,7 +335,7 @@ Sub BR_RunBuildBatch()
 	Dim openIds List As String, srvCache List As String
 	Dim seenShort List As String, seenMail List As String, seenMF List As String, checkMF As Boolean
 	Dim srvInc List As Long, srvExcl List As Long, polInc List As Long
-	Dim nRows As Long, nInc As Long, nWarn As Long, nErr As Long
+	Dim nRows As Long, nInc As Long, nWarn As Long, nErr As Long, nNoInet As Long
 	Dim nInOpen As Long, nOtherSrv As Long, nLeft As Long, r As String, hk As String, pk As String
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String, newInFolder List As Long, aIssue As String, fkey As String
 	Dim repByHome List As String, rl As Variant, ri As Integer, foundOn As String
@@ -404,6 +406,7 @@ Sub BR_RunBuildBatch()
 				End If
 			End If
 
+			If u.InternetAddress = "" Then nNoInet = nNoInet + 1
 			If InStr(issues, "ERROR:") > 0 Then
 				chk = "ERROR": inc = "N": nErr = nErr + 1
 			ElseIf InStr(issues, "WARN:") > 0 Then
@@ -443,6 +446,7 @@ Sub BR_RunBuildBatch()
 	Call BR_AppendLine(sumFile, "Batch size limit: " & batchMax)
 	Call BR_AppendLine(sumFile, "")
 	Call BR_AppendLine(sumFile, "Rows in batch   : " & nRows & "   Include=Y: " & nInc & "   (WARN: " & nWarn & ")   Include=N (ERROR): " & nErr)
+	Call BR_AppendLine(sumFile, "No Internet addr: " & nNoInet & "   (WARN only - included and registered; add the address in AD later)")
 	Call BR_AppendLine(sumFile, "Not selected    : already in an open batch: " & nInOpen & " | other home server: " & nOtherSrv & " | left for next batch: " & nLeft)
 	Call BR_AppendLine(sumFile, "")
 	Call BR_AppendLine(sumFile, "Included users per home server:")
@@ -479,6 +483,7 @@ Sub BR_RunBuildBatch()
 	BR_Close "batch=" & gBatchID & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft
 	BR_Msg "Batch " & gBatchID & " created." & Chr$(10) & Chr$(10) & _
 	"Rows: " & nRows & "   Include=Y: " & nInc & "   WARN: " & nWarn & "   ERROR (Include=N): " & nErr & Chr$(10) & _
+	"Without InternetAddress (WARN, included): " & nNoInet & Chr$(10) & _
 	"Not selected - in open batch: " & nInOpen & ", other server: " & nOtherSrv & ", left for next batch: " & nLeft & Chr$(10) & Chr$(10) & _
 	"Review:  " & bfile & Chr$(10) & "Summary: " & sumFile & Chr$(10) & Chr$(10) & _
 	"Nothing has been registered. Run Actions > BulkReg > 03 - Register Batch after review.", BR_IIfInt(nErr > 0, 48, 64)
