@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.4.0
+' Script Library : BulkRegCommon            Version 3.4.1
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.4.0"
+Public Const BR_VERSION = "3.4.1"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10

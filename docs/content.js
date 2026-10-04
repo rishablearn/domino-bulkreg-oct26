@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.4.1", "**Release 3.4.1.** Guide only: B18 warns that Designer proposes Target *All selected documents*; D6 row for the message *to run this agent you must have at least one document selected* (set Target: None). Agent headers say the same. No code change."],
   ["3.4.0", "**Release 3.4.0.** **Users without an Internet address are skipped and flagged** (SkipNoInternetAddress=1): not put into a batch, listed in `BATCH-<id>_skipped_no_internet_address.csv`, result SKIPPED_NO_INET; 03 also skips them. **Structured log database:** BulkReg writes its own Run, Entry and Audit documents; new agent **00 - Set Up Log Database** creates a form and 8 categorized views (runs by date, batches, users, results, home servers, problems, skipped users, full log). B15 (blank template), new B20a and D4a."],
   ["3.3.2", "**Release 3.3.2.** Users without an Internet address are a **warning only**, never an error: they stay Include=Y and are registered. Preflight, the Build Batch dialog and the batch summary count them separately (`No Internet addr`). C3 and D6 explain what it means."],
   ["3.3.1", "**Release 3.3.1.** Installation simplified: Domino Designer distributes pasted LotusScript automatically, so B17, B17a and B18 now say **paste the whole file** (Ctrl+A, Ctrl+V) instead of pasting STEP blocks into each section. The STEP markers in the .lss files are replaced by `--- part …` labels and a HOW TO INSTALL note. No code change."],
@@ -793,7 +794,7 @@ ol(
   "Under **Code**, double-click **Agents**, then click **New Agent**.",
   "In **Name**, type the agent name from the table.",
   "Under **Type**, select **LotusScript**. Make sure the agent is **Shared** (HCL: private agents do not appear on the Actions menu). Click **OK**. *Result:* the agent's properties box and the LotusScript editor open.",
-  "In the properties box, **Basics** tab: under **Runtime**, choose **On event** and then **Action menu selection**. Set **Target** to **None**.",
+  "In the properties box, **Basics** tab: under **Runtime**, choose **On event** and then **Action menu selection**. Set **Target** to **None**. Designer proposes *All selected documents*: change it, otherwise the agent stops with *\"to run this agent you must have at least one document selected\"* (bulkreg.nsf contains no documents).",
   "Open the agent's source file from the table in **Notepad**, press **Ctrl+A** and **Ctrl+C**.",
   "In Designer, click in the agent's LotusScript editor, press **Ctrl+A**, then **Ctrl+V**. *Result:* (Options) contains the three lines below and Initialize contains the call, for example:"
 );
@@ -1251,6 +1252,7 @@ p("General method: set `LogLevel=DEBUG`, rebuild a 1-user batch (ExtraSelection)
 tbl(["Symptom", "Likely cause", "Fix"], [
   ["Actions menu shows only \"01\", \"02\"…", "`|` used in the agent names (alias separator)", "Rename the agents exactly as in B18"],
   ["Agents not in the Actions menu", "Private agent, or wrong trigger", "B18: Shared, On event > Action menu selection"],
+  ["\"To run this agent you must have at least one document selected\"", "The agent's **Target** is *All selected documents* (Designer's default); bulkreg.nsf has no documents", "Designer > agent properties > Basics > Runtime: **Target: None**, Ctrl+S. Check all six agents."],
   ["Execution Security Alert every time", "Signer not trusted in the ECL", "B19 sign; trust the signer if your policy allows"],
   ["Compile error when saving", "Old code was not removed before pasting, or only part of the file was copied", "Ctrl+A, Delete, then paste the whole file again (B17, B18)"],
   ["\"Error loading USE or USELSX module: BulkRegCommon/BulkRegAgents\"", "Library missing, misspelt, or not saved yet; BulkRegAgents saved before BulkRegCommon", "Check the names exactly (B17); save BulkRegCommon, then BulkRegAgents, then Tools > Recompile All LotusScript"],

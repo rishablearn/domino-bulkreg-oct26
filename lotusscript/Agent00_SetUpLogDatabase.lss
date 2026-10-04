@@ -1,6 +1,6 @@
 '=====================================================================
 ' Agent name : BulkReg\00 - Set Up Log Database
-' Version    : 3.4.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.4.0)
+' Version    : 3.4.1  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.4.1)
 ' Code       : ALL logic is in the script library BulkRegAgents (BR_RunSetupLog).
 '              This agent only calls it, so it never changes between releases.
 '
@@ -8,6 +8,7 @@
 '              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
 ' Designer   : Shared agent, LotusScript
 '              Runtime: On event > Action menu selection, Target: None
+'              (NOT 'All selected documents' - Designer's default - or Notes asks for a selected document)
 '              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
 '
 ' What it does (details: BulkRegAgents > BR_RunSetupLog):
