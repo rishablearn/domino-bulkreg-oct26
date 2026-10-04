@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.1.0
+' Script Library : BulkRegCommon            Version 3.2.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "3.1.0"
+Public Const BR_VERSION = "3.2.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -37,6 +37,7 @@ Public Type BRMapRule
 	Policy As String
 	Groups As String
 	VaultServer As String
+	ClusterReplicas As String   ' column 8: empty = automatic (MailClusterServers), "-" = none, or a list
 End Type
 
 ' ---------- one candidate user ----------
@@ -65,6 +66,8 @@ Public Type BRUser
 	IDFile As String
 	VaultStatus As String
 	VaultServer As String
+	ClusterReplicas As String   ' servers that get a cluster replica of the mail file (comma separated)
+	ReplicaStatus As String     ' WOULD_REQUEST / REQUESTED n/m / REPLICAS_OK n/n / REPLICAS_MISSING ...
 	Issues As String
 End Type
 
@@ -83,13 +86,14 @@ Public gSession As NotesSession
 Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
 Public gBatchID As String        ' batch being built / registered (BATCH-yyyymmdd-hhnnss)
 Public gResultsFile As String    ' <BatchDir>\<BatchID>_results.csv (LIVE) or _dryrun.csv
+Public gAdminP As NotesAdministrationProcess   ' AdminP requests (cluster replicas), created on first use
 
 Public Const gSep = "\"                         ' Windows path separator
 Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
 Public gBase As String
 Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes.ini
 ' columns of a batch file (BATCH-<id>.csv) written by Agent 02, read by Agents 03/04
-Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,MapRule,Check,Issues"
+Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues"
 
 '#####################################################################
 ' ### STEP C: paste everything from here to the END of the file AFTER the
@@ -337,9 +341,10 @@ Function BR_LoadMapping(path As String) As Boolean
 				gMap(gMapCount).Policy = BR_Part(parts, 4)
 				gMap(gMapCount).Groups = BR_Part(parts, 5)
 				gMap(gMapCount).VaultServer = BR_Part(parts, 6)
+				gMap(gMapCount).ClusterReplicas = BR_Part(parts, 7)
 				If gMap(gMapCount).MatchPattern = "" Then gMap(gMapCount).MatchPattern = "*"
 				BR_Log LVL_DEBUG, "Rule #" & (gMapCount + 1) & ": IF " & gMap(gMapCount).MatchField & " LIKE '" & gMap(gMapCount).MatchPattern & "' THEN home=" & _
-				gMap(gMapCount).HomeServer & " ou=" & gMap(gMapCount).OrgUnit & " policy=" & gMap(gMapCount).Policy & " groups=" & gMap(gMapCount).Groups & " vault=" & gMap(gMapCount).VaultServer
+				gMap(gMapCount).HomeServer & " ou=" & gMap(gMapCount).OrgUnit & " policy=" & gMap(gMapCount).Policy & " groups=" & gMap(gMapCount).Groups & " vault=" & gMap(gMapCount).VaultServer & " replicas=" & BR_IIfStr(gMap(gMapCount).ClusterReplicas = "", "(auto)", gMap(gMapCount).ClusterReplicas)
 				gMapCount = gMapCount + 1
 			Else
 				BR_Log LVL_WARN, "Mapping line ignored (needs >= 3 columns): " & txt
@@ -373,6 +378,7 @@ Sub BR_ResolveMapping(doc As NotesDocument, u As BRUser)
 	u.Policy = CfgS("DefaultPolicy", "")
 	u.Groups = CfgS("DefaultGroups", "")
 	u.VaultServer = CfgS("VaultServer", "")
+	u.ClusterReplicas = ""            ' "" = automatic from MailClusterServers
 	u.MapRule = "defaults"
 	For i = 0 To gMapCount - 1
 		If gMap(i).MatchField = "*" Then
@@ -390,13 +396,184 @@ Sub BR_ResolveMapping(doc As NotesDocument, u As BRUser)
 			If u.Policy = "-" Then u.Policy = ""
 			If u.Groups = "-" Then u.Groups = ""
 			If gMap(i).VaultServer <> "" Then u.VaultServer = gMap(i).VaultServer
+			If gMap(i).ClusterReplicas <> "" Then u.ClusterReplicas = gMap(i).ClusterReplicas
 			u.MapRule = "rule#" & (i + 1) & " " & gMap(i).MatchField & "=" & gMap(i).MatchPattern
 			Exit For
 		End If
 	Next
 	' accept CN=DominoADMail/O=Demo or DominoADMail/Demo - store the abbreviated form
 	u.HomeServer = BR_SrvAbbr(u.HomeServer)
+	' cluster replicas of the mail file: every OTHER member of the mail cluster (or the rule's list)
+	u.ClusterReplicas = BR_ReplicaServers(u.HomeServer, u.ClusterReplicas)
 End Sub
+
+'=====================================================================
+' MAIL CLUSTER  (MailClusterServers in bulkreg.ini)
+'   All members of the mail cluster, e.g. 2 servers in DC + 2 in DR:
+'   MailClusterServers=DominoADMail/Demo,DominoADMail2/Demo,DominoADMailDR1/Demo,DominoADMailDR2/Demo
+'   - a user whose home server is a member gets a replica of the mail file on
+'     every OTHER member, at the same path (e.g. mail1\smith.nsf), requested
+'     through the Administration Process (AdminP "Create Replica");
+'   - mail file names and numbered folders are allocated ONCE for the whole
+'     cluster: a name is unique on every member, and mail1, mail2 ... hold at
+'     most MailFilesPerFolder mail files on every member.
+'=====================================================================
+' Normalised (abbreviated, de-duplicated) server list from "a,b,c", without <exclude>
+Function BR_SrvList(s As String, exclude As String) As String
+	Dim parts As Variant, i As Integer, a As String, out As String, seen List As String
+	If Trim$(s) = "" Or Trim$(s) = "-" Then Exit Function
+	parts = Split(s, ",")
+	For i = 0 To UBound(parts)
+		a = BR_SrvAbbr(CStr(parts(i)))
+		If a <> "" Then
+			If Not IsElement(seen(LCase$(a))) Then
+				If exclude = "" Or Not BR_SameServer(a, exclude) Then
+					seen(LCase$(a)) = "1"
+					out = out & BR_IIfStr(out = "", "", ",") & a
+				End If
+			End If
+		End If
+	Next
+	BR_SrvList = out
+End Function
+
+' True when <server> is listed in MailClusterServers
+Function BR_InMailCluster(server As String) As Boolean
+	Dim parts As Variant, i As Integer
+	If Trim$(server) = "" Or Trim$(CfgS("MailClusterServers", "")) = "" Then Exit Function
+	parts = Split(CfgS("MailClusterServers", ""), ",")
+	For i = 0 To UBound(parts)
+		If Trim$(CStr(parts(i))) <> "" Then
+			If BR_SameServer(CStr(parts(i)), server) Then
+				BR_InMailCluster = True
+				Exit Function
+			End If
+		End If
+	Next
+End Function
+
+' Replica servers for a user:  spec "-" = none;  "" = all OTHER members of the
+' mail cluster (when the home server is a member);  otherwise the explicit list.
+Function BR_ReplicaServers(home As String, spec As String) As String
+	If Trim$(spec) = "-" Then Exit Function
+	If Trim$(spec) = "" Then
+		If BR_InMailCluster(home) Then BR_ReplicaServers = BR_SrvList(CfgS("MailClusterServers", ""), home)
+	Else
+		BR_ReplicaServers = BR_SrvList(spec, home)
+	End If
+End Function
+
+' Key under which mail file names and folder fill are tracked:
+'   all members of the mail cluster share ONE key; other servers have their own.
+Function BR_MailKey(server As String) As String
+	If BR_InMailCluster(server) Then BR_MailKey = "mail cluster" Else BR_MailKey = LCase$(BR_SrvAbbr(server))
+End Function
+
+' Requests (AdminP "Create Replica") a replica of u.MailFile from u.HomeServer on
+' every server in u.ClusterReplicas, same path, ACL copied.
+' Returns "REQUESTED n/m" (+ failures). The replicas appear once AdminP on the
+' destination servers has processed the requests - check with Agent 04.
+Function BR_RequestReplicas(u As BRUser) As String
+	Dim lst As Variant, i As Integer, nOk As Integer, nAll As Integer, fails As String, rid As String, dest As String
+	If u.ClusterReplicas = "" Then
+		BR_RequestReplicas = "NONE"
+		Exit Function
+	End If
+	On Error GoTo ErrInit
+	If gAdminP Is Nothing Then Set gAdminP = gSession.CreateAdministrationProcess(CfgS("RegistrationServer", ""))
+	On Error GoTo 0
+	lst = Split(u.ClusterReplicas, ",")
+	For i = 0 To UBound(lst)
+		dest = Trim$(CStr(lst(i)))
+		If dest <> "" Then
+			nAll = nAll + 1
+			On Error Resume Next
+			rid = gAdminP.CreateReplica(BR_SrvCanon(u.HomeServer), u.MailFile, BR_SrvCanon(dest), u.MailFile, True, CfgB("MailCreateFTIndex", False))
+			If Err <> 0 Then
+				fails = fails & dest & ": " & Error$ & "; "
+				BR_Log LVL_ERROR, "Replica request FAILED " & u.MailFile & " -> " & dest & " : " & Error$
+				Err = 0
+			Else
+				nOk = nOk + 1
+				BR_Log LVL_INFO, "Replica requested (AdminP request " & rid & "): " & u.HomeServer & "!!" & u.MailFile & " -> " & dest
+			End If
+			On Error GoTo 0
+		End If
+	Next
+	BR_RequestReplicas = "REQUESTED " & nOk & "/" & nAll & BR_IIfStr(fails <> "", " FAILED: " & fails, "")
+	Exit Function
+ErrInit:
+	BR_RequestReplicas = "REQUEST_FAILED (cannot create AdminP request: " & Error$ & ")"
+	BR_Log LVL_ERROR, "Cannot create AdminP requests on " & CfgS("RegistrationServer", "") & ": " & Error$
+	Exit Function
+End Function
+
+' Checks that every server in <replicas> holds a replica (same replica ID) of
+' <path> on <home>. Returns REPLICAS_OK n/n, REPLICAS_MISSING k/n (missing: ...),
+' NONE (no replicas configured) or CHECK_ERROR(...).
+Function BR_CheckReplicas(home As String, path As String, replicas As String) As String
+	Dim src As NotesDatabase, r As NotesDatabase, rid As String, lst As Variant, i As Integer
+	Dim nOk As Integer, nAll As Integer, missing As String, dest As String, found As Boolean
+	If Trim$(replicas) = "" Then
+		BR_CheckReplicas = "NONE"
+		Exit Function
+	End If
+	On Error GoTo ErrH
+	Set src = gSession.GetDatabase(home, path, False)
+	If Not src.IsOpen Then Call src.Open("", "")
+	If Not src.IsOpen Then
+		BR_CheckReplicas = "CHECK_ERROR(mail file not found on home server)"
+		Exit Function
+	End If
+	rid = src.ReplicaID
+	lst = Split(replicas, ",")
+	For i = 0 To UBound(lst)
+		dest = Trim$(CStr(lst(i)))
+		If dest <> "" Then
+			nAll = nAll + 1
+			found = False
+			Set r = New NotesDatabase("", "")
+			On Error Resume Next
+			found = r.OpenByReplicaID(dest, rid)
+			Err = 0
+			On Error GoTo ErrH
+			If found Then
+				nOk = nOk + 1
+				If LCase$(BR_Path(r.FilePath)) <> LCase$(BR_Path(path)) Then BR_Log LVL_WARN, "Replica of " & path & " on " & dest & " is at a different path: " & r.FilePath
+			Else
+				missing = missing & BR_IIfStr(missing = "", "", ", ") & dest
+			End If
+		End If
+	Next
+	If nOk = nAll Then
+		BR_CheckReplicas = "REPLICAS_OK " & nOk & "/" & nAll
+	Else
+		BR_CheckReplicas = "REPLICAS_MISSING " & nOk & "/" & nAll & " (missing: " & missing & ")"
+	End If
+	Exit Function
+ErrH:
+	BR_CheckReplicas = "CHECK_ERROR(" & Error$ & ")"
+	Exit Function
+End Function
+
+' Server (home or replica) on which u.MailFile already exists, or ""
+Function BR_MailFileExistsAny(u As BRUser) As String
+	Dim lst As Variant, i As Integer
+	If BR_MailFileExists(u.HomeServer, u.MailFile) Then
+		BR_MailFileExistsAny = u.HomeServer
+		Exit Function
+	End If
+	If u.ClusterReplicas = "" Then Exit Function
+	lst = Split(u.ClusterReplicas, ",")
+	For i = 0 To UBound(lst)
+		If Trim$(CStr(lst(i))) <> "" Then
+			If BR_MailFileExists(Trim$(CStr(lst(i))), u.MailFile) Then
+				BR_MailFileExistsAny = Trim$(CStr(lst(i)))
+				Exit Function
+			End If
+		End If
+	Next
+End Function
 
 '=====================================================================
 ' SERVER NAMES  - canonical (CN=DominoADMail/O=Demo) or abbreviated
@@ -564,15 +741,30 @@ End Function
 ' folder fill of all files in the mail folders: the numbered folders directly
 ' under the data directory (mail1, mail2 ...) and the existing mail folders
 ' listed in MailExistingFolders (default: mail).
+' For a member of the mail cluster ALL members are scanned into one shared key,
+' so a name is unique cluster-wide; a replica (same path on several members) is
+' counted once per folder.
 Sub BR_ScanServerMail(server As String, names List As String, counts List As Long, scanned List As String)
+	Dim key As String, lst As Variant, i As Integer
+	key = BR_MailKey(server)
+	If key = "mail cluster" Then
+		lst = Split(CfgS("MailClusterServers", ""), ",")
+		For i = 0 To UBound(lst)
+			If Trim$(CStr(lst(i))) <> "" Then Call BR_ScanOneServer(Trim$(CStr(lst(i))), key, names, counts, scanned)
+		Next
+	Else
+		Call BR_ScanOneServer(server, key, names, counts, scanned)
+	End If
+End Sub
+
+Sub BR_ScanOneServer(server As String, key As String, names List As String, counts List As Long, scanned List As String)
 	On Error GoTo ErrH
 	Dim sk As String, dbdir As NotesDbDirectory, d As NotesDatabase, fp As String
-	Dim folder As String, base As String, prefix As String, n As Long
+	Dim folder As String, base As String, n As Long
 	sk = LCase$(BR_SrvAbbr(server))
 	If IsElement(scanned(sk)) Then Exit Sub
 	scanned(sk) = "1"
-	prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
-	BR_Log LVL_INFO, "Scanning mail folders on " & server & " ..."
+	BR_Log LVL_INFO, "Scanning mail folders on " & server & BR_IIfStr(key = "mail cluster", " (mail cluster member)", "") & " ..."
 	Set dbdir = gSession.GetDbDirectory(server)
 	Set d = dbdir.GetFirstDatabase(DATABASE)
 	Do While Not (d Is Nothing)
@@ -586,8 +778,12 @@ Sub BR_ScanServerMail(server As String, names List As String, counts List As Lon
 		End If
 		If Right$(base, 4) = ".nsf" Then base = Left$(base, Len(base) - 4)
 		If BR_IsMailFolder(folder) Then
-			If Not IsElement(names(sk & "!!" & base)) Then names(sk & "!!" & base) = "file " & fp
-			If IsElement(counts(sk & "!!" & folder)) Then counts(sk & "!!" & folder) = counts(sk & "!!" & folder) + 1 Else counts(sk & "!!" & folder) = 1
+			If Not IsElement(names(key & "!!" & base)) Then names(key & "!!" & base) = "file " & fp & " on " & BR_SrvAbbr(server)
+			' count each path once per key (a cluster replica has the same path on every member)
+			If Not IsElement(names(key & "!!path:" & fp)) Then
+				names(key & "!!path:" & fp) = "1"
+				If IsElement(counts(key & "!!" & folder)) Then counts(key & "!!" & folder) = counts(key & "!!" & folder) + 1 Else counts(key & "!!" & folder) = 1
+			End If
 			n = n + 1
 		End If
 		Set d = dbdir.GetNextDatabase()
@@ -611,6 +807,14 @@ Function BR_CheckMailFolderConfig() As String
 		If Right$(p, 1) Like "#" Then e = e & "MailFolderPrefix='" & p & "' ends with a number. Write it WITHOUT the number: MailFolderPrefix=mail gives mail1, mail2 ..." & Chr$(10)
 		If CfgL("MailFilesPerFolder", 1000) < 1 Then e = e & "MailFilesPerFolder must be 1 or more (e.g. 1000)." & Chr$(10)
 	End If
+	Dim cl As String, nCl As Integer
+	cl = BR_SrvList(CfgS("MailClusterServers", ""), "")
+	If cl <> "" Then
+		nCl = UBound(Split(cl, ",")) + 1
+		If nCl < 2 Then e = e & "MailClusterServers lists only one server. List ALL members of the mail cluster (e.g. 2 in DC + 2 in DR), comma separated, or leave it empty." & Chr$(10)
+		If nCl > 6 Then e = e & "MailClusterServers lists " & nCl & " servers - a Domino cluster has at most 6 members." & Chr$(10)
+	End If
+	If InStr(CfgS("MailClusterServers", ""), "<") > 0 Then e = e & "MailClusterServers still contains a <placeholder>." & Chr$(10)
 	If InStr(CfgS("MailExistingFolders", "mail"), ":") > 0 Then e = e & "MailExistingFolders must be folder names relative to the data directory, e.g. mail" & Chr$(10)
 	BR_CheckMailFolderConfig = e
 End Function
@@ -647,7 +851,7 @@ End Function
 Function BR_MailFoldersNeeded(server As String, users As Long, names List As String, counts List As Long, scanned List As String) As Integer
 	Dim sk As String, prefix As String, limit As Long, k As Integer, remaining As Long, used As Long
 	Call BR_ScanServerMail(server, names, counts, scanned)
-	sk = LCase$(BR_SrvAbbr(server))
+	sk = BR_MailKey(server)
 	prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
 	limit = CfgL("MailFilesPerFolder", 1000)
 	If limit < 1 Then limit = 1000
@@ -670,7 +874,8 @@ Sub BR_ScanDirectoryMail(db As NotesDatabase, names List As String)
 	Set col = db.Search(|Form = "Person" & MailFile != ""|, Nothing, 0)
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
-		sk = LCase$(BR_SrvAbbr(BR_Item(doc, "MailServer")))
+		sk = ""
+		If BR_Item(doc, "MailServer") <> "" Then sk = BR_MailKey(BR_Item(doc, "MailServer"))
 		fp = LCase$(BR_Path(BR_Item(doc, "MailFile")))
 		base = fp
 		If InStr(base, "\") > 0 Then base = StrRightBack(base, "\")
@@ -692,14 +897,14 @@ End Sub
 Function BR_AllocMailFile(u As BRUser, names List As String, counts List As Long) As String
 	Dim sk As String, base0 As String, base As String, n As Integer, folder As String
 	Dim prefix As String, limit As Long, k As Integer, fk As String, note As String
-	sk = LCase$(BR_SrvAbbr(u.HomeServer))
+	sk = BR_MailKey(u.HomeServer)      ' one shared key for all members of the mail cluster
 	base0 = BR_MailBase(u)
 	base = base0
 	n = 1
 	Do While IsElement(names(sk & "!!" & base))
 		If UCase$(CfgS("MailFileCollision", "SUFFIX")) = "ERROR" Then
 			u.MailFileNote = "name " & base0 & ".nsf already used (" & names(sk & "!!" & base0) & ")"
-			BR_AllocMailFile = "ERROR:Mail file name " & base0 & ".nsf already used on " & u.HomeServer & " (" & names(sk & "!!" & base0) & "); "
+			BR_AllocMailFile = "ERROR:Mail file name " & base0 & ".nsf already used on " & BR_IIfStr(sk = "mail cluster", "the mail cluster", u.HomeServer) & " (" & names(sk & "!!" & base0) & "); "
 			Exit Function
 		End If
 		n = n + 1
@@ -723,7 +928,7 @@ Function BR_AllocMailFile(u As BRUser, names List As String, counts List As Long
 		' MailFolderMax = number of folders pre-created on the servers (prerequisite B4)
 		If CfgL("MailFolderMax", 0) > 0 And k > CfgL("MailFolderMax", 0) Then
 			u.MailFileNote = "folders " & prefix & "1.." & prefix & CfgL("MailFolderMax", 0) & " are full"
-			BR_AllocMailFile = "ERROR:All pre-created mail folders (" & prefix & "1.." & prefix & CfgL("MailFolderMax", 0) & ") on " & u.HomeServer & " are full - create " & prefix & CStr(k) & " and raise MailFolderMax; "
+			BR_AllocMailFile = "ERROR:All pre-created mail folders (" & prefix & "1.." & prefix & CfgL("MailFolderMax", 0) & ) on " & BR_IIfStr(sk = "mail cluster", "the mail cluster", u.HomeServer) & " are full - create " & prefix & CStr(k) & " and raise MailFolderMax; "
 			Exit Function
 		End If
 		folder = prefix & CStr(k)
@@ -833,7 +1038,7 @@ End Sub
 Function BR_AuditHeader() As String
 	BR_AuditHeader = "RunID,Timestamp,Tool,Operator,Mode,Action,Result,DurationSec,NoteID,UNID,objectGUID," & _
 	"FullNameBefore,FullNameAfter,InternetAddress,ShortName,HomeServer,OrgUnit,Policy,MapRule," & _
-	"MailSystemBefore,MailSystemAfter,VaultStatus,IDFile,Message,BatchID,MailFile,MailFileStatus,MailFileNote"
+	"MailSystemBefore,MailSystemAfter,VaultStatus,IDFile,Message,BatchID,MailFile,MailFileStatus,MailFileNote,ClusterReplicas,ReplicaStatus"
 End Function
 
 Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, dur As Double, msg As String)
@@ -844,13 +1049,13 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FullNameAfter) & "," & _
 	Q(u.InternetAddress) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & _
 	Q(u.MapRule) & "," & Q(u.MailSystemBefore) & "," & Q(u.MailSystemAfter) & "," & Q(u.VaultStatus) & "," & _
-	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(u.MailFile) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote)
+	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(u.MailFile) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote) & "," & Q(u.ClusterReplicas) & "," & Q(u.ReplicaStatus)
 	Call BR_AppendLine(gAuditFile, r)
 	If gResultsFile <> "" Then Call BR_AppendLine(gResultsFile, r)
 	' same row, compact, in the central log database (one entry per user per action)
 	If Not (gNLog Is Nothing) Then
 		Call gNLog.LogAction("AUDIT " & mode & " " & action & " " & result & " | " & BR_IIfStr(u.FullNameAfter <> "", u.FullNameAfter, u.FullNameBefore) & _
-		" | " & u.InternetAddress & " | " & u.HomeServer & " | " & u.MailFile & " | vault " & u.VaultStatus & " | batch " & gBatchID & " | " & msg)
+		" | " & u.InternetAddress & " | " & u.HomeServer & " | " & u.MailFile &  | vault " & u.VaultStatus & BR_IIfStr(u.ReplicaStatus <> "", " | replicas " & u.ReplicaStatus, "") & " | batch " & gBatchID & " | " & msg)
 	End If
 	Exit Sub
 ErrH:
@@ -1086,7 +1291,8 @@ Sub BR_OpenBatchNoteIDs(ids List As String, names List As String, counts List As
 					If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
 						ids(BR_CsvGet(parts, cols, "NoteID")) = CStr(bf)
 						' reserve this open batch's mail file name and folder slot
-						sk = LCase$(BR_SrvAbbr(BR_CsvGet(parts, cols, "HomeServer")))
+						sk = ""
+						If BR_CsvGet(parts, cols, "HomeServer") <> "" Then sk = BR_MailKey(BR_CsvGet(parts, cols, "HomeServer"))
 						mfp = LCase$(BR_Path(BR_CsvGet(parts, cols, "MailFile")))
 						If sk <> "" And mfp <> "" Then
 							folder = ""
@@ -1130,13 +1336,13 @@ Function BR_NewestOpenBatch() As String
 	If best <> "" Then BR_NewestOpenBatch = d & best
 End Function
 
-' Home-server reachability, checked once per server per run
+' Server reachability (home or replica server), checked once per server per run
 Function BR_HomeServerOK(server As String, cache List As String) As Boolean
 	Dim k As String
 	k = LCase$(server)
 	If Not IsElement(cache(k)) Then
 		If BR_ServerReachable(server) Then cache(k) = "OK" Else cache(k) = "UNREACHABLE"
-		BR_Log LVL_INFO, "Home server " & server & ": " & cache(k)
+		BR_Log LVL_INFO, "Server " & server & ": " & cache(k)
 	End If
 	BR_HomeServerOK = (cache(k) = "OK")
 End Function

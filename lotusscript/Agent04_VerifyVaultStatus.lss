@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent name : BulkReg\04 - Verify Registration and Vault   (READ-ONLY)
 '              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.1.0  (BulkReg release; library BulkRegCommon 3.1.0)
+' Version    : 3.2.0  (BulkReg release; library BulkRegCommon 3.2.0)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -13,6 +13,8 @@
 ' Status per user: UNREGISTERED | REGISTERED + IN_VAULT | REGISTERED + NOT_IN_VAULT
 '                  + MailFileStatus MAILFILE_OK | MAILFILE_MISSING | NO_MAILFILE_IN_PERSON_DOC
 '                  | CHECK_ERROR | NOT_FOUND
+'                  + ReplicaStatus REPLICAS_OK n/n | REPLICAS_MISSING k/n (missing: ...) | NONE
+'                    (a replica = same replica ID on the other mail cluster member)
 ' Run it after each batch and before deleting local ID files.
 '=====================================================================
 '#####################################################################
@@ -25,7 +27,7 @@ Use "BulkRegCommon"
 ' ### STEP B: paste the lines below (module variables) into (Declarations)
 '#####################################################################
 
-Dim nUnreg As Long, nInV As Long, nNotV As Long, nErr As Long, nGone As Long, nMailBad As Long
+Dim nUnreg As Long, nInV As Long, nNotV As Long, nErr As Long, nGone As Long, nMailBad As Long, nRepBad As Long
 
 '#####################################################################
 ' ### STEP C: select Initialize and REPLACE its content with the block below
@@ -36,7 +38,7 @@ Sub Initialize
 	Dim ws As NotesUIWorkspace, ans As Variant
 	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
 	Dim scopeFile As String, bname As String, fh As Integer, txt As String
-	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, nid As String
+	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, nid As String, rep As String
 	Dim summary As String, total As Long
 
 	If Not BR_Init("Verify") Then Exit Sub
@@ -71,12 +73,13 @@ Sub Initialize
 				parts = BR_CsvSplit(txt, delim)
 				If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
 					nid = BR_CsvGet(parts, cols, "NoteID")
+					If IsElement(cols("clusterreplicas")) Then rep = BR_CsvGet(parts, cols, "ClusterReplicas") Else rep = "*auto"
 					total = total + 1
 					Set doc = Nothing
 					On Error Resume Next
 					Set doc = db.GetDocumentByID(nid)
 					On Error GoTo ErrH
-					Call VerifyDoc(doc, nid)
+					Call VerifyDoc(doc, nid, rep)
 				End If
 			End If
 		Loop
@@ -87,16 +90,16 @@ Sub Initialize
 		Set doc = col.GetFirstDocument()
 		Do While Not (doc Is Nothing)
 			total = total + 1
-			Call VerifyDoc(doc, doc.NoteID)
+			Call VerifyDoc(doc, doc.NoteID, "*auto")
 			Set doc = col.GetNextDocument(doc)
 		Loop
 	End If
 
 	summary = BR_IIfStr(gBatchID = "", "All DirSync users", gBatchID) & ": checked=" & total & " | registered+in vault=" & nInV & _
-	" | registered NOT in vault=" & nNotV & " | unregistered=" & nUnreg & " | check errors=" & nErr & " | not found=" & nGone & " | mail file missing=" & nMailBad
+	" | registered NOT in vault=" & nNotV & " | unregistered=" & nUnreg & " | check errors=" & nErr & " | not found=" & nGone & " | mail file missing=" & nMailBad & " | replicas missing=" & nRepBad
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & BR_IIfStr(gResultsFile <> "", gResultsFile, gAuditFile), _
-	CInt(BR_IIfStr(nNotV + nErr + nGone + nMailBad > 0, "48", "64"))
+	CInt(BR_IIfStr(nNotV + nErr + nGone + nMailBad + nRepBad > 0, "48", "64"))
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Verify aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
@@ -110,7 +113,9 @@ End Sub
 ' ###         Function / Sub automatically.
 '#####################################################################
 
-Sub VerifyDoc(doc As NotesDocument, nid As String)
+' rep = replica servers from the batch file, or "*auto" = other members of the
+'       mail cluster of the user's mail server (MailClusterServers)
+Sub VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 	Dim u As BRUser, t0 As Double, res As String
 	t0 = Timer
 	If doc Is Nothing Then
@@ -137,6 +142,17 @@ Sub VerifyDoc(doc As NotesDocument, nid As String)
 			u.MailFileStatus = "MAILFILE_MISSING"
 		End If
 		If u.MailFileStatus <> "MAILFILE_OK" Then nMailBad = nMailBad + 1
+		' cluster replicas of the mail file
+		u.HomeServer = BR_SrvAbbr(BR_Item(doc, "MailServer"))
+		If rep = "*auto" Then u.ClusterReplicas = BR_ReplicaServers(u.HomeServer, "") Else u.ClusterReplicas = BR_SrvList(rep, u.HomeServer)
+		If u.MailFileStatus = "MAILFILE_OK" Then
+			u.ReplicaStatus = BR_CheckReplicas(u.HomeServer, u.MailFile, u.ClusterReplicas)
+		ElseIf u.ClusterReplicas <> "" Then
+			u.ReplicaStatus = "NOT_CHECKED (no mail file on home server)"
+		Else
+			u.ReplicaStatus = "NONE"
+		End If
+		If u.ReplicaStatus <> "NONE" And Left$(u.ReplicaStatus, 11) <> "REPLICAS_OK" Then nRepBad = nRepBad + 1
 		Select Case Left$(u.VaultStatus, 5)
 		Case "IN_VA": res = "REGISTERED": nInV = nInV + 1
 		Case "NOT_I": res = "REGISTERED": nNotV = nNotV + 1
@@ -144,7 +160,7 @@ Sub VerifyDoc(doc As NotesDocument, nid As String)
 		End Select
 	End If
 	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), "")
-	BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus
+	BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus & " mail=" & u.MailFileStatus & " replicas=" & u.ReplicaStatus
 End Sub
 
 ' Newest batch file (open or done) as the default scope

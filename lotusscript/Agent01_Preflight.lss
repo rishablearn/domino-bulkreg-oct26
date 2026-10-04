@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent name : BulkReg\01 - Preflight Check   (READ-ONLY - changes nothing)
 '              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.1.0  (BulkReg release; library BulkRegCommon 3.1.0)
+' Version    : 3.2.0  (BulkReg release; library BulkRegCommon 3.2.0)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -9,6 +9,8 @@
 ' Checks environment + every DirSync candidate and writes
 '   <AuditDir>\BulkReg_Preflight_<run>_audit.csv   (per-user status)
 '   <AuditDir>\BulkReg_Preflight_<run>_debug.log
+'   <AuditDir>\BulkReg_Preflight_<run>_mapping.txt      (users per mapping rule)
+'   <AuditDir>\BulkReg_Preflight_<run>_mailfolders.txt  (folders to create, per server)
 '=====================================================================
 '#####################################################################
 ' ### STEP A: paste the 3 lines below into (Options)
@@ -30,6 +32,7 @@ Sub Initialize
 	Dim servers List As String, usersView As NotesView, dupCol As NotesDocumentCollection
 	Dim t0 As Double, srvCount List As Long, hk As String, srvText As String
 	Dim ruleCount List As Long, mapFile As String, ri As Integer, rk As String
+	Dim rl As Variant, rj As Integer, repCount List As Long
 
 	If Not BR_Init("Preflight") Then Exit Sub
 
@@ -55,6 +58,21 @@ Sub Initialize
 	If CfgS("DefaultPolicy", "") = "" Then
 		BR_Log LVL_WARN, "DefaultPolicy empty - make sure an explicit/organizational policy assigns the ID Vault"
 		envWarn = envWarn + 1
+	End If
+	' mail cluster: every member must be reachable (replicas are created there by AdminP)
+	If BR_SrvList(CfgS("MailClusterServers", ""), "") <> "" Then
+		BR_Log LVL_INFO, "Mail cluster: " & BR_SrvList(CfgS("MailClusterServers", ""), "") & " | CreateClusterReplicas=" & CfgS("CreateClusterReplicas", "1")
+		rl = Split(BR_SrvList(CfgS("MailClusterServers", ""), ""), ",")
+		For rj = 0 To UBound(rl)
+			envWarn = envWarn + BR_Check(BR_ServerReachable(CStr(rl(rj))), "Mail cluster member reachable: " & rl(rj))
+		Next
+		' AdminP "Check access": the requester (your admin ID) needs at least Reader access to each new mail file
+		If CfgB("CreateClusterReplicas", True) And Trim$(CfgS("MailACLManager", "")) = "" Then
+			BR_Log LVL_WARN, "CreateClusterReplicas=1 but MailACLManager is empty - set it to a group that contains your admin ID (e.g. LocalDomainAdmins), otherwise AdminP may refuse the Create Replica requests (guide B4)"
+			envWarn = envWarn + 1
+		End If
+	Else
+		BR_Log LVL_INFO, "MailClusterServers empty - no mail cluster: mail files get no replicas unless a mapping rule lists ClusterReplicas"
 	End If
 	If CfgB("DryRun", True) Then BR_Log LVL_INFO, "DryRun=1 (safe mode) is set"
 	BR_Log LVL_INFO, "Client platform " & gPlatform & " | operator " & gOperator
@@ -92,6 +110,19 @@ Sub Initialize
 			End If
 			If servers(LCase$(u.HomeServer)) <> "OK" Then issues = issues & "ERROR:HomeServer unreachable; "
 		End If
+		' replica servers (other mail cluster members or the rule's list)
+		If u.ClusterReplicas <> "" Then
+			rl = Split(u.ClusterReplicas, ",")
+			For rj = 0 To UBound(rl)
+				If Not IsElement(servers(LCase$(CStr(rl(rj))))) Then
+					If BR_ServerReachable(CStr(rl(rj))) Then servers(LCase$(CStr(rl(rj)))) = "OK" Else servers(LCase$(CStr(rl(rj)))) = "UNREACHABLE"
+					BR_Log LVL_INFO, "Replica server " & rl(rj) & ": " & servers(LCase$(CStr(rl(rj))))
+				End If
+				If servers(LCase$(CStr(rl(rj)))) <> "OK" Then issues = issues & "WARN:Replica server " & rl(rj) & " unreachable; "
+			Next
+		End If
+		hk = BR_IIf(u.HomeServer = "", "(none)", u.HomeServer) & " -> replicas: " & BR_IIf(u.ClusterReplicas = "", "none", u.ClusterReplicas)
+		If IsElement(repCount(hk)) Then repCount(hk) = repCount(hk) + 1 Else repCount(hk) = 1
 
 		' how many users each mapping rule catches (mapping test, written to _mapping.txt)
 		If IsElement(ruleCount(u.MapRule)) Then ruleCount(u.MapRule) = ruleCount(u.MapRule) + 1 Else ruleCount(u.MapRule) = 1
@@ -125,39 +156,59 @@ Sub Initialize
 		End If
 		Call BR_AppendLine(mapFile, "          THEN HomeServer=" & BR_IIf(gMap(ri).HomeServer = "", "(default " & CfgS("DefaultHomeServer", "") & ")", gMap(ri).HomeServer) & _
 		"  OrgUnit=" & BR_IIf(gMap(ri).OrgUnit = "", "(default)", gMap(ri).OrgUnit) & "  Policy=" & BR_IIf(gMap(ri).Policy = "", "(default)", gMap(ri).Policy) & _
-		"  Groups=" & BR_IIf(gMap(ri).Groups = "", "(default)", gMap(ri).Groups) & "  VaultServer=" & BR_IIf(gMap(ri).VaultServer = "", "(default)", gMap(ri).VaultServer))
+		"  Groups=" & BR_IIf(gMap(ri).Groups = "", "(default)", gMap(ri).Groups) & "  VaultServer=" & BR_IIf(gMap(ri).VaultServer = "", "(default)", gMap(ri).VaultServer) & _
+		"  ClusterReplicas=" & BR_IIf(gMap(ri).ClusterReplicas = "", "(auto: other mail cluster members)", BR_IIf(gMap(ri).ClusterReplicas = "-", "(none)", gMap(ri).ClusterReplicas)))
 	Next
 	If IsElement(ruleCount("defaults")) Then Call BR_AppendLine(mapFile, "No rule matched: " & ruleCount("defaults") & " users -> all defaults from bulkreg.ini")
+	Call BR_AppendLine(mapFile, "")
+	Call BR_AppendLine(mapFile, "Result per home server (users -> where the mail file replicas will be created):")
+	ForAll rc In repCount
+		Call BR_AppendLine(mapFile, "  " & ListTag(rc) & " : " & rc & " users")
+	End ForAll
 
 	' ---------- mail folders to pre-create (prerequisite B4) ----------
+	' Members of the mail cluster share ONE set of folders (every member holds every
+	' mail file: the primary on the home server, replicas on the others), so the
+	' users of all home servers in the cluster are added up.
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String
 	Dim need As Integer, fldFile As String, prefix As String, fmax As Long
+	Dim keyUsers List As Long, keyRep List As String, keyHomes List As String, mk As String, onSrv As String
 	prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
 	fmax = CfgL("MailFolderMax", 0)
 	fldFile = BR_CfgDir("AuditDir", "audit") & "BulkReg_Preflight_" & gRunID & "_mailfolders.txt"
-	If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" Then
-		Call BR_AppendLine(fldFile, "BulkReg " & BR_VERSION & " - mail folders to create on each home server (" & CfgL("MailFilesPerFolder", 1000) & " mail files per folder)")
-		Call BR_AppendLine(fldFile, "Create them in the Domino DATA directory of each server BEFORE the first batch (guide B4).")
-		Call BR_AppendLine(fldFile, "")
-	End If
 	ForAll c In srvCount
-		srvText = srvText & "   " & ListTag(c) & " : " & c
+		srvText = srvText & "   " & ListTag(c) & " : " & c & Chr$(10)
 		BR_Log LVL_INFO, "Candidates for home server " & ListTag(c) & " : " & c
-		If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" And ListTag(c) <> "(none)" Then
-			need = BR_MailFoldersNeeded(ListTag(c), CLng(c), mfNames, mfCounts, mfScanned)
-			srvText = srvText & "  -> needs " & prefix & "1.." & prefix & need
-			BR_Log LVL_INFO, "Mail folders needed on " & ListTag(c) & ": " & prefix & "1.." & prefix & need
-			Call BR_AppendLine(fldFile, ListTag(c) & " : " & c & " users -> folders " & prefix & "1 .. " & prefix & need)
+		If ListTag(c) <> "(none)" Then
+			mk = BR_MailKey(ListTag(c))
+			If IsElement(keyUsers(mk)) Then keyUsers(mk) = keyUsers(mk) + c Else keyUsers(mk) = c
+			keyRep(mk) = ListTag(c)
+			If IsElement(keyHomes(mk)) Then keyHomes(mk) = keyHomes(mk) & ", " & ListTag(c) & " (" & c & ")" Else keyHomes(mk) = ListTag(c) & " (" & c & ")"
+		End If
+	End ForAll
+	If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" Then
+		Call BR_AppendLine(fldFile, "BulkReg " & BR_VERSION & " - mail folders to create (" & CfgL("MailFilesPerFolder", 1000) & " mail files per folder)")
+		Call BR_AppendLine(fldFile, "Create them directly under the Domino DATA directory of EVERY server listed, BEFORE the first batch (guide B4).")
+		Call BR_AppendLine(fldFile, "")
+		srvText = srvText & Chr$(10) & "Mail folders to create:" & Chr$(10)
+		ForAll ku In keyUsers
+			mk = ListTag(ku)
+			need = BR_MailFoldersNeeded(keyRep(mk), CLng(ku), mfNames, mfCounts, mfScanned)
+			If mk = "mail cluster" Then onSrv = BR_SrvList(CfgS("MailClusterServers", ""), "") Else onSrv = keyRep(mk)
+			Call BR_AppendLine(fldFile, BR_IIf(mk = "mail cluster", "MAIL CLUSTER", "SERVER " & keyRep(mk)) & " : " & ku & " new users (home servers: " & keyHomes(mk) & ")")
+			Call BR_AppendLine(fldFile, "  folders " & prefix & "1 .. " & prefix & need & "   on: " & onSrv)
 			Call BR_AppendLine(fldFile, "  Windows server (PowerShell):  1.." & need & " | % { New-Item -ItemType Directory -Force ""<DataDir>\" & prefix & "$_"" }")
 			Call BR_AppendLine(fldFile, "  Linux server (as root):       for i in $(seq 1 " & need & "); do mkdir -p <DataDir>/" & prefix & "$i; done; chown <notes>:<notes> <DataDir>/" & prefix & "*")
+			Call BR_AppendLine(fldFile, "")
+			srvText = srvText & "   " & prefix & "1.." & prefix & need & " on " & onSrv & Chr$(10)
+			BR_Log LVL_INFO, "Mail folders needed: " & prefix & "1.." & prefix & need & " on " & onSrv & " (" & ku & " users)"
 			If fmax > 0 And need > fmax Then
-				BR_Log LVL_WARN, "MailFolderMax=" & fmax & " but " & ListTag(c) & " needs " & need & " folders - create them and raise MailFolderMax"
-				srvText = srvText & "  (MailFolderMax=" & fmax & " too low!)"
+				BR_Log LVL_WARN, "MailFolderMax=" & fmax & " but " & need & " folders are needed on " & onSrv & " - create them and raise MailFolderMax"
+				srvText = srvText & "   (MailFolderMax=" & fmax & " too low!)" & Chr$(10)
 				envWarn = envWarn + 1
 			End If
-		End If
-		srvText = srvText & Chr$(10)
-	End ForAll
+		End ForAll
+	End If
 	Dim summary As String
 	summary = "Environment errors=" & envErr & " warnings=" & envWarn & _
 	" | Candidates=" & col.Count & " OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr

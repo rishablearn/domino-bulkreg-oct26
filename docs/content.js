@@ -1,11 +1,11 @@
-// BulkReg Administrator Guide v3.1 (BulkReg 3.1.0) — single source for Word + Web.
+// BulkReg Administrator Guide v3.2 (BulkReg 3.2.0) — single source for Word + Web.
 // Assumes NOTHING exists yet. Every procedure: purpose, who/where, before you start,
 // numbered single-action steps with expected results, and a "Done when" check.
 const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "3.1",
+  version: "3.2",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -38,11 +38,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 3.1.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 3.2.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["3.2", "**Release 3.2.0.** **Mail cluster replicas:** list the cluster once (`MailClusterServers`); 03 requests a replica of every new mail file on each other member through AdminP (Create Replica), 04 verifies them (REPLICAS_OK). Mail file names and numbered folders are allocated once for the whole cluster. Mapping column 8 ClusterReplicas. **Batches of 1000** (BatchSize default). Worked example for one cluster of 4 servers (2 DC, 2 DR) with 2 × 2500 users (B12.7). New D3c; B4 cluster prerequisites; pattern ranges `[a-l]*` documented."],
   ["3.1", "**Release 3.1.0.** server_mapping.csv fully documented (B12.1–B12.9: format, matching, fields, order, step-by-step, worked examples, testing, common mistakes) and a self-explaining template. Preflight writes a **mapping test** (_mapping.txt: users per rule). Agents stop if a mapping rule still contains a <placeholder>; warning when no catch-all rule exists. Consistency check of all settings, names and versions."],
   ["3.0", "**Release 3.0.0.** One version number across the whole kit: guide 3.0, library and all agents 3.0.0, bulkreg.ini, server_mapping.csv, PowerShell helper, Audit Viewer, README, VERSION and CHANGELOG.md. Content as in 2.9."],
   ["2.9", "**DryRun explained** (D3b, bulkreg.ini). **Central BulkReg log database is now required** (B15): every run, every action and one AUDIT entry per user are written there; agents stop if it cannot be opened."],
@@ -89,6 +90,7 @@ tbl(["Object", "Canonical form", "Abbreviated form", "Notes"], [
   ["Registration / admin server", "`CN=DominoAdmin/O=Demo`", "`DominoAdmin/Demo`", "Holds the master Domino Directory"],
   ["Home (mail) servers", "`CN=DominoADMail/O=Demo`, `CN=DominoADMail2/O=Demo`", "`DominoADMail/Demo`, `DominoADMail2/Demo`", "BulkReg accepts both forms anywhere a server is entered"],
   ["Server with an OU", "`CN=DominoADMail/OU=EMEA/O=Demo`", "`DominoADMail/EMEA/Demo`", "Same rule"],
+  ["Mail cluster (4 servers)", "`CN=DominoADMail/O=Demo`, `CN=DominoADMail2/O=Demo` (DC); `CN=DominoADMailDR1/O=Demo`, `CN=DominoADMailDR2/O=Demo` (DR)", "`DominoADMail/Demo`, `DominoADMail2/Demo`, `DominoADMailDR1/Demo`, `DominoADMailDR2/Demo`", "Home servers in DC; every member holds a replica of every mail file"],
   ["Vault server", "`CN=DominoVault/O=Demo`", "`DominoVault/Demo`", "Use the name shown in the vault document"],
   ["Organization certifier", "`O=Demo`", "`/Demo`", "CertifierName for the Domino CA"],
   ["OU certifier", "`OU=Sales/O=Demo`", "`/Sales/Demo`", "Registers users as John Smith/Sales/Demo"],
@@ -117,7 +119,8 @@ code(`FOR EVERY BATCH:
          -> BATCH-<id>_results.csv     (batch is now DONE)
  7. bulkreg.ini: DryRun=1
  8. Actions > BulkReg > 04 - Verify Registration and Vault   (choose the batch)
-         -> BATCH-<id>_verify_<run>.csv : REGISTERED + IN_VAULT + MAILFILE_OK ?
+         -> BATCH-<id>_verify_<run>.csv : REGISTERED + IN_VAULT + MAILFILE_OK + REPLICAS_OK ?
+         (cluster replicas are made by AdminP: run 04 again later until all are REPLICAS_OK)
  9. Hand over passwords, delete secrets, then the next batch: back to step 1 (or 2)
 
 FIRST TIME ONLY : run steps 2-8 once with a 2-user pilot batch (C5).
@@ -130,7 +133,7 @@ tbl(["#", "Do this", "Agent / action", "DryRun", "Input", "Output", "Go on only 
   ["5", "Switch to live", "Edit bulkreg.ini", "set **0**", "–", "–", "Change approved"],
   ["6", "Register", "**03 - Register Batch** (type the batch ID)", "**0**", "same BATCH-<id>.csv", "BATCH-<id>_results.csv (batch DONE), password file", "Run finished"],
   ["7", "Back to safe mode", "Edit bulkreg.ini", "set **1**", "–", "–", "–"],
-  ["8", "Check the result", "**04 - Verify Registration and Vault** (choose the batch)", "any", "BATCH-<id>.csv", "BATCH-<id>_verify_<run>.csv", "REGISTERED + IN_VAULT + MAILFILE_OK"],
+  ["8", "Check the result", "**04 - Verify Registration and Vault** (choose the batch)", "any", "BATCH-<id>.csv", "BATCH-<id>_verify_<run>.csv", "REGISTERED + IN_VAULT + MAILFILE_OK + REPLICAS_OK (repeat later if replicas are still missing)"],
   ["9", "Close", "Hand over passwords; PurgeSecrets", "1", "password file, ids", "–", "Then start the next batch at step 1 (or 2)"],
 ], [400, 1500, 2000, 1000, 1500, 1700, 1260]);
 h3("Rules");
@@ -139,7 +142,8 @@ ul(
   "**Always run 03 twice per batch:** first with DryRun=1, then with DryRun=0, on the **same** batch file.",
   "**One LIVE run per batch.** After it, the batch is DONE and 03 refuses it. Users not registered (FAILED, NOT_PROCESSED) are picked up again by the next 02.",
   "**01 before 02** the first time and whenever AD data, server_mapping.csv or servers changed. Otherwise it is recommended before each batch.",
-  "**04 after every LIVE run**, and again later for users that were still pending (vault or mail file).",
+  "**04 after every LIVE run**, and again later for users that were still pending (vault, mail file or cluster replicas).",
+  "**Batch size 1000** (`BatchSize=1000`): one batch fills about one numbered mail folder. 2500 users = 3 batches (1000 + 1000 + 500).",
   "**Only one batch open at a time** is the simplest way to work. 02 never puts a user into two open batches.",
   "**05 is never part of this sequence.**",
   "**DryRun only affects 03** (D3b). Every agent writes to the central log database (B15)."
@@ -155,15 +159,15 @@ pb();
 h1("Part A – Understand");
 h2("A1 What BulkReg does");
 p("Directory Sync (DirSync) copies Active Directory users into the Domino Directory (`names.nsf`) as **Person documents**. These users can be found in Domino, but they have **no Notes ID**, no certificate and no mail file (Mail system: *Other Internet Mail*).");
-p("BulkReg turns them into **full Domino users**, in reviewed batches. Each user gets a certified **Notes ID**, which is stored in the **ID Vault**, and a **Domino mail file** on the right **home server**. The Person document then points to that mail file. Every step is logged for audit.");
+p("BulkReg turns them into **full Domino users**, in reviewed batches. Each user gets a certified **Notes ID**, which is stored in the **ID Vault**, and a **Domino mail file** on the right **home server**. The Person document then points to that mail file. If the home server belongs to a **mail cluster**, a **replica** of the mail file is created on every other cluster member (for example the DR servers). Every step is logged for audit.");
 p("It uses HCL's documented API for this case, `NotesRegistration.ContactNoteID`: *“Used to register users who have existing Person documents created by syncing Active Directory users into the Domino directory.”* The existing Person document is upgraded in place, so no duplicate is created.");
 h2("A2 How a batch works: you always see who is registered");
 tbl(["Stage", "Tool", "What happens", "Changes Domino?"], [
-  ["1 Build", "Agent 02", "Picks the next batch (default 500) of unregistered DirSync users. Works out each user's home server, **mail file**, OU, policy, groups and vault. Validates them and writes a **batch file** (CSV) plus a summary.", "No"],
+  ["1 Build", "Agent 02", "Picks the next batch (default 1000) of unregistered DirSync users. Works out each user's home server, **mail file**, OU, policy, groups and vault. Validates them and writes a **batch file** (CSV) plus a summary.", "No"],
   ["2 Review", "You, in Excel or Notepad", "Read the list. Exclude users (Include=N) or correct their server, OU, policy, groups or vault. Save the file.", "No"],
   ["3 Dry run", "Agent 03, DryRun=1", "Simulates the batch and shows what would happen", "No"],
-  ["4 Register", "Agent 03, DryRun=0", "Shows totals per server. You type the batch ID to approve. Only the approved rows are registered: Notes ID + mail file + vault.", "**Yes**"],
-  ["5 Verify", "Agent 04", "Checks every user of the batch: registered? ID in the vault? Mail file present on the home server?", "No"],
+  ["4 Register", "Agent 03, DryRun=0", "Shows totals per server. You type the batch ID to approve. Only the approved rows are registered: Notes ID + mail file + vault, plus AdminP requests for the mail file replicas on the other cluster members.", "**Yes**"],
+  ["5 Verify", "Agent 04", "Checks every user of the batch: registered? ID in the vault? Mail file present on the home server? Replica present on every other cluster member?", "No"],
 ], [1100, 1700, 5260, 1300]);
 h2("A3 Everything you will create in Part B");
 tbl(["Item", "Where", "Created in"], [
@@ -175,7 +179,8 @@ tbl(["Item", "Where", "Created in"], [
   ["Policy that assigns the vault: explicit (one per vault or region) or organizational", "names.nsf > Policies", "B8"],
   ["Working folders", "`C:\\BulkReg\\` on the admin workstation", "B9"],
   ["The BulkReg kit (code, templates, docs)", "`C:\\BulkReg-kit\\`", "B10"],
-  ["Configuration: bulkreg.ini, server_mapping.csv", "`C:\\BulkReg\\config\\`", "B11, B12"],
+  ["Configuration: bulkreg.ini (incl. the mail cluster list), server_mapping.csv", "`C:\\BulkReg\\config\\`", "B11, B12"],
+  ["Numbered mail folders and replica rights on every mail cluster member", "Domino data directory and Server documents", "B4"],
   ["Tool database bulkreg.nsf", "Local Notes data directory", "B13, B14"],
   ["Central log database bulkreg_log.nsf (required)", "A Domino server, e.g. the registration server", "B15"],
   ["Script library and 5 agents", "Inside bulkreg.nsf", "B17, B18"],
@@ -203,7 +208,8 @@ tbl(["#", "Item", "Example", "Your value"], [
   ["1", "Domino domain and organization", "Demo", ""],
   ["2", "Registration server (holds the master Domino Directory)", "DominoAdmin/Demo", ""],
   ["3", "Home servers users will be assigned to (canonical or abbreviated)", "CN=DominoADMail/O=Demo, DominoADMail2/Demo, DominoADMail3/Demo", ""],
-  ["4", "How users are split across home servers (department, email domain, location…)", "@emea.demo.com → DominoADMail2/Demo", ""],
+  ["3a", "Mail cluster: ALL members (2–6 servers), or none", "DominoADMail/Demo, DominoADMail2/Demo (DC), DominoADMailDR1/Demo, DominoADMailDR2/Demo (DR)", ""],
+  ["4", "How users are split across home servers (waves of N users, department, email domain, location…)", "2500 → DominoADMail/Demo, then 2500 → DominoADMail2/Demo", ""],
   ["5", "Certification method: Domino CA (recommended) or certifier ID file", "Domino CA", ""],
   ["6", "CA-enabled certifier name (CA) or certifier ID file path", "O=Demo or OU=Sales/O=Demo", ""],
   ["7", "ID Vault name(s) and vault server(s)", "DemoVault on DominoVault/Demo (CN=DominoVault/O=Demo)", ""],
@@ -212,12 +218,12 @@ tbl(["#", "Item", "Example", "Your value"], [
   ["10", "Optional organizational unit (OU) per group of users", "EMEA", ""],
   ["11", "Optional groups to add new users to", "BR-EMEA", ""],
   ["11a", "Mail file naming and folders (D3a)", "last name; mail1, mail2 … max 1000 each → mail1\\smith.nsf", ""],
-  ["11d", "Users per home server and number of mail folders to create (1 per 1000 users)", "DominoADMail/Demo: 5000 users → 5 folders (mail1–mail5)", ""],
+  ["11d", "Users per home server (or in the whole mail cluster) and number of mail folders to create (1 per 1000 users)", "Mail cluster: 2 × 2500 = 5000 users → 5 folders (mail1–mail5) on all 4 members", ""],
   ["11b", "Mail template available on every home server", "the template your mail users use (e.g. mail12.ntf)", ""],
   ["11c", "Optional: Manager of new mail files, quota (MB)", "LocalDomainAdmins, 2048", ""],
   ["12", "Admin ID that will run BulkReg", "Admin User/Demo", ""],
   ["13", "Windows admin workstation name", "ADMIN-PC01", ""],
-  ["14", "Batch size", "500", ""],
+  ["14", "Batch size", "1000", ""],
   ["15", "Change ticket number", "CHG000123", ""],
 ], [500, 4300, 2700, 1860]);
 done("Every row has a confirmed value (rows 10 and 11 may be empty).");
@@ -265,8 +271,8 @@ ol(
   "Click **OK** to save the ACL.",
   "Wait for the ACL change to reach the server you work on. It is immediate on the registration server itself."
 );
-h3("Create the numbered mail folders on every home server");
-p("Create the numbered mail folders in advance on every home server, so registration never depends on Domino creating a folder. Create them **directly in the Domino data directory**, next to the existing `mail` folder, **not inside it**:");
+h3("Create the numbered mail folders on every home server and every mail cluster member");
+p("Create the numbered mail folders in advance on every home server **and, with a mail cluster, on every other cluster member** (the replicas use the same path), so registration never depends on Domino creating a folder. Create them **directly in the Domino data directory**, next to the existing `mail` folder, **not inside it**:");
 code(`<Domino data directory>            e.g. D:\\Domino\\Data   or   /local/notesdata
   |-- names.nsf, log.nsf, certlog.nsf ...
   |-- mail\\       EXISTING mail files: left untouched; their names are checked for uniqueness
@@ -275,10 +281,10 @@ code(`<Domino data directory>            e.g. D:\\Domino\\Data   or   /local/not
   |-- mail3\\ ...  one folder per 1000 users, up to MailFolderMax
 
 Person document after registration:  MailFile = mail1\\smith.nsf   (relative to the data directory)`);
-p("You need **one folder per 1000 users** (`MailFilesPerFolder`) on each server:");
-tbl(["Users on that home server", "Folders to create", "Names"], [
+p("You need **one folder per 1000 users** (`MailFilesPerFolder`) on each server. **Mail cluster:** add up the users of **all** home servers in the cluster, because every member holds every mail file (the primary on the home server, replicas on the others), and BulkReg fills the folders once for the whole cluster.");
+tbl(["Users on that home server (or in the whole mail cluster)", "Folders to create", "Names"], [
   ["1 – 1,000", "1", "mail1"],
-  ["5,000", "5", "mail1 … mail5"],
+  ["5,000 (e.g. 2 home servers × 2,500 in one cluster)", "5 on **each** of the 4 cluster members", "mail1 … mail5"],
   ["10,000", "10", "mail1 … mail10"],
   ["N", "N ÷ 1000, rounded up", "mail1 … mailN"],
 ], [3200, 2600, 3560]);
@@ -298,7 +304,7 @@ Linux server (as root; notes = the OS account that runs Domino):
 olc(
   "On Windows, make sure the account that runs the Domino service has **Modify** rights on the new folders. They normally inherit from the data directory.",
   "In Domino Administrator, select the server and open the **Files** tab. Press **F9** to refresh. *Result:* mail1 … mail5 appear at the **same level as mail** in the folder list, not under it.",
-  "Repeat for every home server, using its own number of folders.",
+  "Repeat for every home server **and every other mail cluster member** (worksheet row 3a). In a cluster, create the **same** folders on all members.",
   "Write the number of folders you created into the worksheet (row 11d). It goes into `MailFolderMax` in B11. Use the **lowest** number created on any server, or create the same number on all servers."
 );
 h3("Allow your admin ID to create mail files on every home server");
@@ -310,7 +316,16 @@ ol(
   "Check that the mail template from worksheet row 11b exists on every home server (**Files** tab of each server, filter on .ntf).",
   "On the **registration server**, check that the Certification Log `certlog.nsf` exists in the data directory (**Files** tab) and that your admin ID can write to it. If it is missing, create it with **File > Application > New** on that server from the **Certification Log** template (certlog.ntf, under **Show advanced templates**)."
 );
-done("Your admin ID has Editor access with [UserCreator] and [UserModifier] (and the Policy roles if needed) in names.nsf. The numbered mail folders exist on every home server. Your admin ID can create databases there, and the mail template exists on each of them.");
+h3("Mail cluster only: allow AdminP to create the mail file replicas");
+p("Agent 03 asks the Administration Process (AdminP) to create a replica of each new mail file on every other cluster member (`NotesAdministrationProcess.CreateReplica`, the same request as **Database > Create Replica** in Domino Administrator). HCL: AdminP on the source server first checks that the **requester and the destination server have at least Reader access** to the database; for cluster mates it then creates the replica immediately (*Accelerated create replica*). If that is not possible, a *Create replica* request runs on the destination server, which needs the requester and the source server to have **Create Replica access** there.");
+ol(
+  "**Cluster:** click the **Configuration** tab > **Server > Clusters**. *Result:* one cluster lists all members from worksheet row 3a (for example the 2 DC and 2 DR servers). On a member's console, `show cluster` lists the same servers.",
+  "**Create replica rights:** open each cluster member's Server document > **Edit Server** > **Security** tab. In **Create new replicas**, make sure your admin ID (or a group it is in, e.g. LocalDomainAdmins) **and** the other cluster members (e.g. LocalDomainServers) are listed. Also check **Create databases & templates**. Click **Save & Close**. Repeat for every member.",
+  "**Reader access to the new mail files:** in bulkreg.ini set `MailACLManager` to a group that contains your admin ID, for example `LocalDomainAdmins` (B11). The mail template normally gives LocalDomainServers Manager access; check the template's ACL on the home servers.",
+  "**Connection documents:** HCL notes that AdminP assumes Connection documents exist to schedule replication between the source and destination servers. Check **Configuration > Server > Connections** for each home server ↔ each other member.",
+  "**AdminP running:** on every member, `show tasks` lists the Administration Process. admin4.nsf replicates within the domain."
+);
+done("Your admin ID has Editor access with [UserCreator] and [UserModifier] (and the Policy roles if needed) in names.nsf. The numbered mail folders exist on every home server (and every cluster member). Your admin ID can create databases there, and the mail template exists on each of them. Mail cluster: all members are in one cluster, may create replicas for your admin ID and for each other, and MailACLManager is set.");
 
 // ---------- B5
 h2("B5 Set up certification");
@@ -465,7 +480,9 @@ tbl(["Key", "Enter", "From"], [
   ["DefaultPolicy", "Explicit policy **exactly** as listed, e.g. `*/DirSync-Vault`. **Empty** with an organizational policy.", "Worksheet 9"],
   ["OrgPolicyAssignsVault", "`1` if an organizational policy (`*/Demo`, `*/Sales/Demo`) assigns the vault, otherwise `0`", "B8"],
   ["VaultServer", "The vault server, e.g. `DominoVault/Demo` (as shown in the vault document)", "Worksheet 7"],
-  ["BatchSize", "`500` or your value", "Worksheet 14"],
+  ["BatchSize", "`1000` (one numbered mail folder per batch)", "Worksheet 14"],
+  ["MailClusterServers", "**All** members of the mail cluster, comma separated, e.g. `DominoADMail/Demo,DominoADMail2/Demo,DominoADMailDR1/Demo,DominoADMailDR2/Demo`. Empty = no cluster, no replicas.", "Worksheet 3a"],
+  ["CreateClusterReplicas", "`1`: 03 requests the replicas through AdminP (`0` = you create them yourself)", "–"],
   ["MailFileNaming", "`LASTNAME` (smith.nsf), `FIRSTINITIAL_LASTNAME` (jsmith.nsf) or `SHORTNAME`", "Worksheet 11a"],
   ["MailFileCollision", "`SUFFIX` (smith2.nsf …) or `ERROR` (row excluded)", "Worksheet 11a"],
   ["MailFolderMode", "`NUMBERED` (new mail files in mail1, mail2 … under the data directory)", "Worksheet 11a"],
@@ -473,9 +490,9 @@ tbl(["Key", "Enter", "From"], [
   ["MailFilesPerFolder", "`1000`", "–"],
   ["MailExistingFolders", "`mail`: your existing mail folder(s). Their file names are checked so no duplicate is created; BulkReg never writes there.", "–"],
   ["MailFileDir", "Only used with `MailFolderMode=SINGLE`. Leave `mail`.", "–"],
-  ["MailFolderMax", "The number of folders you created in B4, e.g. `5` for mail1–mail5", "Worksheet 11d"],
+  ["MailFolderMax", "The number of folders you created in B4, e.g. `5` for mail1–mail5 (mail cluster: users of all home servers together)", "Worksheet 11d"],
   ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default)", "Worksheet 11b"],
-  ["MailACLManager / MailQuotaSizeLimit", "Optional: Manager of each new mail file; quota in MB (0 = none)", "Worksheet 11c"],
+  ["MailACLManager / MailQuotaSizeLimit", "Manager of each new mail file (**required with a mail cluster**: a group containing your admin ID, e.g. `LocalDomainAdmins`); quota in MB (0 = none)", "Worksheet 11c"],
   ["LogServer / LogDb", "**Required.** The server and file of the central log database from B15, e.g. `DominoAdmin/Demo` and `bulkreg_log.nsf`", "B15"],
   ["DryRun", "Leave `1`", "–"],
 ], [2300, 5100, 1960]);
@@ -485,26 +502,29 @@ done("bulkreg.ini contains no `<` or `>` characters except in comment lines (sta
 h2("B12 Fill in server_mapping.csv (which user goes to which server)");
 meta("Domino administrator", "Notepad", "C:\\BulkReg\\config\\server_mapping.csv");
 h3("B12.1 What the mapping file does");
-p("BulkReg has to decide, for **every** DirSync user, where that user goes. server_mapping.csv holds that decision as a short list of **rules**. For each user BulkReg reads the rules **from top to bottom** and uses the **first rule that matches**. A user who matches no rule gets the `Default…` values from bulkreg.ini.");
+p("BulkReg has to decide, for **every** DirSync user, which **home server** gets that user's mail file. server_mapping.csv holds that decision as a short list of **rules**. For each user BulkReg reads the rules **from top to bottom** and uses the **first rule that matches**. A user who matches no rule gets the `Default…` values from bulkreg.ini.");
 tbl(["A matching rule decides", "Example value", "Effect"], [
   ["Home server", "DominoADMail2/Demo", "The server where the user's mail file is created (mail1\\smith.nsf on that server)"],
   ["OrgUnit", "EMEA", "The user's Notes name becomes John Smith/EMEA/Demo"],
   ["Policy", "*/DirSync-Vault-EMEA", "Explicit policy given at registration (assigns the ID Vault)"],
   ["Groups", "BR-EMEA", "The user is added to these groups"],
   ["VaultServer", "DominoVaultEMEA/Demo", "Where BulkReg checks that the ID arrived in the vault"],
+  ["ClusterReplicas (rarely needed)", "empty", "Empty = automatic: a replica on every **other** member of the mail cluster (MailClusterServers in bulkreg.ini)"],
 ], [2300, 2500, 4560]);
-note("**Only one home server?** Then you need only one line, the catch-all: `*;*;DominoADMail/Demo;;;;`. Everything else comes from bulkreg.ini. Skip to B12.6, step 5.");
+note("**Cluster replicas are not set in the mapping.** You list the mail cluster **once** in bulkreg.ini (`MailClusterServers`, B11). Every user whose home server is in that list automatically gets a replica of the mail file on all the other members. The mapping only chooses the **home server**.");
+note("**Only one home server at a time?** Then you need only one line, the catch-all: `*;*;DominoADMail/Demo;;;;;`. Everything else comes from bulkreg.ini. For two home servers filled one after the other, see **B12.7 Example 1**.");
 h3("B12.2 The format of a rule");
-p("One rule is one line with **7 columns separated by semicolons** (`;`). Keep all 6 semicolons, even when a column is empty. Lines starting with `#` are comments. Line 1, the header, must stay unchanged.");
-code(`InternetAddress;*@emea.demo.com;DominoADMail2/Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo
+p("One rule is one line with **8 columns separated by semicolons** (`;`). Keep all 7 semicolons, even when a column is empty. Rules with 7 columns (from release 3.1) still work; column 8 is then automatic. Lines starting with `#` are comments. Line 1, the header, must stay unchanged.");
+code(`InternetAddress;*@emea.demo.com;DominoADMail2/Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo;
 
-column 1  MatchField    InternetAddress
-column 2  MatchPattern  *@emea.demo.com
-column 3  HomeServer    DominoADMail2/Demo
-column 4  OrgUnit       EMEA
-column 5  Policy        */DirSync-Vault-EMEA
-column 6  Groups        BR-EMEA
-column 7  VaultServer   DominoVaultEMEA/Demo`);
+column 1  MatchField       InternetAddress
+column 2  MatchPattern     *@emea.demo.com
+column 3  HomeServer       DominoADMail2/Demo
+column 4  OrgUnit          EMEA
+column 5  Policy           */DirSync-Vault-EMEA
+column 6  Groups           BR-EMEA
+column 7  VaultServer      DominoVaultEMEA/Demo
+column 8  ClusterReplicas  (empty = automatic: the other mail cluster members)`);
 tbl(["#", "Column", "Required", "What to enter", "Empty means", "`-` means"], [
   ["1", "MatchField", "Yes", "Name of a Person document field to test (B12.4), or `*` for every user", "–", "–"],
   ["2", "MatchPattern", "Yes", "The value to compare with (B12.3)", "same as `*`", "–"],
@@ -513,12 +533,13 @@ tbl(["#", "Column", "Required", "What to enter", "Empty means", "`-` means"], [
   ["5", "Policy", "No", "Explicit policy exactly as listed in the Policies view, e.g. `*/DirSync-Vault-EMEA`", "DefaultPolicy", "no explicit policy (an organizational policy assigns the vault)"],
   ["6", "Groups", "No", "Group names separated by commas, e.g. `BR-EMEA,All-EMEA`", "DefaultGroups", "no groups"],
   ["7", "VaultServer", "No", "Vault server name, e.g. `DominoVaultEMEA/Demo`", "VaultServer from bulkreg.ini", "not allowed"],
+  ["8", "ClusterReplicas", "No", "Only for exceptions: servers that get a replica, comma separated, e.g. `DominoADMail2/Demo`", "**automatic**: all other members of MailClusterServers", "no replicas"],
 ], [400, 1500, 900, 3400, 1500, 1660]);
 h3("B12.3 How a rule matches");
 ol(
   "BulkReg reads the field named in **MatchField** from the user's Person document. If the field has several values, the first one is used.",
   "Both the field value and the pattern are compared **without regard to upper/lower case**.",
-  "The pattern may contain `*` (any text, also none) and `?` (exactly one character). Without `*` or `?` the value must match exactly.",
+  "The pattern may contain `*` (any text, also none), `?` (exactly one character), `#` (one digit) and `[a-l]` (one character from a range). Without these the value must match exactly.",
   "If it matches, this rule is used and the following rules are ignored for this user."
 );
 tbl(["MatchPattern", "Matches", "Does not match"], [
@@ -527,9 +548,10 @@ tbl(["MatchPattern", "Matches", "Does not match"], [
   ["`*london*`", "London, Office London 2, london", "Londn"],
   ["`Finance`", "Finance, finance", "Finance EMEA"],
   ["`HR-??`", "HR-UK, HR-DE", "HR-USA, HR"],
+  ["`[a-l]*`", "Adams, Brown, Lee (first letter a to l)", "Miller, Smith, Zhang"],
   ["`*`", "every value, also an empty field", "–"],
 ], [2200, 3700, 3460]);
-warn("Do not use `#`, `[` or `]` in a pattern: they have a special meaning (digit, character range) and give unexpected results.");
+note("To match `#`, `?`, `*` or `[` literally, put the character in brackets, for example `[#]`.");
 h3("B12.4 Which fields can you use, and how to see their values");
 ol(
   "In Domino Administrator, open **People & Groups > People** and select a DirSync user.",
@@ -542,41 +564,77 @@ tbl(["Typical field", "Typical use"], [
   ["Department", "Split by department (Sales*, Finance)"],
   ["CompanyName", "Split by company or subsidiary"],
   ["Location / OfficeCity / OfficeCountry", "Split by site or country"],
+  ["LastName", "Split alphabetically ([a-l]*), roughly in halves"],
   ["ShortName or InternetAddress (exact value)", "Exceptions for single users"],
 ], [3800, 5560]);
 note("Which fields contain data depends on your DirSync field mapping (Directory Sync configuration, Synchronization tab). Always check the Fields tab. If a field is empty for many users, a rule on it will not match them.");
 h3("B12.5 Order, defaults and the catch-all");
 ul(
   "**Order matters:** put exceptions and the most specific rules at the top, general rules below.",
-  "**Catch-all last:** end with `*;*;<server>;;;;` so that every user is mapped. Without it, unmatched users get the Default… values. Preflight warns about this.",
-  "**Empty column:** use the default from bulkreg.ini. **Hyphen `-`:** explicitly none (OrgUnit, Policy, Groups only).",
+  "**Catch-all last:** end with `*;*;<server>;;;;;` so that every user is mapped. Without it, unmatched users get the Default… values. Preflight warns about this.",
+  "**Empty column:** use the default from bulkreg.ini (for ClusterReplicas: automatic). **Hyphen `-`:** explicitly none (OrgUnit, Policy, Groups, ClusterReplicas).",
   "**No placeholders:** a rule that still contains `<…>` stops every agent with a message naming the line."
 );
 h3("B12.6 Write the file, step by step");
 ol(
   "Open **Notepad** and choose **File > Open**. Set the file type to **All files** and open `C:\\BulkReg\\config\\server_mapping.csv`.",
-  "Read the comment block at the top. It summarises this procedure.",
+  "Read the comment block at the top. It summarises this procedure and contains your two-server, four-member cluster example.",
   "Go to the line `# ACTIVE RULES - edit below this line`.",
-  "For each group of users from worksheet row 4, add one rule **above** the last line. Start from the examples in the comment block: copy an example line, remove the leading `# ` and replace the example values with yours.",
-  "Change the last line, the catch-all, to your default home server, for example `*;*;DominoADMail/Demo;;;;`.",
-  "Check every rule: 7 columns, 6 semicolons, no `<` or `>`, server and policy names exactly as in Domino.",
+  "If users are split by a field (department, domain …): for each group of users from worksheet row 4, add one rule **above** the last line. Copy an example line, remove the leading `# ` and replace the example values with yours.",
+  "Change the last line, the catch-all, to your (first) home server, for example `*;*;DominoADMail/Demo;;;;;`.",
+  "Check every rule: 8 columns, 7 semicolons, no `<` or `>`, server and policy names exactly as in Domino.",
   "Choose **File > Save**, keeping the encoding **UTF-8**."
 );
 h3("B12.7 Worked examples");
-p("**Example 1: one home server.** Everybody goes to DominoADMail/Demo; policy, OU and groups come from bulkreg.ini.");
-code(`*;*;DominoADMail/Demo;;;;`);
+p("**Example 1 (your set-up): one mail cluster of 4 servers, 2500 users on each of the 2 DC home servers.** Two servers in the data centre (DC) are home servers; two servers in the disaster-recovery site (DR) only hold replicas. Every mail file ends up on all 4 servers.");
+code(`MAIL CLUSTER (4 members)
+  DC  DominoADMail/Demo      home server of users    1 - 2500
+  DC  DominoADMail2/Demo     home server of users 2501 - 5000
+  DR  DominoADMailDR1/Demo   replicas only
+  DR  DominoADMailDR2/Demo   replicas only
+  At the end every server holds all 5000 mail files.
+
+bulkreg.ini   (MailClusterServers is ONE line in the file)
+  MailClusterServers=DominoADMail/Demo,DominoADMail2/Demo,
+                     DominoADMailDR1/Demo,DominoADMailDR2/Demo
+  CreateClusterReplicas=1
+  MailACLManager=LocalDomainAdmins
+  BatchSize=1000
+  MailFilesPerFolder=1000
+  MailFolderMax=5     (5000 users -> mail1..mail5 on ALL 4 servers)`);
+p("The 2500/2500 split is done in **two waves**: one line in server_mapping.csv decides the home server, and you change it once, after the first 2500 users.");
+ol(
+  "**Wave 1.** The only active rule in server_mapping.csv is the catch-all for the first home server: `*;*;DominoADMail/Demo;;;;;`",
+  "Run 01 - Preflight Check. The `_mapping.txt` file shows `DominoADMail/Demo -> replicas: DominoADMail2/Demo,DominoADMailDR1/Demo,DominoADMailDR2/Demo`, and `_mailfolders.txt` lists mail1 … mail5 on all 4 servers.",
+  "Run the normal cycle (C2–C8) three times: 02 Build Batch → review → 03 dry run → 03 live → 04 Verify. The batches have 1000, 1000 and 500 users. After the third batch, 2500 users are registered on DominoADMail/Demo.",
+  "**Wave 2.** Change the active rule to the second home server and save: `*;*;DominoADMail2/Demo;;;;;`",
+  "Run 01 again, then the cycle three more times (1000 + 1000 + 500). Users registered in wave 1 are not picked again: they now have a Notes certificate.",
+  "Run 04 for each batch until all users show REGISTERED, IN_VAULT, MAILFILE_OK and **REPLICAS_OK 3/3**."
+);
+tbl(["Batch", "Wave / home server", "Users", "Mail folders filled (on all 4 servers)", "Replicas requested on"], [
+  ["1", "1 / DominoADMail", "1000", "mail1 (1000)", "DominoADMail2, DR1, DR2"],
+  ["2", "1 / DominoADMail", "1000", "mail2 (1000)", "DominoADMail2, DR1, DR2"],
+  ["3", "1 / DominoADMail", "500", "mail3 (500)", "DominoADMail2, DR1, DR2"],
+  ["4", "2 / DominoADMail2", "1000", "mail3 (500 → 1000), mail4 (500)", "DominoADMail, DR1, DR2"],
+  ["5", "2 / DominoADMail2", "1000", "mail4 (500 → 1000), mail5 (500)", "DominoADMail, DR1, DR2"],
+  ["6", "2 / DominoADMail2", "500", "mail5 (500 → 1000)", "DominoADMail, DR1, DR2"],
+], [800, 2000, 900, 3100, 2560]);
+p("Because the cluster is treated as **one** mail namespace, `smith.nsf` can exist only once in the whole cluster: a second Smith on DominoADMail2 becomes `smith2.nsf`, so his replica never collides with the first Smith's file on DominoADMail. Each server holds 5000 mail files at the end: 2500 primaries (on the two DC servers) and the replicas.");
+p("**Alternative without waves:** split by a field, for example by last name. The halves are not exactly 2500 each; check the counts in Preflight's `_mapping.txt` first.");
+code(`LastName;[a-l]*;DominoADMail/Demo;;;;;
+*;*;DominoADMail2/Demo;;;;;`);
 p("**Example 2: three servers by e-mail domain.** EMEA and APAC users get their own server, OU, explicit vault policy, group and vault; everyone else goes to DominoADMail/Demo with the defaults.");
-code(`InternetAddress;*@emea.demo.com;DominoADMail2/Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo
-InternetAddress;*@apac.demo.com;DominoADMail3/Demo;APAC;*/DirSync-Vault-APAC;BR-APAC;DominoVaultAPAC/Demo
-*;*;DominoADMail/Demo;;;;`);
+code(`InternetAddress;*@emea.demo.com;DominoADMail2/Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo;
+InternetAddress;*@apac.demo.com;DominoADMail3/Demo;APAC;*/DirSync-Vault-APAC;BR-APAC;DominoVaultAPAC/Demo;
+*;*;DominoADMail/Demo;;;;;`);
 p("**Example 3: by department, with an organizational policy.** Sales users get the OU Sales (John Smith/Sales/Demo). The organizational policy `*/Sales/Demo` assigns their vault, so Policy is `-`.");
-code(`Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;
-Department;Finance;DominoADMail2/Demo;Finance;*/DirSync-Vault;BR-Finance;
-*;*;DominoADMail/Demo;;;;`);
-p("**Example 4: an exception for one person.** The exception must come before the general rule that would otherwise catch the user.");
-code(`InternetAddress;ceo@demo.com;DominoADMail/Demo;-;*/DirSync-Vault;VIP;
-InternetAddress;*@demo.com;DominoADMail2/Demo;;;;
-*;*;DominoADMail/Demo;;;;`);
+code(`Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
+Department;Finance;DominoADMail2/Demo;Finance;*/DirSync-Vault;BR-Finance;;
+*;*;DominoADMail/Demo;;;;;`);
+p("**Example 4: exceptions.** The CEO's mail file is replicated only within DC; IT test users get no replicas at all. Exceptions must come before the general rule that would otherwise catch the user.");
+code(`InternetAddress;ceo@demo.com;DominoADMail/Demo;-;*/DirSync-Vault;VIP;;DominoADMail2/Demo
+Department;IT-Test;DominoADMail/Demo;;;;;-
+*;*;DominoADMail/Demo;;;;;`);
 tbl(["User", "Example 2 result", "Why"], [
   ["anna@emea.demo.com", "DominoADMail2/Demo, Anna …/EMEA/Demo, */DirSync-Vault-EMEA, BR-EMEA", "Rule 1 matches first"],
   ["li@apac.demo.com", "DominoADMail3/Demo, …/APAC/Demo, */DirSync-Vault-APAC", "Rule 2"],
@@ -585,9 +643,9 @@ tbl(["User", "Example 2 result", "Why"], [
 h3("B12.8 Test the mapping before any batch");
 ol(
   "Run **01 - Preflight Check** (C1).",
-  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt`. For every rule it shows **how many users matched** and the values the rule gives. A rule with **0 users** usually means a wrong field name or pattern.",
-  "For individual users, open the Preflight audit CSV. The **MapRule** column shows which rule each user matched, and HomeServer / OrgUnit / Policy show the result.",
-  "Correct server_mapping.csv and run Preflight again until every group lands where intended."
+  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt`. For every rule it shows **how many users matched** and the values the rule gives. A rule with **0 users** usually means a wrong field name or pattern. At the end, **Result per home server** shows the users per home server and the servers that will receive their replicas.",
+  "For individual users, open the Preflight audit CSV. The **MapRule** column shows which rule each user matched, and HomeServer / OrgUnit / Policy / ClusterReplicas show the result.",
+  "Correct server_mapping.csv (or MailClusterServers) and run Preflight again until every group lands where intended."
 );
 h3("B12.9 Common mistakes");
 tbl(["Symptom", "Cause", "Fix"], [
@@ -595,10 +653,12 @@ tbl(["Symptom", "Cause", "Fix"], [
   ["A rule matches 0 users", "Wrong field name, pattern without `*`, or field empty in DirSync", "Check the Fields tab (B12.4); use `*` where needed"],
   ["Everybody lands on the catch-all", "The catch-all is at the top", "Move `*;*;…` to the last line"],
   ["Wrong OU / policy for some users", "An earlier, more general rule catches them", "Move the specific rule above it"],
-  ["'Mapping line ignored (needs >= 3 columns)' in the log", "Missing semicolons", "Use 7 columns / 6 semicolons"],
+  ["'-> replicas: none' although you have a cluster", "The home server is not in MailClusterServers (typo, or a different name form), or column 8 is `-`", "List every member in MailClusterServers (B11); leave column 8 empty"],
+  ["Wave 2 users still go to the first server", "The catch-all line was not changed, or the file was not saved", "Change and save the line, then rebuild the batch (C2)"],
+  ["'Mapping line ignored (needs >= 3 columns)' in the log", "Missing semicolons", "Use 8 columns / 7 semicolons"],
   ["Strange characters in names", "File saved in another encoding", "Save as UTF-8 in Notepad"],
 ], [3000, 3200, 3160]);
-done("Every rule has real values, the catch-all is last, and the Preflight mapping test shows each group of users on the intended server, OU and policy.");
+done("Every rule has real values, the catch-all is last, and the Preflight mapping test shows each group of users on the intended home server, with the intended replica servers.");
 
 // ---------- B13
 h2("B13 Create the tool database bulkreg.nsf");
@@ -732,17 +792,18 @@ ol(
   "Open the newest `C:\\BulkReg\\audit\\BulkReg_Preflight_*_audit.csv` (D4 lists the columns).",
   "For each **ERROR** row, read the Message column. Fix the cause in Active Directory, for example a missing last name or a duplicate email address, and let DirSync synchronise.",
   "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt` (the mapping test): users per rule and the values each rule gives. If a group lands on the wrong server (also visible in the HomeServer / MapRule columns of the audit CSV), correct server_mapping.csv (B12) and run Preflight again.",
-  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt`. For each home server it lists the users and the folders needed (for example `mail1 .. mail5`), with the create commands. Create any folder that does not exist yet (B4), and make sure `MailFolderMax` is high enough. Preflight warns if it is too low."
+  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt`. For each home server, or for the whole **mail cluster**, it lists the users, the folders needed (for example `mail1 .. mail5`) and **the servers to create them on** (with a cluster: all members), with the create commands. Create any folder that does not exist yet (B4), and make sure `MailFolderMax` is high enough. Preflight warns if it is too low.",
+  "With a mail cluster, check the environment lines in the debug log: every member **reachable**, and no warning about `MailACLManager`."
 );
-done("0 environment errors, every user lands on the intended home server, and every mail folder listed in the _mailfolders.txt file exists on its server.");
+done("0 environment errors, every user lands on the intended home server (with the intended replica servers), and every mail folder listed in the _mailfolders.txt file exists on every server named there.");
 
 h2("C2 Build a batch");
 meta("Domino administrator", "bulkreg.nsf", "writes a batch file; nothing in Domino");
 ol(
-  "Optional, for a wave: in bulkreg.ini set `BatchServerFilter=<home server>` (one server only), or `ExtraSelection=<formula>`, for example `Department = \"Sales\"`. Save.",
+  "For a wave: make sure server_mapping.csv sends this wave to the right home server (B12.7 Example 1: change the catch-all line between waves). Alternatives: `BatchServerFilter=<home server>` or `ExtraSelection=<formula>`, for example `Department = \"Sales\"` in bulkreg.ini. Save.",
   "Click **Actions > BulkReg > 02 - Build Batch**.",
   "Read the dialog: **Batch ID** (for example `BATCH-20261005-093000`), rows, Include=Y, WARN, ERROR, and users left for the next batch. Write the batch ID in the batch log (C9).",
-  "Open `C:\\BulkReg\\batches\\BATCH-<id>_summary.txt` in Notepad. Check the counts **per home server**, **per policy**, the **new mail files per server and folder**, and the **folder fill** (for example `dominoadmail/demo : mail2 : 412`)."
+  "Open `C:\\BulkReg\\batches\\BATCH-<id>_summary.txt` in Notepad. Check the counts **per home server**, **per policy**, the **cluster replicas per home server**, the **new mail files per server (or mail cluster) and folder**, and the **folder fill** (for example `mail cluster : mail2 : 412`)."
 );
 done("BATCH-<id>.csv and BATCH-<id>_summary.txt exist, and the counts look as expected.");
 
@@ -762,6 +823,7 @@ tbl(["Check", "How", "If wrong"], [
   ["Right home server", "Read HomeServer (and MapRule)", "Correct HomeServer, or fix the mapping and rebuild"],
   ["Right mail file name and folder", "Read MailFile (e.g. `mail2\\smith.nsf`) and MailFileNote (why: naming rule, renamed because the name was taken, folder fill). Renamed rows show **WARN: mail file renamed**.", "Accept, or edit MailFile to a free name in a mail folder (Register Batch re-checks it)"],
   ["Right OU / policy / vault", "Read OrgUnit, Policy and VaultServer", "Correct the value in the row"],
+  ["Right replica servers", "Read ClusterReplicas: all other cluster members, comma separated (e.g. `DominoADMail2/Demo,DominoADMailDR1/Demo,DominoADMailDR2/Demo`)", "Correct MailClusterServers and rebuild, or edit the row (empty = no replicas)"],
   ["Warnings", "Filter Check = WARN and read Issues", "Accept them, or set Include to `N`"],
   ["Errors", "Check = ERROR rows already have Include=N", "Fix in AD and include them in a later batch"],
 ], [2200, 3700, 3460]);
@@ -781,9 +843,9 @@ ol(
   "Confirm `DryRun=1` in bulkreg.ini.",
   "Click **Actions > BulkReg > 03 - Register Batch**.",
   "In **Batch file to register**, accept the proposed path (the newest open batch) or type the path of your batch. Click **OK**.",
-  "Read the summary: users to register, users excluded, **users per home server**, registration server, certification. Click **Yes**.",
+  "Read the summary: users to register, users excluded, **users per home server**, **cluster replicas per home server**, registration server, certification. Click **Yes**.",
   "Wait for the end dialog. Open `C:\\BulkReg\\batches\\BATCH-<id>_dryrun_<run>.csv`.",
-  "Check that every row shows **WOULD_REGISTER**. For SKIPPED or FAILED_VALIDATION rows, read the Message column, then correct the batch row or rebuild the batch (C2)."
+  "Check that every row shows **WOULD_REGISTER**, and with a cluster that ReplicaStatus shows **WOULD_REQUEST 3** (one per other member). For SKIPPED or FAILED_VALIDATION rows, read the Message column, then correct the batch row or rebuild the batch (C2)."
 );
 done("All approved rows show WOULD_REGISTER. The batch is still OPEN.");
 
@@ -795,9 +857,9 @@ ol(
   "Set `DryRun=0` in bulkreg.ini. Save.",
   "Run **03 - Register Batch**, choose the pilot batch, click **Yes**, type the **batch ID** exactly when asked, and enter the certifier password if UseCA=0.",
   "Read the end dialog: ok=2. Open `BATCH-<id>_results.csv`. *Result:* both rows REGISTERED with VaultStatus IN_VAULT.",
-  "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), hierarchical full name, **MailServer** = the intended home server, **MailFile** = the path from the batch, **MailSystem** = Notes, and **Policy synopsis** showing the policy with the vault. Then open the home server's **Files** tab and confirm the mail file exists.",
+  "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), hierarchical full name, **MailServer** = the intended home server, **MailFile** = the path from the batch, **MailSystem** = Notes, and **Policy synopsis** showing the policy with the vault. Then open the home server's **Files** tab and confirm the mail file exists. With a mail cluster, open the **Files** tab of each other member after a few minutes: the same path (e.g. `mail1\\smith.nsf`) must exist there too, and admin4.nsf shows the Create Replica requests as processed.",
   "On a test PC, set up Notes for one pilot user: the ID must download from the vault, the user must be asked to change the password, and the mail file must open. Send a test mail to the user's Internet address and confirm it arrives in the Domino mail file.",
-  "Run **04 - Verify Registration and Vault** and choose the pilot batch. *Result:* 2 × REGISTERED, IN_VAULT.",
+  "Run **04 - Verify Registration and Vault** and choose the pilot batch. *Result:* 2 × REGISTERED, IN_VAULT, MAILFILE_OK and (with a cluster) REPLICAS_OK 3/3.",
   "Set `DryRun=1` and clear `ExtraSelection=` in bulkreg.ini. Save."
 );
 done("Both pilot users pass every check. Record the result in the change ticket. You may now run real batches.");
@@ -811,7 +873,7 @@ ol(
   "Check the summary per home server against the batch summary. Click **Yes**.",
   "Type the **batch ID** exactly (for example `BATCH-20261005-093000`) and click **OK**. Enter the certifier password if UseCA=0.",
   "Keep Domino Administrator open and the PC awake while it runs. The status bar shows progress (`ok / fail / skip`). The optional `bulkreg.cmd Tail` shows the log live.",
-  "Read the end dialog: ok / failed / skipped, plus the paths of the results file and the password file.",
+  "Read the end dialog: ok / failed / skipped, plus the paths of the results file and the password file. The ReplicaStatus column of the results file shows **REQUESTED 3/3** per user: the requests are posted; AdminP creates the replicas in the next minutes (longer for large batches).",
   "Set `DryRun=1` in bulkreg.ini. Save."
 );
 note("If it stops with **Circuit breaker**, the remaining rows are recorded as NOT_PROCESSED and the batch is DONE. Fix the cause (D6). The unregistered users are offered again by the next Build Batch.");
@@ -823,9 +885,9 @@ ol(
   "Click **Actions > BulkReg > 04 - Verify Registration and Vault**.",
   "Accept the proposed batch file (the newest batch) or type the batch path. Leave it empty to verify all DirSync users.",
   "Read the summary and open `BATCH-<id>_verify_<run>.csv`.",
-  "**REGISTERED + IN_VAULT + MAILFILE_OK:** done. **MAILFILE_MISSING:** see D6. **NOT_IN_VAULT:** check the user's policy synopsis and vault, then run Verify again later (replication). **UNREGISTERED** or **NOT_FOUND:** see D6."
+  "**REGISTERED + IN_VAULT + MAILFILE_OK + REPLICAS_OK:** done. **REPLICAS_MISSING k/3 (missing: …):** AdminP is still working or a request failed: wait, run 04 again, then see D3c and D6. **MAILFILE_MISSING:** see D6. **NOT_IN_VAULT:** check the user's policy synopsis and vault, then run Verify again later (replication). **UNREGISTERED** or **NOT_FOUND:** see D6."
 );
-done("Every registered user of the batch is IN_VAULT, or the exceptions are logged in the change ticket.");
+done("Every registered user of the batch is IN_VAULT, MAILFILE_OK and (with a cluster) REPLICAS_OK, or the exceptions are logged in the change ticket.");
 
 h2("C8 Hand over and clean up");
 meta("Domino administrator", "Admin workstation", "**deletes temporary secrets**");
@@ -841,10 +903,10 @@ done("The users have their passwords, the secrets are deleted, the evidence is i
 
 h2("C9 Next batch and the batch log");
 p("Go back to **C1** (or straight to C2 if nothing changed). Keep a log like this in the change ticket:");
-tbl(["Batch ID", "Built", "Include=Y", "Dry run OK", "Registered", "Failed", "In vault", "Secrets deleted", "Ticket"], [
+tbl(["Batch ID", "Home server", "Include=Y", "Dry run OK", "Registered", "Failed", "In vault", "Replicas OK", "Secrets deleted"], [
   ["BATCH-…", "", "", "", "", "", "", "", ""],
   ["", "", "", "", "", "", "", "", ""],
-], [1600, 900, 900, 900, 1000, 800, 900, 1200, 1160]);
+], [1600, 1300, 900, 900, 1000, 800, 900, 1000, 960]);
 p("`bulkreg.cmd Batches` lists all batch files with their state (OPEN / DONE).");
 pb();
 
@@ -857,11 +919,13 @@ tbl(["Role", "How many", "What BulkReg does with it"], [
   ["Home servers", "Any number", "Assigned per user by server_mapping.csv, reviewable per row in the batch. Passed to RegisterNewUser in canonical form (CN=…/O=…); this becomes the user's home/mail server."],
   ["ID Vault(s)", "One or more, each with replicas", "The user's **effective policy** (explicit and/or organizational, through its Security Settings) decides which vault receives the ID. `VaultServer` is only where BulkReg checks IsIDInVault."],
   ["Policies", "One per vault or group", "Map each user group to the policy for its vault and settings"],
+  ["Mail cluster", "One list per config (MailClusterServers, 2–6 members)", "Every mail file of a member's users gets a replica on all other members (AdminP). Names and folders are allocated once for the whole cluster (D3c)."],
 ], [2000, 2600, 4760]);
 h3("Batch strategies");
 tbl(["Strategy", "Setting", "Use when"], [
-  ["Mixed batches", "BatchSize=500, no filter", "All servers are ready"],
-  ["One server per wave", "`BatchServerFilter=DominoADMail2/Demo`", "Servers go live on different dates, or are owned by different teams"],
+  ["Mixed batches", "BatchSize=1000, mapping by field, no filter", "All servers are ready"],
+  ["Fill one home server, then the next", "Catch-all line `*;*;DominoADMail/Demo;;;;;`, changed between waves (B12.7 Example 1)", "A fixed number of users per home server, no AD field to split on"],
+  ["One server per wave", "`BatchServerFilter=DominoADMail2/Demo`", "Mapping by field, but servers go live on different dates"],
   ["Department or region waves", "`ExtraSelection=Department = \"Sales\"`", "Business-driven rollout"],
   ["Individual exceptions", "Edit HomeServer / Policy / VaultServer in the batch row", "A few users need a different server"],
 ], [2400, 3500, 3460]);
@@ -873,7 +937,7 @@ tbl(["File in C:\\BulkReg\\batches", "Written by", "Purpose"], [
   ["BATCH-<id>_summary.txt", "02", "Totals per home server and policy; users left for later"],
   ["BATCH-<id>_dryrun_<run>.csv", "03 (DryRun=1)", "Simulation; the batch stays OPEN"],
   ["BATCH-<id>_results.csv", "03 (LIVE)", "One row per approved user; marks the batch **DONE**"],
-  ["BATCH-<id>_verify_<run>.csv", "04", "Registration and vault status"],
+  ["BATCH-<id>_verify_<run>.csv", "04", "Registration, vault, mail file and replica status"],
 ], [3200, 1700, 4460]);
 tbl(["State", "Meaning", "Effect"], [
   ["OPEN", "No _results.csv yet", "Its users are not picked by new batches. Agent 03 proposes the newest open batch."],
@@ -886,7 +950,8 @@ tbl(["Column", "Edit?", "Meaning"], [
   ["NoteID, UNID, objectGUID", "**Never**", "Identify the Person document and the AD user; checked by Agent 03"],
   ["FullName, FirstName, LastName, ShortName, InternetAddress", "No (fix in AD)", "User data"],
   ["MailFileNote", "No", "How the mail file name and folder were chosen"],
-  ["HomeServer, MailFile, OrgUnit, Policy, Groups, VaultServer", "**Yes**", "Values used for registration (MailFile is relative to the server data directory, e.g. mail\\jsmith.nsf)"],
+  ["HomeServer, MailFile, OrgUnit, Policy, Groups, VaultServer", "**Yes**", "Values used for registration (MailFile is relative to the server data directory, e.g. mail1\\smith.nsf)"],
+  ["ClusterReplicas", "**Yes**", "Servers that get a replica of the mail file, comma separated (empty = none)"],
   ["MapRule, Check, Issues", "No", "Where the values came from, and the validation result"],
 ], [3900, 1500, 3960]);
 
@@ -901,7 +966,7 @@ tbl(["Key", "Default", "Meaning"], [
   ["VaultServer / VaultCheckAfterReg", "– / 1", "Default vault server for the check; check after each user"],
   ["MappingFile", "C:\\BulkReg\\config\\server_mapping.csv", "Multi-server rules"],
   ["ExtraSelection / BatchServerFilter", "(empty)", "Narrow a batch: formula / one home server"],
-  ["BatchSize / MaxScan", "500 / 5000", "Rows per batch; directory search limit (0 = none)"],
+  ["BatchSize / MaxScan", "1000 / 5000", "Rows per batch; directory search limit (0 = none)"],
   ["BatchDir / MaxBatchRows", "C:\\BulkReg\\batches\\ / 1000", "Batch folder; largest accepted batch"],
   ["PauseMs / MaxConsecutiveErrors", "500 / 5", "Pause between users; circuit breaker"],
   ["DryRun", "1", "1 = simulate, 0 = live"],
@@ -914,8 +979,10 @@ tbl(["Key", "Default", "Meaning"], [
   ["MailFileDir", "mail", "Only for MailFolderMode=SINGLE"],
   ["MailFolderMax", "5", "Number of pre-created folders (B4); no folder above it is assigned (0 = no limit)"],
   ["MailTemplate", "(empty)", "Mail template (empty = registration default)"],
-  ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Optional mail file settings (quota in MB)"],
-  ["CheckMailFileExists", "1", "Refuse users whose mail file already exists on the home server"],
+  ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Mail file settings (quota in MB). MailACLManager is required with a mail cluster (B4). MailCreateFTIndex also applies to the replicas."],
+  ["CheckMailFileExists", "1", "Refuse users whose mail file already exists on the home server or a replica server"],
+  ["MailClusterServers", "(empty)", "All members of the mail cluster, comma separated (2–6). Members' users get replicas on the other members; names and folders are allocated cluster-wide (D3c)."],
+  ["CreateClusterReplicas", "1", "1 = 03 posts AdminP Create Replica requests; 0 = you create the replicas (04 still checks them)"],
   ["IDFileDir / PasswordDir / AuditDir / WritePasswordFile", "C:\\BulkReg\\… / 1", "Output folders; write passwords to a restricted file"],
   ["IsNorthAmerican / EnforceUniqueShortName / StoreIDInAddressBook / SyncInternetPassword", "1 / 1 / 0 / 0", "NotesRegistration options"],
   ["LogServer / LogDb", "– / bulkreg_log.nsf", "**Required** central log database (B15). Agents stop if it cannot be opened."],
@@ -947,7 +1014,7 @@ tbl(["MailFileNaming", "John Smith", "Anna Müller", "Seán O'Brien"], [
   ["`SHORTNAME`", "<ShortName>.nsf (last name if empty)", "", ""],
 ], [2600, 2300, 2200, 2260]);
 p("Names are lower case. Accents are converted (ä→ae, ö→oe, ü→ue, é→e, ß→ss…), and only a–z, 0–9, _ and - are kept.");
-h3("2. Uniqueness on each home server");
+h3("2. Uniqueness on each home server (or in the whole mail cluster)");
 p("A name counts as **taken** on a home server if it is found in any of these, checked in this order:");
 tbl(["Source", "How it is checked"], [
   ["Files on the server", "Agent 02 reads the server's database list once per run and records the files in the numbered folders (mail1, mail2 …) and in MailExistingFolders (mail)"],
@@ -955,7 +1022,7 @@ tbl(["Source", "How it is checked"], [
   ["Open batches", "Mail files reserved by other OPEN batch files"],
   ["This batch", "Rows already allocated earlier in the same batch"],
 ], [2400, 6960]);
-p("If the name is taken: with `MailFileCollision=SUFFIX` (default) the next free name is used (smith2.nsf, smith3.nsf …) and the row is marked **WARN: mail file renamed**. With `ERROR` the row gets Check=ERROR and Include=N. Uniqueness is per home server and across **all** its mail folders, so the same name is never used twice on one server. Agent 03 checks again just before registering that the exact file does not exist, so an existing mail file is never overwritten.");
+p("If the name is taken: with `MailFileCollision=SUFFIX` (default) the next free name is used (smith2.nsf, smith3.nsf …) and the row is marked **WARN: mail file renamed**. With `ERROR` the row gets Check=ERROR and Include=N. Uniqueness is per home server and across **all** its mail folders, so the same name is never used twice on one server. **Mail cluster:** all members count as one server here: a name used on any member is used for the whole cluster (D3c). Agent 03 checks again just before registering that the exact file does not exist, so an existing mail file is never overwritten.");
 h3("3. Numbered folders: mail1, mail2 … directly under the data directory");
 code(`<Domino data directory>            e.g. D:\\Domino\\Data   or   /local/notesdata
   |-- names.nsf, log.nsf, certlog.nsf ...
@@ -973,10 +1040,10 @@ tbl(["Setting", "Value", "Meaning"], [
   ["MailFileDir", "mail", "Only with MailFolderMode=SINGLE (then all new mail files go into this one folder)"],
 ], [2400, 1100, 5860]);
 p("With `MailFolderMode=NUMBERED` (default), each numbered folder holds at most `MailFilesPerFolder` (default **1000**). Files already in those folders are counted, per home server, and so are open batches. A folder is filled before the next one is used.");
-tbl(["Situation on DominoADMail/Demo", "Batch of 500 users gets"], [
-  ["mail1 has 980 mail files", "20 users → mail1 (now 1000), 480 users → mail2"],
-  ["mail1 and mail2 full, mail3 has 300", "500 users → mail3 (now 800)"],
-  ["No mail folders yet", "500 users → mail1"],
+tbl(["Situation on DominoADMail/Demo (or in its mail cluster)", "Batch of 1000 users gets"], [
+  ["mail1 has 980 mail files", "20 users → mail1 (now 1000), 980 users → mail2"],
+  ["mail1 and mail2 full, mail3 has 300", "700 users → mail3 (now 1000), 300 users → mail4"],
+  ["No mail files in the numbered folders yet", "1000 users → mail1"],
 ], [4200, 5160]);
 p("The folders must already exist on the servers (prerequisite B4). `MailFolderMax` is the number of folders you created. If a user would need a folder above it (for example mail6 when you created mail1–mail5), Build Batch marks the row **ERROR: all pre-created mail folders are full** instead of creating a new folder. Create the next folder, raise MailFolderMax and rebuild.");
 p("With `MailFolderMode=SINGLE`, all mail files go into `MailFileDir` (for example `mail`).");
@@ -985,8 +1052,8 @@ tbl(["Record", "Content"], [
   ["Batch file (MailFile, MailFileNote)", "Path, plus e.g. `smith.nsf already used (file mail1\\smith.nsf) -> smith2.nsf; naming LASTNAME; folder mail2 412/1000`"],
   ["Batch summary", "Naming and folder settings, new mail files per server and folder, folder fill after the batch"],
   ["Build audit CSV / debug log", "One row per user (MailFile, MailFileNote), plus a server scan line (number of mail databases found)"],
-  ["Results and audit CSV of Register Batch", "MailFile, MailFileStatus (MAILFILE_OK / MAILFILE_PENDING), MailFileNote"],
-  ["Verify report", "MailFileStatus from the Person document and the server (MAILFILE_OK / MAILFILE_MISSING)"],
+  ["Results and audit CSV of Register Batch", "MailFile, MailFileStatus (MAILFILE_OK / MAILFILE_PENDING), MailFileNote, ClusterReplicas, ReplicaStatus"],
+  ["Verify report", "MailFileStatus from the Person document and the server (MAILFILE_OK / MAILFILE_MISSING), ReplicaStatus (REPLICAS_OK / REPLICAS_MISSING)"],
 ], [3000, 6360]);
 h3("5. Other mail file settings");
 tbl(["Setting", "Effect"], [
@@ -1007,24 +1074,58 @@ tbl(["Person document field", "Before (DirSync)", "After BulkReg"], [
 ], [2600, 3200, 3560]);
 warn("From now on, Domino delivers mail for these users to their **Domino mail file**. Before the first live batch, agree with the mail team how inbound Internet mail (MX / routing) reaches Domino for these addresses, and whether any existing mailbox content must be migrated. That is outside BulkReg. Also check that the DirSync field mapping (Directory Sync configuration, Synchronization tab) does not overwrite MailSystem, MailServer or MailFile after registration.");
 
+h2("D3c Mail cluster replicas");
+p("With `MailClusterServers` set, every user whose home server is a cluster member gets a **replica of the mail file on every other member**, at the same path. Example (B12.7): a user on DominoADMail/Demo (DC) gets `mail1\\smith.nsf` on DominoADMail/Demo and replicas on DominoADMail2/Demo (DC), DominoADMailDR1/Demo and DominoADMailDR2/Demo (DR).");
+h3("How it works");
+tbl(["Step", "Agent", "What happens", "Recorded as"], [
+  ["1 Plan", "02 Build Batch", "Lists the replica servers per user in the batch column **ClusterReplicas**; allocates the mail file name and folder for the **whole cluster** (all members are scanned); warns if a replica server is unreachable", "Batch file, summary (replicas per home server)"],
+  ["2 Simulate", "03, DryRun=1", "Checks the path is free on the home server **and** every replica server", "ReplicaStatus `WOULD_REQUEST 3 (…)`"],
+  ["3 Request", "03, DryRun=0", "After registration, when the mail file exists on the home server: one AdminP **Create Replica** request per replica server (`NotesAdministrationProcess.CreateReplica`, same path, ACL copied, full-text index if MailCreateFTIndex=1)", "ReplicaStatus `REQUESTED 3/3`; one debug-log line per request with the request note ID"],
+  ["4 Create", "AdminP on the servers", "HCL: *Check access* on the source server, then for cluster mates *Accelerated create replica* (immediate); otherwise *Create replica* on the destination server and the next replication fills it", "admin4.nsf (Administration Requests), log.nsf"],
+  ["5 Verify", "04", "Opens the mail file on the home server, reads its replica ID and looks for that replica on every replica server", "ReplicaStatus `REPLICAS_OK 3/3` or `REPLICAS_MISSING 1/3 (missing: …)`"],
+], [1100, 1600, 4500, 2160]);
+h3("Why names and folders are shared by the whole cluster");
+p("Each member holds every mail file, so `mail1\\smith.nsf` must mean the same user on all four servers. BulkReg therefore treats the cluster as **one** mail namespace: a name taken on any member (or by a Person document whose mail server is a member, or by an open batch) is taken for the whole cluster, and the numbered folders are filled once (a replica is counted once). Users of the second home server simply continue in the next free folder (B12.7 table).");
+h3("ReplicaStatus values");
+tbl(["Value", "Meaning", "Action"], [
+  ["NONE", "Home server not in a cluster, or ClusterReplicas `-`", "None"],
+  ["WOULD_REQUEST n (…)", "Dry run: n requests would be posted", "None"],
+  ["REQUESTED n/n", "All requests posted", "Run 04 later"],
+  ["REQUESTED k/n FAILED: …", "Some requests could not be posted (message per server)", "Create the missing replicas manually (below)"],
+  ["REQUEST_FAILED (…)", "No AdminP request could be created (registration server, rights)", "D6; create the replicas manually"],
+  ["NOT_REQUESTED (mail file not yet on home server …)", "The mail file did not exist yet when 03 finished", "When 04 shows MAILFILE_OK, create the replicas manually"],
+  ["NOT_REQUESTED (CreateClusterReplicas=0)", "Switched off", "Create them yourself"],
+  ["REPLICAS_OK n/n", "04: every replica server has the replica", "Done"],
+  ["REPLICAS_MISSING k/n (missing: …)", "04: not (yet) on the servers listed", "Wait and re-run 04; then check admin4.nsf (D6)"],
+], [3100, 3700, 2560]);
+h3("Create missing replicas manually");
+ol(
+  "Open the `_verify_<run>.csv` file and filter ReplicaStatus = REPLICAS_MISSING. The missing servers are listed per user.",
+  "In Domino Administrator, open the home server's **Files** tab and select those users' mail files (Ctrl+click).",
+  "In the Tools pane choose **Database > Create Replica(s)**, add the missing servers, keep the same file path, and click **OK**. This posts the same AdminP requests.",
+  "Run 04 again later. *Result:* REPLICAS_OK."
+);
+
 h2("D4 Outputs, audit and result codes");
 tbl(["Output", "Location", "Content"], [
   ["**Central log database (required)**", "LogServer!!bulkreg_log.nsf", "One entry per run: start/end, every action and error, and an AUDIT line per user (result, home server, mail file, vault, batch). The shared record for administrators and auditors."],
   ["Preflight mapping test", "C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt", "Users matched by each mapping rule, and the values per rule (B12.8)"],
-  ["Preflight mail folders", "C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt", "Mail folders needed per home server, with create commands (B4)"],
+  ["Preflight mail folders", "C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt", "Mail folders needed per home server or mail cluster, the servers to create them on, and the create commands (B4)"],
   ["Batch files", "C:\\BulkReg\\batches\\", "D2"],
-  ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_audit.csv", "One row per user per action, including BatchID, MailFile, MailFileStatus and MailFileNote. **No passwords.**"],
+  ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_audit.csv", "One row per user per action, including BatchID, MailFile, MailFileStatus, MailFileNote, ClusterReplicas and ReplicaStatus. **No passwords.**"],
   ["Debug log", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_debug.log", "Every step, the approval line, and the batch file size and time"],
   ["Password file", "C:\\BulkReg\\secure\\BulkReg_InitialPasswords_<batch>_<run>.csv", "Initial passwords (delete in C8)"],
   ["Certification Log", "certlog.nsf on the registration server", "Domino's record of every certification and registration (written because RegistrationLog is not empty)"],
+  ["Administration Requests", "admin4.nsf (any server in the domain)", "The AdminP Create Replica requests posted by 03 and their results (D3c)"],
   ["Domino server log", "log.nsf on the registration and home servers", "General server events, e.g. mail file creation and Administration Process messages; useful for troubleshooting"],
   ["Helper actions log", "C:\\BulkReg\\audit\\bulkreg_admin_actions.log", "PowerShell helper changes"],
 ], [2000, 4300, 3060]);
 tbl(["Result", "Meaning", "Action"], [
   ["OK / WARN / ERROR", "Preflight or Build Batch check", "Fix ERROR (those rows are excluded)"],
   ["WOULD_REGISTER", "Dry run", "Review"],
-  ["REGISTERED", "Registered, ID in vault, mail file present", "None"],
-  ["REGISTERED_PENDING", "Registered, but the ID is not in the vault yet and/or the mail file is not there yet", "Re-run Verify; see D6"],
+  ["REGISTERED", "Registered, ID in vault, mail file present, replica requests posted (if any)", "Run 04 for the replicas"],
+  ["REGISTERED_PENDING", "Registered, but the ID is not in the vault yet, the mail file is not there yet, and/or replica requests failed or were not posted", "Re-run Verify; see D3c and D6"],
+  ["ReplicaStatus values", "WOULD_REQUEST, REQUESTED, REPLICAS_OK, REPLICAS_MISSING …", "D3c"],
   ["FAILED_VALIDATION", "Row values invalid; not attempted", "Fix the row or rebuild"],
   ["FAILED", "Registration error (Message: stage + error)", "D6"],
   ["SKIPPED", "Already registered, document gone, or objectGUID mismatch", "None, or rebuild"],
@@ -1046,7 +1147,7 @@ tbl(["Command", "Does"], [
 ], [3800, 5560]);
 
 h2("D6 Troubleshooting");
-p("General method: set `LogLevel=DEBUG`, rebuild a 1-user batch (ExtraSelection), dry-run it, and read the debug log. FAILED rows show the stage (load, validate, configure, RegisterNewUser, verify, preserveMail, vault) and the Notes error. Cross-check the same time in **certlog.nsf** on the registration server (certification and registration records) and in **log.nsf** on the registration and home servers (server events, mail file creation, Administration Process).");
+p("General method: set `LogLevel=DEBUG`, rebuild a 1-user batch (ExtraSelection), dry-run it, and read the debug log. FAILED rows show the stage (load, validate, configure, RegisterNewUser, verify, mailfile, replicas, vault) and the Notes error. Cross-check the same time in **certlog.nsf** on the registration server (certification and registration records) and in **log.nsf** on the registration and home servers (server events, mail file creation, Administration Process).");
 tbl(["Symptom", "Likely cause", "Fix"], [
   ["Actions menu shows only \"01\", \"02\"…", "`|` used in the agent names (alias separator)", "Rename the agents exactly as in B18"],
   ["Agents not in the Actions menu", "Private agent, or wrong trigger", "B18: Shared, On event > Action menu selection"],
@@ -1072,6 +1173,12 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["WARN: mail file renamed", "The last-name file already exists on that server, in the directory or in an open batch", "Normal with SUFFIX. Review the new name, or edit MailFile"],
   ["\"Could not scan <server>\" in the debug log", "No access to the server's database list", "Uniqueness then uses the directory and the direct file check. Fix access and rebuild for full checking."],
   ["MAILFILE_PENDING / MAILFILE_MISSING", "Mail file creation queued (Administration Process) or failed: template missing, no Create databases right, server unreachable", "Check admin4.nsf on the home server, B4 rights and template; re-run Verify"],
+  ["REPLICAS_MISSING after several hours", "AdminP request failed: requester or destination server has no Reader access to the mail file, no 'Create new replicas' right, no Connection document, or AdminP not running", "Open admin4.nsf > All Requests by Action, find Create Replica for the user and read the response document; fix B4 (cluster section); create the replicas manually (D3c)"],
+  ["REQUEST_FAILED / REQUESTED k/n FAILED", "AdminP request could not be created (RegistrationServer unreachable, no rights to admin4.nsf, unrestricted methods not allowed)", "Check the message; create the replicas manually (D3c); confirm in the pilot (D9)"],
+  ["NOT_REQUESTED (mail file not yet on home server)", "The mail file was created in the background after 03 finished", "When 04 shows MAILFILE_OK, create the replicas manually (D3c)"],
+  ["Preflight: 'MailACLManager is empty'", "AdminP needs the requester to read the mail file", "Set MailACLManager to a group containing your admin ID (B11)"],
+  ["\"MailClusterServers lists only one server / more than 6\" at start-up", "Incomplete or wrong cluster list", "List all 2–6 members, comma separated"],
+  ["WARN: Replica server … unreachable", "A cluster member is down or not reachable from the workstation", "AdminP creates the replica when it is back; or exclude the server for this batch by editing ClusterReplicas"],
   ["Mail fields change after the next DirSync", "DirSync attribute mapping overwrites MailSystem / MailServer / MailFile", "Remove those fields from the DirSync mapping (Directory Sync configuration, Synchronization tab)"],
 ], [2900, 3300, 3160]);
 p("Escalate to the platform owner if failures affect more than one batch. Escalate immediately to the security owner if a password file, ID file or certifier may have been exposed.");
@@ -1105,6 +1212,7 @@ tbl(["#", "Item", "How to confirm"], [
   ["4", "PolicyName is passed as stored (`*/name`)", "Policy synopsis of the pilot users (C5)"],
   ["5a", "Numbered mail folders must exist before registration", "Pre-created in B4 and enforced by MailFolderMax; Preflight lists what is needed"],
   ["5", "Mail file creation through NotesRegistration (immediate or via the Administration Process) and the DirSync mapping of mail fields", "Mail file present after the pilot and Person document unchanged after the next DirSync"],
+  ["5b", "Cluster replicas through `NotesAdministrationProcess.CreateReplica` (HCL: requires unrestricted rights; accelerated for cluster mates)", "Pilot: REPLICAS_OK 3/3, replicas at the same path on every member (C5)"],
   ["6", "The Agent Log template file name differs between releases (alog4.ntf / alog.ntf)", "B15"],
   ["7", "bulkreg.ps1 was reviewed but not executed", "Run `bulkreg.cmd Check` once"],
   ["8", "One Domino Directory per config file", "D1"],
@@ -1127,6 +1235,9 @@ tbl(["Term", "Meaning"], [
   ["Batch / Batch ID", "A reviewed list of users / its name BATCH-yyyymmdd-hhnnss"],
   ["Include=Y", "The row will be registered"],
   ["DryRun", "Simulation mode; nothing is changed"],
+  ["Mail cluster", "Domino servers that hold replicas of the same mail files for failover (e.g. 2 in DC, 2 in DR); listed in MailClusterServers"],
+  ["Cluster replica", "A copy of a mail file with the same replica ID on another cluster member, kept in sync by cluster replication"],
+  ["AdminP", "The Domino Administration Process; carries out requests such as Create Replica (admin4.nsf)"],
 ], [2600, 6760]);
 pb();
 
@@ -1140,8 +1251,8 @@ h2("Appendix B – Agent reference");
 tbl(["Agent", "Reads", "Writes", "Asks for"], [
   ["01 - Preflight Check", "names.nsf, servers", "Audit, debug log", "Config path"],
   ["02 - Build Batch", "names.nsf, open batches, servers", "BATCH-<id>.csv, _summary.txt, audit", "Config path"],
-  ["03 - Register Batch", "One batch file, names.nsf", "names.nsf (LIVE), ID files, _results/_dryrun, password file, audit", "Config path, batch file, Yes/No, batch ID (LIVE), certifier password (UseCA=0)"],
-  ["04 - Verify Registration and Vault", "A batch file or all users, ID Vault", "_verify.csv, audit", "Config path, batch file or empty"],
+  ["03 - Register Batch", "One batch file, names.nsf", "names.nsf (LIVE), ID files, AdminP Create Replica requests (admin4.nsf), _results/_dryrun, password file, audit", "Config path, batch file, Yes/No, batch ID (LIVE), certifier password (UseCA=0)"],
+  ["04 - Verify Registration and Vault", "A batch file or all users, ID Vault, mail files and their replicas", "_verify.csv, audit", "Config path, batch file or empty"],
   ["05 - Export (optional)", "names.nsf", "Text file, audit", "Config path, password Yes/No"],
 ], [2300, 2300, 2800, 1960]);
 
@@ -1150,6 +1261,8 @@ C.push({ t: "refs", items: [
   ["Registering Active Directory users (Directory Sync)", "https://help.hcl-software.com/domino/14.0.0/admin/conf_adsync_registering_ad_users.html"],
   ["ContactNoteID property", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_CONTACTNOTEID_PROPERTY_NOTESREGISTRATION.html"],
   ["RegisterNewUser method", "https://help.hcl-software.com/dom_designer/14.5.0/basic/H_REGISTERNEWUSER_METHOD.html"],
+  ["CreateReplica (NotesAdministrationProcess)", "https://help.hcl-software.com/dom_designer/9.0.1/appdev/H_CREATEREPLICA_METHOD_ADMINP.html"],
+  ["Create replica (AdminP request: Check access, Accelerated create replica, Create replica)", "https://help.hcl-software.com/domino/14.0.0/admin/admn_createreplica_r.html"],
   ["Creating an ID vault", "https://help.hcl-software.com/domino/14.5.0/admin/conf_creatinganidvault_t.html"],
   ["Assigning users to a vault (Security Settings, ID Vault tab)", "https://help.hcl-software.com/domino/14.5.0/admin/conf_creatingoreditingidvaultpolicysettingsdocumentsma_t.html"],
   ["Creating a security policy settings document", "https://help.hcl-software.com/domino/14.0.0/admin/conf_creatingasecuritypolicysettingsdocument_t.html"],

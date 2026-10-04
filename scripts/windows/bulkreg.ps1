@@ -1,6 +1,6 @@
 <#
 =====================================================================
- bulkreg.ps1  -  BulkReg 3.1.0 OPTIONAL helper for the Windows admin workstation
+ bulkreg.ps1  -  BulkReg 3.2.0 OPTIONAL helper for the Windows admin workstation
                  (the machine running the HCL Domino Administrator client)
 
  Registration runs entirely inside the Domino Administrator client
@@ -33,7 +33,7 @@ param(
 )
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$Version = '3.1.0'
+$Version = '3.2.0'
 if (-not $Config) { $Config = if ($env:BULKREG_CONFIG) { $env:BULKREG_CONFIG } else { Join-Path $Base 'config\bulkreg.ini' } }
 $KitConfig = Join-Path $PSScriptRoot '..\..\config'
 $script:Fails = 0; $script:Warns = 0
@@ -170,7 +170,12 @@ function Show-Status([string]$File) {
     if ($rows.Count -eq 0) { Write-Host '(empty)'; return }
     Write-Host ("Run {0}  tool={1}  mode={2}  operator={3}  rows={4}" -f $rows[0].RunID, $rows[0].Tool, $rows[0].Mode, $rows[0].Operator, $rows.Count)
     $rows | Group-Object Result | Sort-Object Count -Descending | Format-Table @{n = 'Result'; e = { $_.Name } }, Count -AutoSize
-    $bad = $rows | Where-Object { $_.Result -match '^(FAIL|ERROR|CHECK_ERROR)' -or $_.Result -match 'PENDING' }
+    if ($rows[0].PSObject.Properties.Name -contains 'ReplicaStatus') {
+        # cluster replicas (3.2.0+): group by status without the server details
+        $rows | Where-Object { $_.ReplicaStatus } | Group-Object { ($_.ReplicaStatus -split ' \(')[0] } | Sort-Object Count -Descending |
+            Format-Table @{n = 'ReplicaStatus'; e = { $_.Name } }, Count -AutoSize
+    }
+    $bad = $rows | Where-Object { $_.Result -match '^(FAIL|ERROR|CHECK_ERROR)' -or $_.Result -match 'PENDING' -or $_.ReplicaStatus -match 'MISSING|FAILED' }
     if ($bad) { Write-Host 'Needs attention (first 15):'; $bad | Select-Object -First 15 Result, FullNameBefore, Message | Format-Table -AutoSize -Wrap }
 }
 

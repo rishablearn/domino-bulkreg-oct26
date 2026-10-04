@@ -1,12 +1,12 @@
 '=====================================================================
 ' Agent name : BulkReg\02 - Build Batch   (select + validate; READ-ONLY on names.nsf)
 '              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.1.0  (BulkReg release; library BulkRegCommon 3.1.0)
+' Version    : 3.2.0  (BulkReg release; library BulkRegCommon 3.2.0)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
 '
-' Selects the next batch of unregistered DirSync users (default 500),
+' Selects the next batch of unregistered DirSync users (default 1000),
 ' resolves each user's home server / mail file / OU / policy / groups from
 ' server_mapping.csv, validates them and writes a batch file for review:
 '
@@ -17,17 +17,21 @@
 ' all mail folders, files on the server, Person documents and open batches;
 ' a clash becomes smith2.nsf, smith3.nsf (MailFileCollision=SUFFIX) or an ERROR.
 ' Folders mail1, mail2 ... hold at most MailFilesPerFolder (1000) mail files.
+' Mail cluster (MailClusterServers): names and folders are allocated once for
+' ALL cluster members, and column ClusterReplicas lists the members that will
+' get a replica of the mail file (all members except the home server).
 '
 ' Review the CSV (Excel: save as "CSV UTF-8"). You may:
 '   - set Include=N to leave a user out
-'   - change HomeServer, MailFile, OrgUnit, Policy, Groups or VaultServer for a user
+'   - change HomeServer, MailFile, OrgUnit, Policy, Groups, VaultServer or
+'     ClusterReplicas for a user (ClusterReplicas: comma separated, empty = none)
 ' Rows with Check=ERROR are written with Include=N.
 ' Agent 03 registers ONLY rows with Include=Y from the batch file you choose.
 '
 ' Users already listed in another OPEN batch (no _results.csv yet) are not
 ' selected again, so one user is never in two pending batches.
 '
-' Config: BatchSize (rows per batch, default 500), BatchServerFilter (only
+' Config: BatchSize (rows per batch, default 1000), BatchServerFilter (only
 '         users mapped to that home server), ExtraSelection, BatchDir.
 '=====================================================================
 '#####################################################################
@@ -53,10 +57,11 @@ Sub Initialize
 	Dim nRows As Long, nInc As Long, nWarn As Long, nErr As Long
 	Dim nInOpen As Long, nOtherSrv As Long, nLeft As Long, r As String, hk As String, pk As String
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String, newInFolder List As Long, aIssue As String, fkey As String
+	Dim repByHome List As String, rl As Variant, ri As Integer, foundOn As String
 
 	If Not BR_Init("BuildBatch") Then Exit Sub
-	batchMax = CfgL("BatchSize", 500)
-	If batchMax < 1 Then batchMax = 500
+	batchMax = CfgL("BatchSize", 1000)
+	If batchMax < 1 Then batchMax = 1000
 	srvFilter = Trim$(CfgS("BatchServerFilter", ""))
 	checkMF = CfgB("CheckMailFileExists", True)
 
@@ -106,7 +111,15 @@ Sub Initialize
 					aIssue = BR_AllocMailFile(u, mfNames, mfCounts)
 					issues = issues & aIssue
 					If aIssue = "" And checkMF Then
-						If BR_MailFileExists(u.HomeServer, u.MailFile) Then issues = issues & "ERROR:MailFile " & u.MailFile & " already exists on " & u.HomeServer & "; "
+						foundOn = BR_MailFileExistsAny(u)
+						If foundOn <> "" Then issues = issues & "ERROR:MailFile " & u.MailFile & " already exists on " & foundOn & "; "
+					End If
+					' replica servers: unreachable now = AdminP will wait for them (warning only)
+					If u.ClusterReplicas <> "" Then
+						rl = Split(u.ClusterReplicas, ",")
+						For ri = 0 To UBound(rl)
+							If Not BR_HomeServerOK(CStr(rl(ri)), srvCache) Then issues = issues & "WARN:Replica server " & rl(ri) & " unreachable; "
+						Next
 					End If
 					If InStr(u.MailFileNote, "already used") > 0 Then issues = issues & "WARN:mail file renamed - " & StrLeft(u.MailFileNote, ";") & "; "
 				End If
@@ -124,8 +137,9 @@ Sub Initialize
 			If inc = "Y" Then
 				nInc = nInc + 1
 				If IsElement(srvInc(hk)) Then srvInc(hk) = srvInc(hk) + 1 Else srvInc(hk) = 1
+				repByHome(hk) = BR_IIfStr(u.ClusterReplicas = "", "(no replicas)", u.ClusterReplicas)
 				If IsElement(polInc(pk)) Then polInc(pk) = polInc(pk) + 1 Else polInc(pk) = 1
-				If InStr(u.MailFile, "\") > 0 Then fkey = hk & " : " & StrLeftBack(u.MailFile, "\") Else fkey = hk & " : (data directory)"
+				If InStr(u.MailFile, "\") > 0 Then fkey = BR_IIfStr(BR_InMailCluster(u.HomeServer), "mail cluster", hk) & " : " & StrLeftBack(u.MailFile, "\") Else fkey = hk & " : (data directory)"
 				If IsElement(newInFolder(fkey)) Then newInFolder(fkey) = newInFolder(fkey) + 1 Else newInFolder(fkey) = 1
 			Else
 				If IsElement(srvExcl(hk)) Then srvExcl(hk) = srvExcl(hk) + 1 Else srvExcl(hk) = 1
@@ -133,7 +147,7 @@ Sub Initialize
 
 			r = Q(inc) & "," & Q(gBatchID) & "," & Q(CStr(nRows)) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & _
 			Q(u.FullNameBefore) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
-			Q(u.HomeServer) & "," & Q(u.MailFile) & "," & Q(u.MailFileNote) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues)
+			Q(u.HomeServer) & "," & Q(u.MailFile) & "," & Q(u.MailFileNote) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.ClusterReplicas) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues)
 			Call BR_AppendLine(bfile, r)
 			Call BR_Audit(u, "BUILD", "SELECT", chk, BR_Elapsed(t0), "Include=" & inc & " " & issues)
 		End If
@@ -156,13 +170,18 @@ Sub Initialize
 	ForAll fa1 In srvInc
 		Call BR_AppendLine(sumFile, "  " & ListTag(fa1) & " : " & fa1)
 	End ForAll
+	Call BR_AppendLine(sumFile, "Cluster replicas of the mail files (requested by 03 via AdminP" & BR_IIfStr(CfgB("CreateClusterReplicas", True), "", " - OFF: CreateClusterReplicas=0") & "):")
+	ForAll fa6 In repByHome
+		Call BR_AppendLine(sumFile, "  home " & ListTag(fa6) & " -> replicas on " & fa6)
+	End ForAll
+	If CfgS("MailClusterServers", "") <> "" Then Call BR_AppendLine(sumFile, "Mail cluster (names + folders allocated once for all members): " & BR_SrvList(CfgS("MailClusterServers", ""), ""))
 	Call BR_AppendLine(sumFile, "Excluded (ERROR) per home server:")
 	ForAll fa2 In srvExcl
 		Call BR_AppendLine(sumFile, "  " & ListTag(fa2) & " : " & fa2)
 	End ForAll
 	Call BR_AppendLine(sumFile, "Mail files: naming " & UCase$(CfgS("MailFileNaming", "LASTNAME")) & ", collisions " & UCase$(CfgS("MailFileCollision", "SUFFIX")) & _
 	", folders " & UCase$(CfgS("MailFolderMode", "NUMBERED")) & BR_IIfStr(UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED", " (" & CfgS("MailFolderPrefix", "mail") & "1, " & CfgS("MailFolderPrefix", "mail") & "2 ... max " & CfgL("MailFilesPerFolder", 1000) & " per folder)", ""))
-	Call BR_AppendLine(sumFile, "New mail files per home server and folder (Include=Y):")
+	Call BR_AppendLine(sumFile, "New mail files per home server (or mail cluster) and folder (Include=Y):")
 	ForAll fa3 In newInFolder
 		Call BR_AppendLine(sumFile, "  " & ListTag(fa3) & " : " & fa3)
 	End ForAll
@@ -175,7 +194,7 @@ Sub Initialize
 		Call BR_AppendLine(sumFile, "  " & ListTag(fa5) & " : " & fa5)
 	End ForAll
 	Call BR_AppendLine(sumFile, "")
-	Call BR_AppendLine(sumFile, "Next: review " & gBatchID & ".csv (Include / HomeServer / OrgUnit / Policy / Groups),")
+	Call BR_AppendLine(sumFile, "Next: review " & gBatchID & ".csv (Include / HomeServer / MailFile / ClusterReplicas / Policy),")
 	Call BR_AppendLine(sumFile, "      then run Actions > BulkReg > 03 - Register Batch and choose this file.")
 
 	BR_Close "batch=" & gBatchID & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft
