@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 1.7.0
+' Script Library : BulkRegCommon            Version 1.8.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_ExportToBatchRegFile,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "1.7.0"
+Public Const BR_VERSION = "1.8.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -160,23 +160,35 @@ Function BR_Init(toolName As String) As Boolean
 	gAuditFile = auditDir & "BulkReg_" & toolName & "_" & gRunID & "_audit.csv"
 	Call BR_AppendLine(gAuditFile, Uchr$(&HFEFF) & BR_AuditHeader())   ' BOM so Excel reads UTF-8
 
-	' --- optional central Agent Log database ---
-	If CfgS("LogDb", "") <> "" Then
-		On Error Resume Next
-		Set gNLog = New NotesLog("BulkReg " & toolName & " " & gRunID)
-		Call gNLog.OpenNotesLog(CfgS("LogServer", ""), CfgS("LogDb", ""))
-		If Err <> 0 Then
-			Set gNLog = Nothing
-			Err = 0
-		End If
-		On Error GoTo ErrH
+	' --- central BulkReg log database (REQUIRED, Agent Log template alog4.ntf) ---
+	'     Every run of every agent is recorded there for all administrators and auditors.
+	'     If it cannot be opened, the run stops BEFORE anything is read or changed.
+	Dim logSrv As String, logDb As String, logErr As String
+	logSrv = Trim$(CfgS("LogServer", ""))
+	logDb = Trim$(CfgS("LogDb", ""))
+	If logSrv = "" Or logDb = "" Then
+		BR_Msg "LogServer and LogDb are required in " & CStr(cfgPath) & "." & Chr$(10) & _
+		"Create the BulkReg log database from the Agent Log template (alog4.ntf) on a server (guide B15)" & Chr$(10) & _
+		"and set e.g.  LogServer=DominoAdmin/Demo  and  LogDb=bulkreg_log.nsf", 16
+		Exit Function
+	End If
+	On Error Resume Next
+	Set gNLog = New NotesLog("BulkReg " & toolName & " " & gRunID & " by " & gOperator)
+	Call gNLog.OpenNotesLog(logSrv, logDb)
+	If Err <> 0 Then logErr = Error$
+	Err = 0
+	On Error GoTo ErrH
+	If logErr <> "" Then
+		Set gNLog = Nothing
+		BR_Msg "Cannot open the BulkReg log database " & logSrv & "!!" & logDb & ":" & Chr$(10) & logErr & Chr$(10) & Chr$(10) & _
+		"Check that it exists (guide B15) and that your ID has at least Author access with 'Create documents'." & Chr$(10) & _
+		"Nothing has been read or changed.", 16
+		Exit Function
 	End If
 
 	BR_Log LVL_INFO, "==== BulkReg " & BR_VERSION & " | tool=" & toolName & " | run=" & gRunID & _
 	" | operator=" & gOperator & " | platform=" & gPlatform & " | config=" & CStr(cfgPath) & " ===="
-	If gNLog Is Nothing And CfgS("LogDb", "") <> "" Then
-		BR_Log LVL_WARN, "Could not open Agent Log db " & CfgS("LogServer", "") & "!!" & CfgS("LogDb", "") & " - continuing with file logging only."
-	End If
+	BR_Log LVL_INFO, "Central log: " & logSrv & "!!" & logDb & " | DryRun=" & CfgS("DryRun", "1") & " | audit file " & gAuditFile
 	BR_DumpConfig
 
 	If Not BR_LoadMapping(BR_CfgFile("MappingFile", "config\server_mapping.csv")) Then Exit Function
@@ -820,6 +832,11 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(u.MailFile) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote)
 	Call BR_AppendLine(gAuditFile, r)
 	If gResultsFile <> "" Then Call BR_AppendLine(gResultsFile, r)
+	' same row, compact, in the central log database (one entry per user per action)
+	If Not (gNLog Is Nothing) Then
+		Call gNLog.LogAction("AUDIT " & mode & " " & action & " " & result & " | " & BR_IIfStr(u.FullNameAfter <> "", u.FullNameAfter, u.FullNameBefore) & _
+		" | " & u.InternetAddress & " | " & u.HomeServer & " | " & u.MailFile & " | vault " & u.VaultStatus & " | batch " & gBatchID & " | " & msg)
+	End If
 	Exit Sub
 ErrH:
 	Print "BulkReg: audit write failed: " & Error$

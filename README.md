@@ -20,6 +20,8 @@ All agents run from bulkreg.nsf > **Actions > BulkReg** in the Windows Domino Ad
 
 - **First time only:** run steps 2–8 once with a 2-user pilot batch.
 - **Agent 05** (text-file export) is **not** part of this sequence.
+- **DryRun** only affects agent 03. `1` = simulate everything and change nothing (the batch stays open). `0` = register for real (the batch is closed). Always dry-run first, then run live on the same batch file, then set it back to `1`.
+- **Central log database is required:** create `bulkreg_log.nsf` from the Agent Log template (`alog4.ntf`) on a server and set `LogServer` / `LogDb`. Every run, every action and one AUDIT entry per user are written there. If it can't be opened, the agents stop before doing anything.
 - **03 cannot run without a batch file from 02**, and each batch can be registered live only once.
 
 ## What it does

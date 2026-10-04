@@ -44,6 +44,7 @@ Use "BulkRegCommon"
 Dim gCertPwd As String
 Dim gPwFile As String
 Dim gMode As String
+Dim gSrvOK List As String      ' home-server reachability cache
 
 '#####################################################################
 ' ### STEP C: select Initialize and REPLACE its content with the block below
@@ -221,7 +222,7 @@ Function ConfirmRun(n As Long, nExcluded As Long, srvText As String) As Boolean
 	Dim ws As NotesUIWorkspace, ans As Variant
 	Set ws = New NotesUIWorkspace
 	ans = ws.Prompt(PROMPT_YESNO, "BulkReg - " & gMode & " - " & gBatchID, _
-	"Mode: " & gMode & Chr$(10) & _
+	"Mode: " & BR_IIfStr(gMode = "LIVE", "LIVE - users WILL be registered (Notes ID, mail file, ID Vault)", "DRY RUN (DryRun=1) - simulation only, NOTHING will be changed") & Chr$(10) & _
 	"Batch: " & gBatchID & Chr$(10) & _
 	"Users to register (Include=Y): " & n & "    excluded (Include=N): " & nExcluded & Chr$(10) & _
 	"Per home server:" & Chr$(10) & srvText & _
@@ -309,7 +310,11 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 	stage = "validate"
 	issues = BR_Validate(u)
 	If InStr(issues, "ERROR:") = 0 Then
-		If BR_MailFileExists(u.HomeServer, u.MailFile) Then issues = issues & "ERROR:MailFile " & u.MailFile & " already exists on " & u.HomeServer & "; "
+		If Not BR_HomeServerOK(u.HomeServer, gSrvOK) Then
+			issues = issues & "ERROR:HomeServer " & u.HomeServer & " unreachable; "
+		ElseIf BR_MailFileExists(u.HomeServer, u.MailFile) Then
+			issues = issues & "ERROR:MailFile " & u.MailFile & " already exists on " & u.HomeServer & "; "
+		End If
 	End If
 	If InStr(issues, "ERROR:") > 0 Then
 		Call BR_Audit(u, gMode, "REGISTER", "FAILED_VALIDATION", BR_Elapsed(t0), issues)

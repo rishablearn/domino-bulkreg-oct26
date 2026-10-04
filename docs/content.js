@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "2.8",
+  version: "2.9",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -38,11 +38,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 1.7.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 1.8.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["2.9", "**DryRun explained** (D3b, bulkreg.ini). **Central BulkReg log database is now required** (B15): every run, every action and one AUDIT entry per user are written there; agents stop if it cannot be opened."],
   ["2.8", "Mail folder layout made explicit: mail1, mail2 … are created **directly under the Domino data directory**, next to the existing mail folder, not inside it. Folder diagram, plain explanation of MailFolderPrefix / MailFileDir / new MailExistingFolders. BulkReg rejects a prefix with a number (mail1) or a path (mail\\mail) at start-up."],
   ["2.7", "New one-page **Agent Run Order** at the front of the guide (flow, step table with DryRun setting, input/output and go/no-go per step, rules)."],
   ["2.6", "RegistrationLog corrected: registration is logged to the **Certification Log certlog.nsf** on the registration server (HCL: any non-empty value → CERTLOG.NSF; empty = no logging). log.nsf is the server's general log. Prerequisite check for certlog.nsf added (B4)."],
@@ -138,7 +139,8 @@ ul(
   "**01 before 02** the first time and whenever AD data, server_mapping.csv or servers changed. Otherwise it is recommended before each batch.",
   "**04 after every LIVE run**, and again later for users that were still pending (vault or mail file).",
   "**Only one batch open at a time** is the simplest way to work. 02 never puts a user into two open batches.",
-  "**05 is never part of this sequence.**"
+  "**05 is never part of this sequence.**",
+  "**DryRun only affects 03** (D3b). Every agent writes to the central log database (B15)."
 );
 h3("Where each step is described in detail");
 tbl(["Step", "Procedure"], [
@@ -172,7 +174,8 @@ tbl(["Item", "Where", "Created in"], [
   ["Working folders", "`C:\\BulkReg\\` on the admin workstation", "B9"],
   ["The BulkReg kit (code, templates, docs)", "`C:\\BulkReg-kit\\`", "B10"],
   ["Configuration: bulkreg.ini, server_mapping.csv", "`C:\\BulkReg\\config\\`", "B11, B12"],
-  ["Tool database bulkreg.nsf (+ optional log database)", "Local Notes data directory", "B13–B15"],
+  ["Tool database bulkreg.nsf", "Local Notes data directory", "B13, B14"],
+  ["Central log database bulkreg_log.nsf (required)", "A Domino server, e.g. the registration server", "B15"],
   ["Script library and 5 agents", "Inside bulkreg.nsf", "B17, B18"],
 ], [4300, 3200, 1860]);
 h2("A4 Organizational or explicit policy: which one assigns the vault?");
@@ -471,7 +474,7 @@ tbl(["Key", "Enter", "From"], [
   ["MailFolderMax", "The number of folders you created in B4, e.g. `5` for mail1–mail5", "Worksheet 11d"],
   ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default)", "Worksheet 11b"],
   ["MailACLManager / MailQuotaSizeLimit", "Optional: Manager of each new mail file; quota in MB (0 = none)", "Worksheet 11c"],
-  ["LogServer / LogDb", "Leave empty unless you create the log database in B15", "B15"],
+  ["LogServer / LogDb", "**Required.** The server and file of the central log database from B15, e.g. `DominoAdmin/Demo` and `bulkreg_log.nsf`", "B15"],
   ["DryRun", "Leave `1`", "–"],
 ], [2300, 5100, 1960]);
 done("bulkreg.ini contains no `<` or `>` characters except in comment lines (starting with `#`), and DryRun=1.");
@@ -536,15 +539,19 @@ ol(
 done("Only administrators have access to bulkreg.nsf.");
 
 // ---------- B15
-h2("B15 Optional: create a central log database");
-p("Skip this unless you want BulkReg events in a Notes database as well as in the audit files.");
+h2("B15 Create the central BulkReg log database (required)");
+meta("Domino administrator", "Domino Administrator", "creates one database on a server");
+p("This Notes database is the **shared, permanent record** of everything BulkReg does. Every run of every agent writes to it: the start and end of the run (agent, operator, batch, DryRun), every action and error, and one **AUDIT** entry per user (result, home server, mail file, vault status, batch). The CSV and .log files on the admin PC are local working copies; this database is what other administrators and auditors use. If it cannot be opened, every agent stops **before** reading or changing anything.");
 ol(
-  "Choose **File > Application > New**. In **Server**, select the server that will hold the log (for example the registration server).",
+  "Choose **File > Application > New**.",
+  "In **Server**, select the server that will hold the log, for example the registration server `DominoAdmin/Demo`. Do not keep Local.",
   "In **Title**, type `BulkReg Log`. In **File Name**, type `bulkreg_log.nsf`.",
-  "Tick **Show advanced templates** and select the **Agent Log** template (file alog4.ntf; some releases list alog.ntf). Click **OK**.",
-  "In bulkreg.ini set `LogServer=<that server>` and `LogDb=bulkreg_log.nsf`. Save."
+  "Tick **Show advanced templates** and select the **Agent Log** template (file `alog4.ntf`; some releases list it as alog.ntf). Click **OK**. *Result:* the empty log database opens.",
+  "Choose **File > Application > Access Control** and set: **-Default-** = No Access; **Anonymous** = No Access; the BulkReg administrators (your admin ID or group) = **Author** with **Create documents** ticked (Editor is also fine); auditors = **Reader**; the server group (e.g. LocalDomainServers) = Manager. Click **OK**.",
+  "In bulkreg.ini set `LogServer=DominoAdmin/Demo` (your server) and `LogDb=bulkreg_log.nsf`. Save.",
+  "Optional: replicate the database to a second server for resilience, like any other administrative database."
 );
-done("bulkreg_log.nsf exists and bulkreg.ini points to it, or LogDb is empty.");
+done("bulkreg_log.nsf exists on the server, its ACL is set, and bulkreg.ini names it. The smoke test (B21) creates its first entries.");
 
 // ---------- B16 / B17
 h2("B16 Open bulkreg.nsf in Domino Designer");
@@ -622,6 +629,7 @@ h2("B21 Smoke test");
 ol(
   "Let Preflight finish. *Result:* a dialog showing Environment errors, candidate counts (OK / WARN / ERROR) and **candidates per home server**.",
   "Open `C:\\BulkReg\\audit`. *Result:* a file `BulkReg_Preflight_<date-time>_audit.csv` and a `_debug.log`.",
+  "Open **bulkreg_log.nsf** on the log server. *Result:* a new entry for `BulkReg Preflight <date-time> by <your name>` containing the run's actions.",
   "If Environment errors is not 0, open the debug log, find the lines marked `FAIL`, fix the cause (D6), and run Preflight again."
 );
 done("Preflight reports 0 environment errors. **Setup is complete.** Continue with Part C.");
@@ -825,8 +833,25 @@ tbl(["Key", "Default", "Meaning"], [
   ["CheckMailFileExists", "1", "Refuse users whose mail file already exists on the home server"],
   ["IDFileDir / PasswordDir / AuditDir / WritePasswordFile", "C:\\BulkReg\\… / 1", "Output folders; write passwords to a restricted file"],
   ["IsNorthAmerican / EnforceUniqueShortName / StoreIDInAddressBook / SyncInternetPassword", "1 / 1 / 0 / 0", "NotesRegistration options"],
-  ["LogLevel / LogServer / LogDb", "INFO / – / –", "Log detail; optional log database"],
+  ["LogServer / LogDb", "– / bulkreg_log.nsf", "**Required** central log database (B15). Agents stop if it cannot be opened."],
+  ["LogLevel", "INFO", "Detail written to the debug log and the log database (DEBUG / INFO / WARN / ERROR)"],
 ], [3900, 2200, 3260]);
+
+h2("D3b DryRun explained");
+p("`DryRun` in bulkreg.ini decides whether **03 - Register Batch** really registers users or only simulates. It is the safety switch between *checking a batch* and *changing Domino*.");
+tbl(["", "DryRun=1 (DRY RUN, default)", "DryRun=0 (LIVE)"], [
+  ["What 03 does", "Goes through every approved row and checks it exactly as for a real run: Person document found, objectGUID matches, data valid, mail file name free, folder available, home server reachable", "The same checks, then **registers** each user: Notes ID, mail file on the home server, ID Vault deposit, Person document updated"],
+  ["Changes in Domino", "**None.** No ID, no mail file, no change in names.nsf, nothing in the vault", "Yes: names.nsf, mail files, ID Vault, certlog.nsf"],
+  ["Files written", "BATCH-<id>_dryrun_<run>.csv (every row WOULD_REGISTER, SKIPPED or FAILED_VALIDATION), audit CSV, debug log, log database", "BATCH-<id>_results.csv, password file, ID files, audit CSV, debug log, log database"],
+  ["Confirmation", "Yes/No summary", "Yes/No summary, then **type the batch ID**"],
+  ["Batch state after the run", "Stays **OPEN**: you can dry-run it again, as often as you like", "**DONE**: it cannot be run again"],
+], [2000, 3700, 3660]);
+ul(
+  "**Only agent 03 uses DryRun.** Agents 01, 02, 04 and 05 never change Domino, whatever DryRun is set to.",
+  "**Normal cycle:** DryRun=1 → run 03 → check the _dryrun file → DryRun=0 → run 03 on the **same** batch file → DryRun=1 again.",
+  "**Why it matters:** a dry run catches problems (missing data, a mail file name taken in the meantime, an unreachable server) **before** anything is created, so the live run is predictable.",
+  "**Where to see the mode:** the 03 dialog says *DRY RUN – nothing will be changed* or *LIVE – users WILL be registered*, and every audit row has Mode = DRYRUN or LIVE."
+);
 
 h2("D3a Mail files: naming, uniqueness and folders");
 p("Every user BulkReg registers becomes a **Domino mail user**: registration creates a mail file on the user's **home server** and the Person document points to it (MailServer, MailFile, Mail system = Notes). Agent 02 decides each mail file's **name** and **folder** while it builds the batch, and records the decision so you can review it before anything is created.");
@@ -899,6 +924,7 @@ warn("From now on, Domino delivers mail for these users to their **Domino mail f
 
 h2("D4 Outputs, audit and result codes");
 tbl(["Output", "Location", "Content"], [
+  ["**Central log database (required)**", "LogServer!!bulkreg_log.nsf", "One entry per run: start/end, every action and error, and an AUDIT line per user (result, home server, mail file, vault, batch). The shared record for administrators and auditors."],
   ["Batch files", "C:\\BulkReg\\batches\\", "D2"],
   ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_audit.csv", "One row per user per action, including BatchID, MailFile, MailFileStatus and MailFileNote. **No passwords.**"],
   ["Debug log", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_debug.log", "Every step, the approval line, and the batch file size and time"],
@@ -951,6 +977,8 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["ERROR: Policy looks like a server/canonical name", "A server name (CN=…/O=…) was put in the Policy column", "Put the policy name (*/Name) or `-`"],
   ["ERROR: Policy '*'", "The organization-wide policy was entered", "Leave Policy empty: `*` applies automatically"],
   ["ERROR: MailFile … already exists on …", "A mail file with that name is on the home server (another user, or a leftover)", "Edit MailFile in the batch (e.g. mail\\jsmith2.nsf), or remove the old file after checking it"],
+  ["\"LogServer and LogDb are required\"", "Log database not configured", "Do B15 and set LogServer / LogDb"],
+  ["\"Cannot open the BulkReg log database\"", "Wrong server or file name, database missing, or no Author/Create documents access", "Check B15 (ACL) and bulkreg.ini; nothing was changed"],
   ["\"Mail folder setting error\" at start-up", "MailFolderPrefix written with a number (mail1) or a path (mail\\mail)", "Set MailFolderPrefix=mail. The folders mail1, mail2 … sit directly in the data directory."],
   ["ERROR: All pre-created mail folders … are full", "More users than the folders you created can hold", "Create the next folder(s) on that server (B4), raise MailFolderMax, rebuild the batch"],
   ["Preflight: MailFolderMax too low", "The users need more folders than MailFolderMax", "Create the folders listed in _mailfolders.txt and raise MailFolderMax"],
@@ -971,6 +999,7 @@ tbl(["Risk", "Control", "Evidence"], [
   ["Personal data or IDs exposed", "Restricted folders; secrets deleted after Verify; .gitignore blocks batch, ID and password files", "ACLs, helper log"],
   ["Weak initial passwords", "Random 16 characters plus a forced change at first use (B7). LotusScript Rnd is not cryptographic.", "Security Settings"],
   ["Unauthorized tool use", "bulkreg.nsf ACL limited to admins; signed design", "B14, B19"],
+  ["Missing audit trail", "Central log database is mandatory; agents refuse to run without it; one AUDIT entry per user", "bulkreg_log.nsf (B15)"],
 ], [2300, 4600, 2460]);
 tbl(["When", "Check"], [
   ["Before each batch", "Preflight clean; batch built, reviewed and attached; dry run clean"],
