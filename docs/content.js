@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "2.6",
+  version: "2.7",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -43,6 +43,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["2.7", "New one-page **Agent Run Order** at the front of the guide (flow, step table with DryRun setting, input/output and go/no-go per step, rules)."],
   ["2.6", "RegistrationLog corrected: registration is logged to the **Certification Log certlog.nsf** on the registration server (HCL: any non-empty value → CERTLOG.NSF; empty = no logging). log.nsf is the server's general log. Prerequisite check for certlog.nsf added (B4)."],
   ["2.5", "**Prerequisite: pre-create the numbered mail folders** (mail1…mailN, one per 1000 users) on every home server (B4). Preflight calculates the folders needed per server and writes the create commands. New `MailFolderMax`: Build Batch never assigns a folder above the number you created."],
   ["2.4", "Mail file **naming = last name** (configurable), **uniqueness** checked against all mail folders on the home server, Person documents, open batches and the batch itself (clash → smith2.nsf or ERROR), **numbered folders** mail1, mail2… with max 1000 mail files each. MailFileNote recorded in batch file, summary, results and audit."],
@@ -65,6 +66,7 @@ p("This guide assumes **nothing has been created yet**: no folders, no tool data
 tbl(["Part", "Contents", "When"], [
   ["A – Understand", "What BulkReg does, how a batch works, everything you will create", "Read once (10 minutes)"],
   ["B – One-time setup", "Procedures B1–B21: from an empty workstation to a tested tool", "Once"],
+  ["Agent Run Order", "One page: which agent, in which order, with which DryRun setting", "Keep it next to you"],
   ["C – Run a batch", "Procedures C1–C9: build, review, dry-run, register, verify, close", "For every batch of users"],
   ["D – Reference", "Multi-server design, file formats, settings, results, troubleshooting, security, glossary", "Look up as needed"],
 ], [2000, 5000, 2360]);
@@ -91,6 +93,57 @@ tbl(["Object", "Canonical form", "Abbreviated form", "Notes"], [
   ["Organizational policy (one OU)", "`*/Sales/Demo`", "–", "Applied automatically to users under /Sales/Demo"],
   ["Explicit policy", "`*/DirSync-Vault`", "–", "Applied only when named at registration (Policy column)"],
 ], [2300, 2700, 2300, 2060]);
+pb();
+
+// ================================================================ RUN ORDER
+h1("Agent Run Order (read this first)");
+p("BulkReg has **five agents**. Only **four** are used, always in this order: **01 → 02 → (you review) → 03 dry run → 03 live → 04**. Agent **05 is not part of the process**; it is only for the manual alternative in Appendix A. Run every agent from bulkreg.nsf > **Actions > BulkReg**.");
+code(`FOR EVERY BATCH:
+
+ 1. Actions > BulkReg > 01 - Preflight Check        (read-only)
+         -> fix ERRORs, create the mail folders it lists
+ 2. Actions > BulkReg > 02 - Build Batch            (read-only)
+         -> C:\\BulkReg\\batches\\BATCH-<id>.csv + BATCH-<id>_summary.txt
+ 3. YOU review BATCH-<id>.csv                        (Include Y/N, server, mail file)
+ 4. bulkreg.ini: DryRun=1
+    Actions > BulkReg > 03 - Register Batch         (simulation)
+         -> BATCH-<id>_dryrun_<run>.csv : every row WOULD_REGISTER ?
+ 5. bulkreg.ini: DryRun=0
+ 6. Actions > BulkReg > 03 - Register Batch         (LIVE - type the batch ID)
+         -> BATCH-<id>_results.csv     (batch is now DONE)
+ 7. bulkreg.ini: DryRun=1
+ 8. Actions > BulkReg > 04 - Verify Registration and Vault   (choose the batch)
+         -> BATCH-<id>_verify_<run>.csv : REGISTERED + IN_VAULT + MAILFILE_OK ?
+ 9. Hand over passwords, delete secrets, then the next batch: back to step 1 (or 2)
+
+FIRST TIME ONLY : run steps 2-8 once with a 2-user pilot batch (C5).
+NOT IN THE CYCLE: 05 - Export to Registration Text File (manual method only).`);
+tbl(["#", "Do this", "Agent / action", "DryRun", "Input", "Output", "Go on only if"], [
+  ["1", "Check environment and users", "**01 - Preflight Check**", "any", "bulkreg.ini, mapping, names.nsf", "Preflight audit CSV, _mailfolders.txt", "0 environment errors; mail folders exist"],
+  ["2", "Select the next batch", "**02 - Build Batch**", "any", "names.nsf, open batches, servers", "BATCH-<id>.csv, _summary.txt", "Counts per server look right"],
+  ["3", "Review the batch", "You (Excel as text / Notepad)", "–", "BATCH-<id>.csv", "Reviewed BATCH-<id>.csv", "Every Include=Y row checked; file saved"],
+  ["4", "Simulate", "**03 - Register Batch**", "**1**", "BATCH-<id>.csv", "BATCH-<id>_dryrun_<run>.csv", "All rows WOULD_REGISTER"],
+  ["5", "Switch to live", "Edit bulkreg.ini", "set **0**", "–", "–", "Change approved"],
+  ["6", "Register", "**03 - Register Batch** (type the batch ID)", "**0**", "same BATCH-<id>.csv", "BATCH-<id>_results.csv (batch DONE), password file", "Run finished"],
+  ["7", "Back to safe mode", "Edit bulkreg.ini", "set **1**", "–", "–", "–"],
+  ["8", "Check the result", "**04 - Verify Registration and Vault** (choose the batch)", "any", "BATCH-<id>.csv", "BATCH-<id>_verify_<run>.csv", "REGISTERED + IN_VAULT + MAILFILE_OK"],
+  ["9", "Close", "Hand over passwords; PurgeSecrets", "1", "password file, ids", "–", "Then start the next batch at step 1 (or 2)"],
+], [400, 1500, 2000, 1000, 1500, 1700, 1260]);
+h3("Rules");
+ul(
+  "**03 only accepts a batch file built by 02.** It never selects users by itself. There is no 03 without 02.",
+  "**Always run 03 twice per batch:** first with DryRun=1, then with DryRun=0, on the **same** batch file.",
+  "**One LIVE run per batch.** After it, the batch is DONE and 03 refuses it. Users not registered (FAILED, NOT_PROCESSED) are picked up again by the next 02.",
+  "**01 before 02** the first time and whenever AD data, server_mapping.csv or servers changed. Otherwise it is recommended before each batch.",
+  "**04 after every LIVE run**, and again later for users that were still pending (vault or mail file).",
+  "**Only one batch open at a time** is the simplest way to work. 02 never puts a user into two open batches.",
+  "**05 is never part of this sequence.**"
+);
+h3("Where each step is described in detail");
+tbl(["Step", "Procedure"], [
+  ["1", "C1 Preflight"], ["2", "C2 Build a batch"], ["3", "C3 Review the batch file"], ["4", "C4 Dry-run the batch"],
+  ["First batch only", "C5 Pilot (2 users): steps 2–8 with two users"], ["5–7", "C6 Register the reviewed batch"], ["8", "C7 Verify"], ["9", "C8 Hand over and clean up, C9 Next batch"],
+], [2400, 6960]);
 pb();
 
 // ================================================================ PART A
@@ -562,7 +615,7 @@ pb();
 
 // ================================================================ PART C
 h1("Part C – Run a Batch (repeat for every batch)");
-p("Do C1–C9 in order. Record each batch in the batch log (C9). The first time, include C5 (pilot).");
+p("Do C1–C9 in order. This is the **Agent Run Order** page in detail: 01 → 02 → review → 03 (DryRun=1) → 03 (DryRun=0) → 04. Record each batch in the batch log (C9). The first time, include C5 (pilot).");
 
 h2("C1 Preflight: see the whole picture");
 meta("Domino administrator", "bulkreg.nsf", "nothing");

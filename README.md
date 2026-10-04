@@ -3,6 +3,25 @@
 BulkReg 1.3.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
 **Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v2.5. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
+## Agent run order (per batch)
+All agents run from bulkreg.nsf > **Actions > BulkReg** in the Windows Domino Administrator client.
+
+| # | Agent / action | DryRun | Result |
+|---|---|---|---|
+| 1 | **01 - Preflight Check** | any | Fix ERRORs; create the mail folders listed in `_mailfolders.txt` |
+| 2 | **02 - Build Batch** | any | `BATCH-<id>.csv` + `_summary.txt` (nothing registered) |
+| 3 | **You review** `BATCH-<id>.csv` | – | Include Y/N, server, mail file checked |
+| 4 | **03 - Register Batch** | **1** | `BATCH-<id>_dryrun_<run>.csv`: every row WOULD_REGISTER |
+| 5 | set `DryRun=0` | 0 | – |
+| 6 | **03 - Register Batch** (type the batch ID) | **0** | `BATCH-<id>_results.csv`, batch DONE |
+| 7 | set `DryRun=1` | 1 | – |
+| 8 | **04 - Verify Registration and Vault** (choose the batch) | any | REGISTERED + IN_VAULT + MAILFILE_OK |
+| 9 | Hand over passwords, delete secrets | 1 | Next batch: back to 1 (or 2) |
+
+- **First time only:** run steps 2–8 once with a 2-user pilot batch.
+- **Agent 05** (text-file export) is **not** part of this sequence.
+- **03 cannot run without a batch file from 02**, and each batch can be registered live only once.
+
 ## What it does
 DirSync creates Person documents for AD users, but those users have no Notes ID and no Domino mail file. BulkReg turns them into **full Domino users** in **reviewed batches**, using HCL's `NotesRegistration.ContactNoteID`, which upgrades the existing Person document in place. For each user it:
 
