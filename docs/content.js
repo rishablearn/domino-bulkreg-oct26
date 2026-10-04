@@ -1,11 +1,19 @@
-// BulkReg Administrator Guide v3.2 (BulkReg 3.2.0) — single source for Word + Web.
+// BulkReg Administrator Guide — single source for Word + Web.
+// The version is read from the kit's VERSION file, so guide, code and config always carry the same number.
+const fsV = require("fs"), pathV = require("path");
+const KIT_VERSION = (() => {
+  for (const p of [pathV.join(__dirname, "..", "VERSION"), pathV.join(__dirname, "VERSION")]) {
+    try { return fsV.readFileSync(p, "utf8").trim(); } catch (e) { /* try next */ }
+  }
+  throw new Error("VERSION file not found next to the docs folder");
+})();
 // Assumes NOTHING exists yet. Every procedure: purpose, who/where, before you start,
 // numbered single-action steps with expected results, and a "Done when" check.
 const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "3.2",  // release 3.2.6
+  version: KIT_VERSION,
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -38,20 +46,21 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 3.2.6: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg " + KIT_VERSION + ": BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
-  ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.2.7", "**Release 3.2.7.** Version numbers made fully consistent: the guide now carries the full release number (read from the VERSION file) instead of 3.2; revision history and CHANGELOG use full numbers; new helper command `bulkreg.cmd Versions` checks every file against VERSION. No change to the LotusScript logic (only the version lines)."],
   ["3.2.6", "**Release 3.2.6.** Review round: log database opened before the access check (Agent 01), MailSystem set to Notes explicitly (Agent 03), MaxScan default 0. New B17a: how to update the code to a new release."],
   ["3.2.5", "**Release 3.2.5.** Compile fix in Agent 01 (constants DBACL_CREATE_DOCUMENTS / DBACL_DELETE_DOCUMENTS); all Domino constants and NotesRegistration properties checked against the HCL reference."],
   ["3.2.4", "**Release 3.2.4.** Compile fix in BulkRegCommon and Agent 03: `UBound(Split(...))` replaced by the new helper BR_ListCount (Type mismatch)."],
   ["3.2.3", "**Release 3.2.3.** Full syntax review of the code: reserved word `base` renamed, Type assignment replaced by BR_ClearUser, **IsIDInVault arguments corrected** (username, servername). Re-paste the library and Agent 03 (and recompile all agents)."],
   ["3.2.2", "**Release 3.2.2.** Compile fixes in BulkRegCommon (B17): the selection formula string now uses `{…}` delimiters because the formula contains `|`; two missing quotes fixed. Re-paste the library (STEP C) and recompile all agents."],
   ["3.2.1", "**Release 3.2.1.** Database placement re-validated: tool database **local** (code only, client UI, your ID), log database on a **server** (shared audit record). B13 explains why; B14 adds local encryption and consistent ACL (a local ACL alone is not a boundary); B15 tightens the log ACL (operators Author + Create documents, no Delete; owner group separate), template-server tip, backup and size. Preflight checks both: tool database local, and your access to the log database."],
-  ["3.2", "**Release 3.2.0.** **Mail cluster replicas:** list the cluster once (`MailClusterServers`); 03 requests a replica of every new mail file on each other member through AdminP (Create Replica), 04 verifies them (REPLICAS_OK). Mail file names and numbered folders are allocated once for the whole cluster. Mapping column 8 ClusterReplicas. **Batches of 1000** (BatchSize default). Worked example for one cluster of 4 servers (2 DC, 2 DR) with 2 × 2500 users (B12.7). New D3c; B4 cluster prerequisites; pattern ranges `[a-l]*` documented."],
-  ["3.1", "**Release 3.1.0.** server_mapping.csv fully documented (B12.1–B12.9: format, matching, fields, order, step-by-step, worked examples, testing, common mistakes) and a self-explaining template. Preflight writes a **mapping test** (_mapping.txt: users per rule). Agents stop if a mapping rule still contains a <placeholder>; warning when no catch-all rule exists. Consistency check of all settings, names and versions."],
-  ["3.0", "**Release 3.0.0.** One version number across the whole kit: guide 3.0, library and all agents 3.0.0, bulkreg.ini, server_mapping.csv, PowerShell helper, Audit Viewer, README, VERSION and CHANGELOG.md. Content as in 2.9."],
+  ["3.2.0", "**Release 3.2.0.** **Mail cluster replicas:** list the cluster once (`MailClusterServers`); 03 requests a replica of every new mail file on each other member through AdminP (Create Replica), 04 verifies them (REPLICAS_OK). Mail file names and numbered folders are allocated once for the whole cluster. Mapping column 8 ClusterReplicas. **Batches of 1000** (BatchSize default). Worked example for one cluster of 4 servers (2 DC, 2 DR) with 2 × 2500 users (B12.7). New D3c; B4 cluster prerequisites; pattern ranges `[a-l]*` documented."],
+  ["3.1.0", "**Release 3.1.0.** server_mapping.csv fully documented (B12.1–B12.9: format, matching, fields, order, step-by-step, worked examples, testing, common mistakes) and a self-explaining template. Preflight writes a **mapping test** (_mapping.txt: users per rule). Agents stop if a mapping rule still contains a <placeholder>; warning when no catch-all rule exists. Consistency check of all settings, names and versions."],
+  ["3.0.0", "**Release 3.0.0.** One version number across the whole kit: guide, library and all agents 3.0.0, bulkreg.ini, server_mapping.csv, PowerShell helper, Audit Viewer, README, VERSION and CHANGELOG.md. Content as in 2.9."],
   ["2.9", "**DryRun explained** (D3b, bulkreg.ini). **Central BulkReg log database is now required** (B15): every run, every action and one AUDIT entry per user are written there; agents stop if it cannot be opened."],
   ["2.8", "Mail folder layout made explicit: mail1, mail2 … are created **directly under the Domino data directory**, next to the existing mail folder, not inside it. Folder diagram, plain explanation of MailFolderPrefix / MailFileDir / new MailExistingFolders. BulkReg rejects a prefix with a number (mail1) or a path (mail\\mail) at start-up."],
   ["2.7", "New one-page **Agent Run Order** at the front of the guide (flow, step table with DryRun setting, input/output and go/no-go per step, rules)."],
@@ -1181,6 +1190,7 @@ tbl(["Command", "Does"], [
   ["`bulkreg.cmd Status [file]`", "Totals by result and the rows that need attention"],
   ["`bulkreg.cmd Tail`", "Follows the newest debug log"],
   ["`bulkreg.cmd PurgeSecrets [-IncludeIds] [-Yes]`", "Lists, then deletes, password files and ID files"],
+  ["`bulkreg.cmd Versions`", "Checks that every kit file (library, agents, config, helper, Audit Viewer, README, CHANGELOG, guide) carries the release number in VERSION"],
 ], [3800, 5560]);
 
 h2("D6 Troubleshooting");

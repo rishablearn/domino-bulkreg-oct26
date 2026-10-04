@@ -1,6 +1,6 @@
 <#
 =====================================================================
- bulkreg.ps1  -  BulkReg 3.2.6 OPTIONAL helper for the Windows admin workstation
+ bulkreg.ps1  -  BulkReg 3.2.7 OPTIONAL helper for the Windows admin workstation
                  (the machine running the HCL Domino Administrator client)
 
  Registration runs entirely inside the Domino Administrator client
@@ -23,7 +23,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('Help', 'Init', 'Check', 'DryRun', 'Batches', 'Status', 'Tail', 'PurgeSecrets')]
+    [ValidateSet('Help', 'Init', 'Check', 'DryRun', 'Batches', 'Status', 'Tail', 'PurgeSecrets', 'Versions')]
     [string]$Command = 'Help',
     [Parameter(Position = 1)] [string]$Arg,
     [string]$Base = $(if ($env:BULKREG_BASE) { $env:BULKREG_BASE } else { 'C:\BulkReg' }),
@@ -33,7 +33,7 @@ param(
 )
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$Version = '3.2.6'
+$Version = '3.2.7'
 if (-not $Config) { $Config = if ($env:BULKREG_CONFIG) { $env:BULKREG_CONFIG } else { Join-Path $Base 'config\bulkreg.ini' } }
 $KitConfig = Join-Path $PSScriptRoot '..\..\config'
 $script:Fails = 0; $script:Warns = 0
@@ -105,6 +105,7 @@ Base=$Base  Config=$Config
   Status [file.csv]                  Summarise an audit or BATCH-*_results.csv by Result (default: newest audit)
   Tail                               Follow the newest debug log
   PurgeSecrets [-IncludeIds] [-Yes]  List (default) or delete password/text files (and local ID files)
+  Versions                           Check that every kit file carries the release number in VERSION
 
 The agents themselves are run from bulkreg.nsf > Actions in the Domino Administrator client.
 "@ | Write-Host
@@ -161,6 +162,39 @@ function Invoke-Check {
     else { Warn 'Domino Administrator client not running (start it before running the agents)' }
     Show-Summary
 }
+# ---------- version consistency of the kit (read-only) ----------
+function Test-Versions {
+    $kit = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $want = (Get-Content -LiteralPath (Join-Path $kit 'VERSION') -TotalCount 1).Trim()
+    Write-Host "Kit: $kit   VERSION: $want"
+    $checks = @(
+        @{ File = 'lotusscript\BulkRegCommon.lss';             Pattern = 'BR_VERSION = "([0-9.]+)"' },
+        @{ File = 'lotusscript\Agent01_Preflight.lss';         Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'lotusscript\Agent02_BuildBatch.lss';        Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'lotusscript\Agent03_RegisterBatch.lss';     Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'lotusscript\Agent04_VerifyVaultStatus.lss'; Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'lotusscript\Agent05_ExportToBatchRegFile.lss'; Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'config\bulkreg.ini';                         Pattern = 'BulkReg ([0-9.]+)' },
+        @{ File = 'config\server_mapping.csv';                  Pattern = 'BulkReg ([0-9.]+)' },
+        @{ File = 'scripts\windows\bulkreg.cmd';                Pattern = 'BulkReg ([0-9.]+)' },
+        @{ File = 'tools\BulkReg_AuditViewer.html';              Pattern = '>v([0-9.]+)<' },
+        @{ File = 'README.md';                                  Pattern = 'BulkReg ([0-9.]+)' },
+        @{ File = 'CHANGELOG.md';                               Pattern = '\| \*\*([0-9.]+)\*\* \|' },
+        @{ File = 'docs\BulkReg_Admin_Guide.html';               Pattern = 'Version ([0-9.]+)<' }
+    )
+    if ($Version -eq $want) { Pass "bulkreg.ps1 $Version" } else { Fail "bulkreg.ps1 is $Version, VERSION is $want" }
+    foreach ($c in $checks) {
+        $p = Join-Path $kit $c.File
+        if (-not (Test-Path -LiteralPath $p)) { Warn "$($c.File) not found"; continue }
+        $m = [regex]::Match((Get-Content -LiteralPath $p -Raw -Encoding UTF8), $c.Pattern)
+        if (-not $m.Success) { Warn "$($c.File): no version found" }
+        elseif ($m.Groups[1].Value -eq $want) { Pass "$($c.File) $($m.Groups[1].Value)" }
+        else { Fail "$($c.File) is $($m.Groups[1].Value), VERSION is $want" }
+    }
+    Write-Host 'In bulkreg.nsf: the first line of every debug log shows the version the agents were compiled with (==== BulkReg <version>).'
+    Show-Summary
+}
+
 function Show-Summary { Write-Host "`nResult: $script:Fails fail(s), $script:Warns warning(s)" }
 
 function Show-Status([string]$File) {
@@ -171,7 +205,7 @@ function Show-Status([string]$File) {
     Write-Host ("Run {0}  tool={1}  mode={2}  operator={3}  rows={4}" -f $rows[0].RunID, $rows[0].Tool, $rows[0].Mode, $rows[0].Operator, $rows.Count)
     $rows | Group-Object Result | Sort-Object Count -Descending | Format-Table @{n = 'Result'; e = { $_.Name } }, Count -AutoSize
     if ($rows[0].PSObject.Properties.Name -contains 'ReplicaStatus') {
-        # cluster replicas (3.2.6+): group by status without the server details
+        # cluster replicas (3.2.7+): group by status without the server details
         $rows | Where-Object { $_.ReplicaStatus } | Group-Object { ($_.ReplicaStatus -split ' \(')[0] } | Sort-Object Count -Descending |
             Format-Table @{n = 'ReplicaStatus'; e = { $_.Name } }, Count -AutoSize
     }
@@ -221,4 +255,5 @@ switch ($Command) {
     'Status'       { Show-Status $Arg }
     'Tail'         { Show-Tail }
     'PurgeSecrets' { Remove-Secrets }
+    'Versions'     { Test-Versions }
 }
