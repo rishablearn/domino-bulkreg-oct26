@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 1.6.0
+' Script Library : BulkRegCommon            Version 1.7.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_ExportToBatchRegFile,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "1.6.0"
+Public Const BR_VERSION = "1.7.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -139,6 +139,14 @@ Function BR_Init(toolName As String) As Boolean
 
 	If Not BR_LoadConfig(BR_Path(CStr(cfgPath))) Then Exit Function
 	gLogLevel = BR_LevelFromName(CfgS("LogLevel", "INFO"))
+
+	' mail folder settings must describe folders DIRECTLY under the Domino data directory
+	Dim mfErr As String
+	mfErr = BR_CheckMailFolderConfig()
+	If mfErr <> "" Then
+		BR_Msg "Mail folder setting error in " & CStr(cfgPath) & ":" & Chr$(10) & Chr$(10) & mfErr, 16
+		Exit Function
+	End If
 	If CfgS("BaseDir", "") <> "" Then gBase = BR_Dir(CfgS("BaseDir", ""))
 
 	' --- output files ---
@@ -526,7 +534,9 @@ End Function
 '   scanned List: "<server>"            -> server already scanned
 '---------------------------------------------------------------------
 ' Reads every database on the home server once and records the names and
-' folder fill of all files under the mail folders (mail, mail1, mail2 ...).
+' folder fill of all files in the mail folders: the numbered folders directly
+' under the data directory (mail1, mail2 ...) and the existing mail folders
+' listed in MailExistingFolders (default: mail).
 Sub BR_ScanServerMail(server As String, names List As String, counts List As Long, scanned List As String)
 	On Error GoTo ErrH
 	Dim sk As String, dbdir As NotesDbDirectory, d As NotesDatabase, fp As String
@@ -548,7 +558,7 @@ Sub BR_ScanServerMail(server As String, names List As String, counts List As Lon
 			base = fp
 		End If
 		If Right$(base, 4) = ".nsf" Then base = Left$(base, Len(base) - 4)
-		If Left$(folder, Len(prefix)) = prefix Or folder = BR_MailSingleDir() Then
+		If BR_IsMailFolder(folder) Then
 			If Not IsElement(names(sk & "!!" & base)) Then names(sk & "!!" & base) = "file " & fp
 			If IsElement(counts(sk & "!!" & folder)) Then counts(sk & "!!" & folder) = counts(sk & "!!" & folder) + 1 Else counts(sk & "!!" & folder) = 1
 			n = n + 1
@@ -561,6 +571,49 @@ ErrH:
 	BR_Log LVL_WARN, "Could not scan " & server & " (" & Error$ & ") - uniqueness then relies on the directory and on direct file checks"
 	Exit Sub
 End Sub
+
+' Validates the mail folder settings. Returns "" or an error text.
+'   Numbered folders are <data directory>\<MailFolderPrefix><n>, e.g. Data\mail1.
+'   The prefix is the name WITHOUT the number and WITHOUT any path.
+Function BR_CheckMailFolderConfig() As String
+	Dim p As String, e As String
+	p = Trim$(CfgS("MailFolderPrefix", "mail"))
+	If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" Then
+		If p = "" Then e = e & "MailFolderPrefix is empty. Use e.g. MailFolderPrefix=mail (folders become mail1, mail2 ...)." & Chr$(10)
+		If InStr(p, "\") > 0 Or InStr(p, "/") > 0 Or InStr(p, ":") > 0 Then e = e & "MailFolderPrefix='" & p & "' contains a path. The numbered folders are created DIRECTLY under the Domino data directory; use only the name, e.g. MailFolderPrefix=mail." & Chr$(10)
+		If Right$(p, 1) Like "#" Then e = e & "MailFolderPrefix='" & p & "' ends with a number. Write it WITHOUT the number: MailFolderPrefix=mail gives mail1, mail2 ..." & Chr$(10)
+		If CfgL("MailFilesPerFolder", 1000) < 1 Then e = e & "MailFilesPerFolder must be 1 or more (e.g. 1000)." & Chr$(10)
+	End If
+	If InStr(CfgS("MailExistingFolders", "mail"), ":") > 0 Then e = e & "MailExistingFolders must be folder names relative to the data directory, e.g. mail" & Chr$(10)
+	BR_CheckMailFolderConfig = e
+End Function
+
+' True for folders whose mail file names count for uniqueness:
+'   numbered folders <prefix><n> directly under the data directory (mail1, mail2 ...),
+'   folders listed in MailExistingFolders (default: mail), and MailFileDir in SINGLE mode.
+Function BR_IsMailFolder(folder As String) As Boolean
+	Dim f As String, p As String, rest As String, lst As Variant, i As Integer
+	f = LCase$(Trim$(folder))
+	If f = "" Then Exit Function
+	p = LCase$(Trim$(CfgS("MailFolderPrefix", "mail")))
+	If p <> "" And Left$(f, Len(p)) = p Then
+		rest = Mid$(f, Len(p) + 1)
+		If rest <> "" And InStr(rest, "\") = 0 Then
+			If IsNumeric(rest) Then
+				BR_IsMailFolder = True
+				Exit Function
+			End If
+		End If
+	End If
+	lst = Split(LCase$(BR_Path(CfgS("MailExistingFolders", "mail"))), ",")
+	For i = 0 To UBound(lst)
+		If Trim$(lst(i)) <> "" And f = Trim$(lst(i)) Then
+			BR_IsMailFolder = True
+			Exit Function
+		End If
+	Next
+	If UCase$(CfgS("MailFolderMode", "NUMBERED")) <> "NUMBERED" And f = BR_MailSingleDir() Then BR_IsMailFolder = True
+End Function
 
 ' Highest folder number (mail1..mailN) needed on a server to place <users> more
 ' mail files, filling existing folders first. Used by Preflight for prerequisite B4.

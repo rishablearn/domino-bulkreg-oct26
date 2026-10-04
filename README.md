@@ -33,7 +33,13 @@ Every action is audited.
 **Mail files (`bulkreg.ini`, guide D3a):**
 - **Name = last name** (`MailFileNaming=LASTNAME` → `smith.nsf`; `Müller` → `mueller.nsf`).
 - **Unique per home server.** A name is checked against all mail folders on the server, Person documents, open batches and the batch itself. A clash becomes `smith2.nsf` (`MailFileCollision=SUFFIX`), or the row is excluded (`ERROR`).
-- **Numbered folders** `mail1`, `mail2` … with at most `MailFilesPerFolder=1000` files each, counting files already there.
+- **Numbered folders** `mail1`, `mail2` … **directly under the Domino data directory** (next to the existing `mail` folder, not inside it), with at most `MailFilesPerFolder=1000` files each, counting files already there. `MailFolderPrefix=mail` is the name **without** the number; BulkReg rejects `mail1` or `mail\mail`. Existing folders in `MailExistingFolders` (default `mail`) are only checked for duplicate names and never written to.
+  ```
+  <Domino data directory>   D:\Domino\Data  or  /local/notesdata
+    |-- mail\     existing mail files (names checked, untouched)
+    |-- mail1\    new mail files    1-1000
+    |-- mail2\    new mail files 1001-2000
+  ```
 - **Prerequisite: pre-create the folders on every home server**, one per 1000 users: 5,000 users → `mail1`–`mail5`, 10,000 → `mail1`–`mail10`. Set `MailFolderMax` to the number you created; Build Batch never assigns a higher folder. Preflight writes the exact folders and commands per server to `C:\BulkReg\audit\BulkReg_Preflight_<run>_mailfolders.txt`.
 - **Recorded everywhere:** every decision is written to the batch file (`MailFile`, `MailFileNote`), the batch summary (folder fill), and the audit and results CSVs (`MailFile`, `MailFileStatus`, `MailFileNote`).
 - **Optional settings:** `MailTemplate`, `MailACLManager`, `MailQuotaSizeLimit`, `MailCreateFTIndex`.
