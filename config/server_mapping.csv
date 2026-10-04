@@ -1,4 +1,5 @@
 MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer
+# BulkReg 3.0.0 - multi-server mapping rules
 # Rules are evaluated top-down; FIRST match wins. Pattern uses LotusScript Like (* and ?), case-insensitive.
 # MatchField  = any Person document item (Department, InternetAddress, Location, CompanyName, OfficeCity ...)
 # HomeServer  = CN=DominoADMail/O=Demo  or  DominoADMail/Demo  (both accepted)

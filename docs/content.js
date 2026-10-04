@@ -1,11 +1,11 @@
-// BulkReg Administrator Guide v2.0 — single source for Word + Web.
+// BulkReg Administrator Guide v3.0 (BulkReg 3.0.0) — single source for Word + Web.
 // Assumes NOTHING exists yet. Every procedure: purpose, who/where, before you start,
 // numbered single-action steps with expected results, and a "Done when" check.
 const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "2.9",
+  version: "3.0",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -38,11 +38,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 1.8.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 3.0.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["3.0", "**Release 3.0.0.** One version number across the whole kit: guide 3.0, library and all agents 3.0.0, bulkreg.ini, server_mapping.csv, PowerShell helper, Audit Viewer, README, VERSION and CHANGELOG.md. Content as in 2.9."],
   ["2.9", "**DryRun explained** (D3b, bulkreg.ini). **Central BulkReg log database is now required** (B15): every run, every action and one AUDIT entry per user are written there; agents stop if it cannot be opened."],
   ["2.8", "Mail folder layout made explicit: mail1, mail2 … are created **directly under the Domino data directory**, next to the existing mail folder, not inside it. Folder diagram, plain explanation of MailFolderPrefix / MailFileDir / new MailExistingFolders. BulkReg rejects a prefix with a number (mail1) or a path (mail\\mail) at start-up."],
   ["2.7", "New one-page **Agent Run Order** at the front of the guide (flow, step table with DryRun setting, input/output and go/no-go per step, rules)."],

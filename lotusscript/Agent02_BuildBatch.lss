@@ -1,6 +1,7 @@
 '=====================================================================
 ' Agent name : BulkReg\02 - Build Batch   (select + validate; READ-ONLY on names.nsf)
 '              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
+' Version    : 3.0.0  (BulkReg release; library BulkRegCommon 3.0.0)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
