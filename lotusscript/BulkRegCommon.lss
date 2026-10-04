@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.4.1
+' Script Library : BulkRegCommon            Version 3.5.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.4.1"
+Public Const BR_VERSION = "3.5.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -100,7 +100,7 @@ Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes
 Public Const BR_SKIP_NO_INET = "SKIP:InternetAddress missing - user skipped and flagged (add the address in AD; after DirSync the next Build Batch picks the user up); "
 Public Const BR_RESULT_NO_INET = "SKIPPED_NO_INET"
 Public Const BR_WARN_NO_INET = "WARN:InternetAddress missing - registered without an Internet address (add it in AD, DirSync syncs it); "
-Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues"
+Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,NotesName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues"
 
 '#####################################################################
 ' --- part 3: Subs and Functions (Designer gives each its own entry) ---
@@ -1004,6 +1004,9 @@ Function BR_Validate(u As BRUser) As String
 		If CfgB("SkipNoInternetAddress", True) Then s = s & BR_SKIP_NO_INET Else s = s & BR_WARN_NO_INET
 	End If
 	If u.HomeServer = "" Then s = s & "ERROR:No HomeServer (mapping/default); "
+	' OrgUnit is ONE plain OU name (Sales). O=Demo, OU=Sales or Sales/Demo would create a wrong
+	' Notes name such as Neha Arora/O=Demo/Demo.
+	If InStr(u.OrgUnit, "=") > 0 Or InStr(u.OrgUnit, "/") > 0 Or InStr(u.OrgUnit, "\") > 0 Then s = s & "ERROR:OrgUnit '" & u.OrgUnit & "' must be one plain OU name such as Sales (no O=, OU= or /); "
 	If u.MailFile = "" Then
 		s = s & "ERROR:No MailFile; "
 	ElseIf LCase$(Right$(u.MailFile, 4)) <> ".nsf" Or InStr(u.MailFile, ":") > 0 Or Left$(u.MailFile, 1) = "\" Then
@@ -1061,6 +1064,105 @@ Sub BR_AppendLine(path As String, txt As String)
 	Print #fh, txt
 	Close #fh
 End Sub
+
+'=====================================================================
+' NOTES NAMES  - which hierarchical name a user gets, and the check after
+'                registration. Correct:  Neha Arora/Demo  or  Neha Arora/Sales/Demo
+'                Wrong (old CertifierName/OrgUnit format): Neha Arora/O=Demo/Demo
+'=====================================================================
+' CertifierName for NotesRegistration in the form the Domino registration uses: "/Demo",
+' "/Sales/Demo". Accepts O=Demo, /O=Demo, Demo, /Demo, OU=Sales/O=Demo, Sales/Demo.
+Function BR_CertifierForReg() As String
+	Dim s As String, nn As NotesName
+	s = Trim$(CfgS("CertifierName", ""))
+	If s = "" Then Exit Function
+	Do While Left$(s, 1) = "/"
+		s = Mid$(s, 2)
+	Loop
+	If InStr(s, "=") > 0 Then
+		Set nn = New NotesName(s)
+		s = nn.Abbreviated                  ' O=Demo -> Demo ; OU=Sales/O=Demo -> Sales/Demo
+	End If
+	BR_CertifierForReg = "/" & s
+End Function
+
+' Common name the registration builds from the Person document: First [Middle] Last
+Function BR_CommonName(u As BRUser) As String
+	Dim s As String
+	s = u.FirstName
+	If u.MiddleInitial <> "" Then s = s & " " & u.MiddleInitial
+	BR_CommonName = Trim$(s & " " & u.LastName)
+End Function
+
+' Expected hierarchy after the common name: "/Demo" or "/Sales/Demo"
+Function BR_ExpectedSuffix(ou As String) As String
+	BR_ExpectedSuffix = "/" & BR_IIfStr(Trim$(ou) <> "", Trim$(ou) & "/", "") & Mid$(BR_CertifierForReg(), 2)
+End Function
+
+' Expected Notes name, abbreviated: Neha Arora/Demo
+Function BR_ExpectedName(u As BRUser) As String
+	BR_ExpectedName = BR_CommonName(u) & BR_ExpectedSuffix(u.OrgUnit)
+End Function
+
+' "" when the registered name has the expected hierarchy, else a description of the problem
+Function BR_NameProblem(actual As String, u As BRUser) As String
+	Dim a As String, sfx As String
+	If Not CfgB("UseCA", True) Then Exit Function     ' certifier ID file: hierarchy comes from the ID, not checked
+	a = BR_Abbr(actual)
+	sfx = BR_ExpectedSuffix(u.OrgUnit)
+	If InStr(a, "=") > 0 Then
+		BR_NameProblem = "Notes name '" & a & "' contains '=' - expected '" & BR_ExpectedName(u) & "'"
+	ElseIf LCase$(Right$(a, Len(sfx))) <> LCase$(sfx) Then
+		BR_NameProblem = "Notes name '" & a & "' does not end with '" & sfx & "' - expected '" & BR_ExpectedName(u) & "'"
+	ElseIf InStr(Left$(a, Len(a) - Len(sfx)), "/") > 0 Then
+		BR_NameProblem = "Notes name '" & a & "' has an extra level - expected '" & BR_ExpectedName(u) & "'"
+	End If
+End Function
+
+'=====================================================================
+' MAIL FILE TITLE  (MailFileTitle in bulkreg.ini, default {CN} -> "Neha Arora")
+'=====================================================================
+Function BR_MailTitle(u As BRUser) As String
+	Dim t As String, cn As String, nn As NotesName
+	If u.FullNameAfter <> "" Then
+		Set nn = New NotesName(u.FullNameAfter)
+		cn = nn.Common
+	Else
+		cn = BR_CommonName(u)
+	End If
+	t = CfgS("MailFileTitle", "{CN}")
+	t = Replace(t, "{CN}", cn)
+	t = Replace(t, "{FirstName}", u.FirstName)
+	t = Replace(t, "{LastName}", u.LastName)
+	t = Replace(t, "{ShortName}", u.ShortName)
+	t = Replace(t, "{InternetAddress}", u.InternetAddress)
+	BR_MailTitle = Trim$(t)
+End Function
+
+' Sets the title of the mail file when it is empty (or always with overwrite=True).
+' Returns TITLE_SET, TITLE_OK, TITLE_EMPTY (check only) or TITLE_ERROR(...).
+Function BR_MailTitleFix(server As String, path As String, title As String, doSet As Boolean, overwrite As Boolean) As String
+	On Error GoTo ErrH
+	Dim db As NotesDatabase
+	Set db = gSession.GetDatabase(server, path, False)
+	If Not db.IsOpen Then Call db.Open("", "")
+	If Not db.IsOpen Then
+		BR_MailTitleFix = "TITLE_ERROR(mail file not found)"
+		Exit Function
+	End If
+	If Trim$(db.Title) <> "" And Not overwrite Then
+		BR_MailTitleFix = "TITLE_OK"
+	ElseIf Not doSet Then
+		BR_MailTitleFix = "TITLE_EMPTY"
+	Else
+		db.Title = title
+		BR_MailTitleFix = "TITLE_SET"
+	End If
+	Exit Function
+ErrH:
+	BR_MailTitleFix = "TITLE_ERROR(" & Error$ & ")"
+	Exit Function
+End Function
 
 '=====================================================================
 ' CENTRAL LOG DATABASE  (LogServer!!LogDb, e.g. bulkreg_log.nsf)

@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.5.0", "**Release 3.5.0.** **Notes names fixed:** CertifierName is passed to the registration as `/Demo` (any of /Demo, Demo, O=Demo accepted), so users become **Neha Arora/Demo** instead of Neha Arora/O=Demo/Demo; OrgUnit values with `=` or `/` are rejected; the batch file shows the **NotesName** each user will get; 03 checks the name after every registration and **stops the run** at the first wrong name (REGISTERED_WRONG_NAME); Verify reports wrong names. **Mail file title:** set to the user's name right after registration (MailFileTitle={CN}); Verify reports empty titles and offers to set them. D6: how to correct users registered with a wrong name."],
   ["3.4.1", "**Release 3.4.1.** Guide only: B18 warns that Designer proposes Target *All selected documents*; D6 row for the message *to run this agent you must have at least one document selected* (set Target: None). Agent headers say the same. No code change."],
   ["3.4.0", "**Release 3.4.0.** **Users without an Internet address are skipped and flagged** (SkipNoInternetAddress=1): not put into a batch, listed in `BATCH-<id>_skipped_no_internet_address.csv`, result SKIPPED_NO_INET; 03 also skips them. **Structured log database:** BulkReg writes its own Run, Entry and Audit documents; new agent **00 - Set Up Log Database** creates a form and 8 categorized views (runs by date, batches, users, results, home servers, problems, skipped users, full log). B15 (blank template), new B20a and D4a."],
   ["3.3.2", "**Release 3.3.2.** Users without an Internet address are a **warning only**, never an error: they stay Include=Y and are registered. Preflight, the Build Batch dialog and the batch summary count them separately (`No Internet addr`). C3 and D6 explain what it means."],
@@ -112,9 +113,10 @@ tbl(["Object", "Canonical form", "Abbreviated form", "Notes"], [
   ["Server with an OU", "`CN=DominoADMail/OU=EMEA/O=Demo`", "`DominoADMail/EMEA/Demo`", "Same rule"],
   ["Mail cluster (4 servers)", "`CN=DominoADMail/O=Demo`, `CN=DominoADMail2/O=Demo` (DC); `CN=DominoADMailDR1/O=Demo`, `CN=DominoADMailDR2/O=Demo` (DR)", "`DominoADMail/Demo`, `DominoADMail2/Demo`, `DominoADMailDR1/Demo`, `DominoADMailDR2/Demo`", "Home servers in DC; every member holds a replica of every mail file"],
   ["Vault server", "`CN=DominoVault/O=Demo`", "`DominoVault/Demo`", "Use the name shown in the vault document"],
-  ["Organization certifier", "`O=Demo`", "`/Demo`", "CertifierName for the Domino CA"],
+  ["Organization certifier", "`O=Demo`", "`/Demo`", "CertifierName for the Domino CA (enter `/Demo`; `Demo` and `O=Demo` are accepted)"],
   ["OU certifier", "`OU=Sales/O=Demo`", "`/Sales/Demo`", "Registers users as John Smith/Sales/Demo"],
-  ["Registered user", "`CN=John Smith/OU=Sales/O=Demo`", "`John Smith/Sales/Demo`", "Result of registration with OrgUnit Sales"],
+  ["Registered user (no OU)", "`CN=Neha Arora/O=Demo`", "`Neha Arora/Demo`", "Result of registration with certifier /Demo and an empty OrgUnit. **Never** `Neha Arora/O=Demo/Demo`."],
+  ["Registered user (OU Sales)", "`CN=John Smith/OU=Sales/O=Demo`", "`John Smith/Sales/Demo`", "Result of registration with OrgUnit Sales"],
   ["Organizational policy (whole org)", "`*/Demo`", "–", "Applied automatically to users under /Demo"],
   ["Organizational policy (one OU)", "`*/Sales/Demo`", "–", "Applied automatically to users under /Sales/Demo"],
   ["Explicit policy", "`*/DirSync-Vault`", "–", "Applied only when named at registration (Policy column)"],
@@ -232,7 +234,7 @@ tbl(["#", "Item", "Example", "Your value"], [
   ["3a", "Mail cluster: ALL members (2–6 servers), or none", "DominoADMail/Demo, DominoADMail2/Demo (DC), DominoADMailDR1/Demo, DominoADMailDR2/Demo (DR)", ""],
   ["4", "How users are split across home servers (waves of N users, department, email domain, location…)", "2500 → DominoADMail/Demo, then 2500 → DominoADMail2/Demo", ""],
   ["5", "Certification method: Domino CA (recommended) or certifier ID file", "Domino CA", ""],
-  ["6", "CA-enabled certifier name (CA) or certifier ID file path", "O=Demo or OU=Sales/O=Demo", ""],
+  ["6", "CA-enabled certifier name (CA) or certifier ID file path", "/Demo (users become Neha Arora/Demo) or /Sales/Demo", ""],
   ["7", "ID Vault name(s) and vault server(s)", "DemoVault on DominoVault/Demo (CN=DominoVault/O=Demo)", ""],
   ["8", "Security Settings document name(s)", "BulkReg-Vault-Security", ""],
   ["9", "Policy type (organizational or explicit, see A4) and exact name(s)", "Explicit: */DirSync-Vault, or organizational: */Demo, */Sales/Demo", ""],
@@ -495,7 +497,8 @@ tbl(["Key", "Enter", "From"], [
   ["RegistrationServer", "The same server", "Worksheet 2"],
   ["RegistrationLog", "Leave `certlog.nsf`. Registration records go to the Certification Log on the registration server.", "–"],
   ["UseCA", "`1` for the Domino CA, `0` for a certifier ID file", "Worksheet 5"],
-  ["CertifierName", "With UseCA=1: the CA certifier, e.g. `O=Demo` or `OU=Sales/O=Demo`", "Worksheet 6"],
+  ["CertifierName", "With UseCA=1: the CA certifier, e.g. `/Demo` (users become **Neha Arora/Demo**) or `/Sales/Demo`. `Demo` and `O=Demo` are accepted and converted to `/Demo`.", "Worksheet 6"],
+  ["DefaultOrgUnit", "**Empty** for Neha Arora/Demo. Only for an extra OU level: ONE plain name, e.g. `Sales` → Neha Arora/Sales/Demo. Never `O=Demo`, `OU=Sales` or `Sales/Demo`.", "Worksheet 10"],
   ["CertifierIDFile", "With UseCA=0: `C:\\BulkReg\\cert\\<file>.id`. With UseCA=1: leave the placeholder or clear it.", "B5 Option 2"],
   ["DefaultHomeServer", "Home server for users that match no specific rule: `DominoADMail/Demo` or `CN=DominoADMail/O=Demo`", "Worksheet 3"],
   ["DefaultPolicy", "Explicit policy **exactly** as listed, e.g. `*/DirSync-Vault`. **Empty** with an organizational policy.", "Worksheet 9"],
@@ -511,6 +514,7 @@ tbl(["Key", "Enter", "From"], [
   ["MailFilesPerFolder", "`1000`", "–"],
   ["MailExistingFolders", "`mail`: your existing mail folder(s). Their file names are checked so no duplicate is created; BulkReg never writes there.", "–"],
   ["MailFileDir", "Only used with `MailFolderMode=SINGLE`. Leave `mail`.", "–"],
+  ["MailFileTitle", "Leave `{CN}`: each new mail file gets the user's name as its database title (e.g. *Neha Arora*)", "–"],
   ["MailFolderMax", "The number of folders you created in B4, e.g. `5` for mail1–mail5 (mail cluster: users of all home servers together)", "Worksheet 11d"],
   ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default)", "Worksheet 11b"],
   ["MailACLManager / MailQuotaSizeLimit", "Manager of each new mail file (**required with a mail cluster**: a group containing your admin ID, e.g. `LocalDomainAdmins`); quota in MB (0 = none)", "Worksheet 11c"],
@@ -902,6 +906,7 @@ ol(
 h3("Check every row");
 tbl(["Check", "How", "If wrong"], [
   ["Right people", "Read FullName and InternetAddress", "Set Include to `N`"],
+  ["Right Notes name", "Read **NotesName**: the name the user will get, e.g. `Neha Arora/Demo` (or `…/Sales/Demo` with an OU). It must never contain `=` or an extra level such as `/O=Demo/Demo`.", "Do not register: correct CertifierName / DefaultOrgUnit / mapping OrgUnit and rebuild (C2)"],
   ["Right home server", "Read HomeServer (and MapRule)", "Correct HomeServer, or fix the mapping and rebuild"],
   ["Right mail file name and folder", "Read MailFile (e.g. `mail2\\smith.nsf`) and MailFileNote (why: naming rule, renamed because the name was taken, folder fill). Renamed rows show **WARN: mail file renamed**.", "Accept, or edit MailFile to a free name in a mail folder (Register Batch re-checks it)"],
   ["Right OU / policy / vault", "Read OrgUnit, Policy and VaultServer", "Correct the value in the row"],
@@ -928,7 +933,7 @@ ol(
   "In **Batch file to register**, accept the proposed path (the newest open batch) or type the path of your batch. Click **OK**.",
   "Read the summary: users to register, users excluded, **users per home server**, **cluster replicas per home server**, registration server, certification. Click **Yes**.",
   "Wait for the end dialog. Open `C:\\BulkReg\\batches\\BATCH-<id>_dryrun_<run>.csv`.",
-  "Check that every row shows **WOULD_REGISTER**, and with a cluster that ReplicaStatus shows **WOULD_REQUEST 3** (one per other member). For SKIPPED or FAILED_VALIDATION rows, read the Message column, then correct the batch row or rebuild the batch (C2)."
+  "Check that every row shows **WOULD_REGISTER**, that the Message column shows the right **Notes name** (e.g. `Notes name: Neha Arora/Demo`) and **mail file title**, and with a cluster that ReplicaStatus shows **WOULD_REQUEST 3** (one per other member). For SKIPPED or FAILED_VALIDATION rows, read the Message column, then correct the batch row or rebuild the batch (C2)."
 );
 done("All approved rows show WOULD_REGISTER. The batch is still OPEN.");
 
@@ -940,9 +945,10 @@ ol(
   "Set `DryRun=0` in bulkreg.ini. Save.",
   "Run **03 - Register Batch**, choose the pilot batch, click **Yes**, type the **batch ID** exactly when asked, and enter the certifier password if UseCA=0.",
   "Read the end dialog: ok=2. Open `BATCH-<id>_results.csv`. *Result:* both rows REGISTERED with VaultStatus IN_VAULT.",
-  "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), hierarchical full name, **MailServer** = the intended home server, **MailFile** = the path from the batch, **MailSystem** = Notes, and **Policy synopsis** showing the policy with the vault. Then open the home server's **Files** tab and confirm the mail file exists. With a mail cluster, open the **Files** tab of each other member after a few minutes: the same path (e.g. `mail1\\smith.nsf`) must exist there too, and admin4.nsf shows the Create Replica requests as processed.",
+  "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), full name **Neha Arora/Demo** (First Last/Demo, or First Last/OU/Demo - never with `O=` in it), **MailServer** = the intended home server, **MailFile** = the path from the batch, **MailSystem** = Notes, and **Policy synopsis** showing the policy with the vault. Then open the home server's **Files** tab and confirm the mail file exists. With a mail cluster, open the **Files** tab of each other member after a few minutes: the same path (e.g. `mail1\\smith.nsf`) must exist there too, and admin4.nsf shows the Create Replica requests as processed.",
   "On a test PC, set up Notes for one pilot user: the ID must download from the vault, the user must be asked to change the password, and the mail file must open. Send a test mail to the user's Internet address and confirm it arrives in the Domino mail file.",
-  "Run **04 - Verify Registration and Vault** and choose the pilot batch. *Result:* 2 × REGISTERED, IN_VAULT, MAILFILE_OK and (with a cluster) REPLICAS_OK 3/3.",
+  "Open the pilot user's mail file (Files tab of the home server): its **Title** is the user's name (e.g. *Neha Arora*), not empty.",
+  "Run **04 - Verify Registration and Vault** and choose the pilot batch. *Result:* 2 × REGISTERED, IN_VAULT, MAILFILE_OK, wrong Notes name = 0, mail file title empty = 0 and (with a cluster) REPLICAS_OK 3/3.",
   "Set `DryRun=1` and clear `ExtraSelection=` in bulkreg.ini. Save."
 );
 done("Both pilot users pass every check. Record the result in the change ticket. You may now run real batches.");
@@ -1032,6 +1038,7 @@ tbl(["Column", "Edit?", "Meaning"], [
   ["BatchID, Seq", "No", "Batch identifier, row number"],
   ["NoteID, UNID, objectGUID", "**Never**", "Identify the Person document and the AD user; checked by Agent 03"],
   ["FullName, FirstName, LastName, ShortName, InternetAddress", "No (fix in AD)", "User data"],
+  ["NotesName", "No", "The Notes name the user will get, e.g. Neha Arora/Demo (from first/last name, OrgUnit and CertifierName)"],
   ["MailFileNote", "No", "How the mail file name and folder were chosen"],
   ["HomeServer, MailFile, OrgUnit, Policy, Groups, VaultServer", "**Yes**", "Values used for registration (MailFile is relative to the server data directory, e.g. mail1\\smith.nsf)"],
   ["ClusterReplicas", "**Yes**", "Servers that get a replica of the mail file, comma separated (empty = none)"],
@@ -1043,7 +1050,7 @@ tbl(["Key", "Default", "Meaning"], [
   ["BaseDir", "C:\\BulkReg\\", "Base for default paths"],
   ["DirectoryServer / DirectoryFile", "– / names.nsf", "Directory that DirSync writes into"],
   ["RegistrationServer / RegistrationLog", "– / certlog.nsf", "Server that registers. RegistrationLog: HCL logs to **CERTLOG.NSF** on the registration server when the value is not empty (empty = no certification logging). Keep certlog.nsf."],
-  ["UseCA / CertifierName / CertifierIDFile", "1 / – / –", "Domino CA or certifier ID (password prompted, never stored)"],
+  ["UseCA / CertifierName / CertifierIDFile", "1 / – / –", "Domino CA or certifier ID (password prompted, never stored). CertifierName `/Demo` (or Demo, O=Demo) - passed as /Demo; users become First Last/Demo."],
   ["DefaultHomeServer / DefaultOrgUnit / DefaultPolicy / DefaultGroups", "–", "Defaults when no mapping rule sets a value. Servers: canonical or abbreviated."],
   ["OrgPolicyAssignsVault", "0", "1 = an organizational policy (*/Demo, */OU/Demo) assigns the vault; no explicit policy needed"],
   ["VaultServer / VaultCheckAfterReg", "– / 1", "Default vault server for the check; check after each user"],
@@ -1063,6 +1070,7 @@ tbl(["Key", "Default", "Meaning"], [
   ["MailFileDir", "mail", "Only for MailFolderMode=SINGLE"],
   ["MailFolderMax", "5", "Number of pre-created folders (B4); no folder above it is assigned (0 = no limit)"],
   ["MailTemplate", "(empty)", "Mail template (empty = registration default)"],
+  ["MailFileTitle / MailFileTitleOverwrite", "{CN} / 0", "Database title of each new mail file ({CN} = Neha Arora; also {FirstName} {LastName} {ShortName} {InternetAddress}); set right after registration, before the cluster replicas. 1 = replace a title that is already set."],
   ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Mail file settings (quota in MB). MailACLManager is required with a mail cluster (B4). MailCreateFTIndex also applies to the replicas."],
   ["CheckMailFileExists", "1", "Refuse users whose mail file already exists on the home server or a replica server"],
   ["MailClusterServers", "(empty)", "All members of the mail cluster, comma separated (2–6). Members' users get replicas on the other members; names and folders are allocated cluster-wide (D3c)."],
@@ -1209,6 +1217,7 @@ tbl(["Result", "Meaning", "Action"], [
   ["OK / WARN / ERROR", "Preflight or Build Batch check", "Fix ERROR (those rows are excluded)"],
   ["WOULD_REGISTER", "Dry run", "Review"],
   ["REGISTERED", "Registered, ID in vault, mail file present, replica requests posted (if any)", "Run 04 for the replicas"],
+  ["REGISTERED_WRONG_NAME", "Registered, but the Notes name is not First Last/(OU/)Demo. 03 **stops the run** at the first such user.", "Fix CertifierName / OrgUnit; correct the user (D6)"],
   ["REGISTERED_PENDING", "Registered, but the ID is not in the vault yet, the mail file is not there yet, and/or replica requests failed or were not posted", "Re-run Verify; see D3c and D6"],
   ["ReplicaStatus values", "WOULD_REQUEST, REQUESTED, REPLICAS_OK, REPLICAS_MISSING …", "D3c"],
   ["FAILED_VALIDATION", "Row values invalid; not attempted", "Fix the row or rebuild"],
@@ -1275,6 +1284,8 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["\"Mail folder setting error\" at start-up", "MailFolderPrefix written with a number (mail1) or a path (mail\\mail)", "Set MailFolderPrefix=mail. The folders mail1, mail2 … sit directly in the data directory."],
   ["ERROR: All pre-created mail folders … are full", "More users than the folders you created can hold", "Create the next folder(s) on that server (B4), raise MailFolderMax, rebuild the batch"],
   ["Preflight: MailFolderMax too low", "The users need more folders than MailFolderMax", "Create the folders listed in _mailfolders.txt and raise MailFolderMax"],
+  ["Users named like **Neha Arora/O=Demo/Demo** (REGISTERED_WRONG_NAME, Verify: wrong Notes name)", "Release 3.4 and earlier passed CertifierName `O=Demo` unchanged to the registration, or `O=Demo` / `OU=…` / `x/y` was entered as OrgUnit. The registration then added `O=Demo` as an extra OU.", "1) Install 3.5.0 (CertifierName is converted to `/Demo`; OrgUnit with `=` or `/` is rejected). 2) Set `CertifierName=/Demo`, leave DefaultOrgUnit empty, check the OrgUnit column of server_mapping.csv. 3) Correct the users already registered: see **Correcting wrongly named users** below this table. 4) Dry-run again: the Message column must show `Notes name: Neha Arora/Demo`."],
+  ["Mail file has no title (Verify: mail file title empty)", "Release 3.4 and earlier did not set it", "Run 04 - Verify on the batch and answer **Yes** to 'Set the title now' - only the titles are set. New registrations set it automatically (MailFileTitle)."],
   ["SKIPPED_NO_INET / users missing from the batch", "The AD user has no e-mail address, so the DirSync Person document has no InternetAddress (SkipNoInternetAddress=1)", "Add the address in AD; after DirSync the next Build Batch includes the user. To register such users without an address, set SkipNoInternetAddress=0 (they are then flagged WARN)."],
   ["Preflight: 'The log database has no BulkReg views yet'", "B20a not done", "The log database owner runs 00 - Set Up Log Database"],
   ["00 - Set Up Log Database: 'needs Designer or Manager access'", "Run by an operator (Author)", "The database owner runs it (B20a)"],
@@ -1289,6 +1300,17 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["WARN: Replica server … unreachable", "A cluster member is down or not reachable from the workstation", "AdminP creates the replica when it is back; or exclude the server for this batch by editing ClusterReplicas"],
   ["Mail fields change after the next DirSync", "DirSync attribute mapping overwrites MailSystem / MailServer / MailFile", "Remove those fields from the DirSync mapping (Directory Sync configuration, Synchronization tab)"],
 ], [2900, 3300, 3160]);
+h3("Correcting wrongly named users (e.g. Neha Arora/O=Demo/Demo)");
+p("A Notes name cannot simply be edited: it is inside the ID, the certificate, the vault and the mail file ACL. For the few users registered before 3.5.0 with a wrong name, remove the registration and register them again with the fixed release. Do it for one user first and check the result.");
+ol(
+  "List the users: log view **3. Users - by name** or Verify (*wrong Notes name*), or `BATCH-<id>_results.csv`.",
+  "Check your Directory Sync configuration (Directory Sync document, direction of synchronization): it must **not** delete the AD account when the Domino Person document is deleted. If it synchronizes from Domino to AD, stop and ask the DirSync owner first.",
+  "In Domino Administrator, **People & Groups > People**, select the wrongly named user(s) and choose **Tools > People > Delete**. In the Delete Person dialog choose to delete the **mail file and all its replicas**. Confirm. *Result:* AdminP removes the Person document, the name from groups, and the mail file and its replicas (check admin4.nsf until the requests are processed).",
+  "Check the ID Vault: once AdminP has processed the deletion, the wrongly named ID must no longer be in the vault (as vault administrator, open the vault database from **Configuration > Security > ID Vaults**). Remove it there if it is still listed. Delete the user's ID file from `C:\\BulkReg\\ids` and the line from the password file.",
+  "Wait for the next Directory Sync cycle (or start it). *Result:* the user's Person document is created again from AD, with objectGUID and without Certificate.",
+  "With release 3.5.0 installed and `CertifierName=/Demo`: run 02 - Build Batch for these users (ExtraSelection), check the **NotesName** column (`Neha Arora/Demo`), dry-run, then register."
+);
+note("Mail sent to the wrongly named user's mail file is lost with step 3. These were pilot users; if mail must be kept, copy it first or ask HCL support about a rename (Rename Person / Move to another certifier) instead.");
 p("Escalate to the platform owner if failures affect more than one batch. Escalate immediately to the security owner if a password file, ID file or certifier may have been exposed.");
 
 h2("D7 Security controls and change checklist");

@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.4.1
+' Script Library : BulkRegAgents            Version 3.5.0
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -33,6 +33,8 @@ Dim gCertPwd As String
 Dim gPwFile As String
 Dim gMode As String
 Dim gSrvOK List As String      ' home-server reachability cache
+Dim gStopRun As String          ' set by BR_RegisterOne when the whole run must stop (e.g. wrong Notes name)
+Dim gVNameBad As Long, gVTitleBad As Long, gVTitles List As String
 Dim gVUnreg As Long, gVInV As Long, gVNotV As Long, gVErr As Long, gVGone As Long, gVMailBad As Long, gVRepBad As Long
 
 '#####################################################################
@@ -70,7 +72,8 @@ Sub BR_RunPreflight()
 		envErr = envErr + BR_Check(BR_DirWritable(BR_CfgDir("PasswordDir", "secure")), "PasswordDir exists + writable: " & BR_CfgDir("PasswordDir", "secure"))
 	End If
 	If CfgB("UseCA", True) Then
-		envErr = envErr + BR_Check(CfgS("CertifierName", "") <> "", "CertifierName set (UseCA=1): " & CfgS("CertifierName", ""))
+		envErr = envErr + BR_Check(CfgS("CertifierName", "") <> "", "CertifierName set (UseCA=1): " & CfgS("CertifierName", "") & "  -> passed to registration as " & BR_CertifierForReg())
+		BR_Log LVL_INFO, "Users will be named  <First Last>" & BR_ExpectedSuffix(CfgS("DefaultOrgUnit", "")) & "   e.g. Neha Arora" & BR_ExpectedSuffix(CfgS("DefaultOrgUnit", "")) & "  (OrgUnit from the mapping is added before the organization)"
 	Else
 		envErr = envErr + BR_Check(Dir$(BR_CfgFile("CertifierIDFile", "cert" & gSep & "none.id")) <> "", "Certifier ID file exists: " & BR_CfgFile("CertifierIDFile", ""))
 	End If
@@ -80,6 +83,7 @@ Sub BR_RunPreflight()
 		BR_Log LVL_WARN, "VaultServer not set - vault verification will be skipped"
 		envWarn = envWarn + 1
 	End If
+	envErr = envErr + BR_Check(InStr(CfgS("DefaultOrgUnit", ""), "=") = 0 And InStr(CfgS("DefaultOrgUnit", ""), "/") = 0, "DefaultOrgUnit is empty or one plain OU name (not O=Demo / OU=Sales / Sales/Demo): '" & CfgS("DefaultOrgUnit", "") & "'")
 	If CfgS("DefaultPolicy", "") = "" Then
 		BR_Log LVL_WARN, "DefaultPolicy empty - make sure an explicit/organizational policy assigns the ID Vault"
 		envWarn = envWarn + 1
@@ -448,7 +452,7 @@ Sub BR_RunBuildBatch()
 			End If
 
 			r = Q(inc) & "," & Q(gBatchID) & "," & Q(CStr(nRows)) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & _
-			Q(u.FullNameBefore) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
+			Q(u.FullNameBefore) & "," & Q(BR_ExpectedName(u)) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
 			Q(u.HomeServer) & "," & Q(u.MailFile) & "," & Q(u.MailFileNote) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.ClusterReplicas) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues)
 			Call BR_AppendLine(bfile, r)
 			Call BR_Audit(u, "BUILD", "SELECT", chk, BR_Elapsed(t0), "Include=" & inc & " " & issues)
@@ -562,7 +566,7 @@ End Function
 Sub BR_RunRegisterBatch()
 	On Error GoTo ErrH
 	' library variables keep their value between runs in the same client session - reset them
-	gCertPwd = "": gPwFile = "": gMode = ""
+	gCertPwd = "": gPwFile = "": gMode = "": gStopRun = ""
 	Erase gSrvOK
 	Dim ws As NotesUIWorkspace, ans As Variant
 	Dim db As NotesDatabase, u As BRUser
@@ -695,6 +699,11 @@ Sub BR_RunRegisterBatch()
 			nFail = nFail + 1: nConsec = nConsec + 1
 		End Select
 		Print "BulkReg " & gMode & " " & gBatchID & ": " & (i + 1) & "/" & n & "  ok=" & nOK & " fail=" & nFail & " skip=" & nSkip
+		If gStopRun <> "" Then
+			stopReason = gStopRun
+			BR_Log LVL_ERROR, "Run stopped: " & stopReason
+			Exit For
+		End If
 		If nConsec >= maxConsec Then
 			stopReason = "Circuit breaker: " & nConsec & " consecutive failures"
 			BR_Log LVL_ERROR, stopReason
@@ -781,7 +790,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	Dim doc As NotesDocument, reg As NotesRegistration, u As BRUser
 	Dim t0 As Double, issues As String, userPwd As String, mailFile As String
 	Dim stage As String, emsg As String, homeCanon As String, nn As NotesName
-	Dim foundOn As String, rl As Variant, ri As Integer, repOK As Boolean
+	Dim foundOn As String, rl As Variant, ri As Integer, repOK As Boolean, nameProb As String, titleRes As String
 	t0 = Timer
 	On Error GoTo ErrH
 
@@ -868,8 +877,9 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		Else
 			u.ReplicaStatus = "OFF (CreateClusterReplicas=0)"
 		End If
-		Call BR_Audit(u, gMode, "REGISTER", "WOULD_REGISTER", BR_Elapsed(t0), issues)
-		BR_Log LVL_INFO, "DRYRUN would register " & u.FullNameBefore & " -> " & u.HomeServer & " (" & u.Policy & ")"
+		u.FullNameAfter = BR_ExpectedName(u)               ' the name the user WOULD get, e.g. Neha Arora/Demo
+		Call BR_Audit(u, gMode, "REGISTER", "WOULD_REGISTER", BR_Elapsed(t0), "Notes name: " & u.FullNameAfter & " | mail file title: " & BR_MailTitle(u) & " " & issues)
+		BR_Log LVL_INFO, "DRYRUN would register " & u.FullNameBefore & " as " & u.FullNameAfter & " -> " & u.HomeServer & " (" & u.Policy & ")"
 		BR_RegisterOne = "OK:dryrun"
 		Exit Function
 	End If
@@ -881,7 +891,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	reg.RegistrationServer = CfgS("RegistrationServer", "")
 	If CfgB("UseCA", True) Then
 		reg.UseCertificateAuthority = True
-		reg.CertifierName = CfgS("CertifierName", "")
+		reg.CertifierName = BR_CertifierForReg()            ' "/Demo" or "/Sales/Demo" (see BR_CertifierForReg)
 	Else
 		reg.CertifierIDFile = BR_CfgFile("CertifierIDFile", "")
 	End If
@@ -935,12 +945,25 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	u.FullNameAfter = BR_Item(doc, "FullName")
 	u.MailSystemAfter = BR_Item(doc, "MailSystem")
 	If Not BR_IsRegistered(doc) Then Error 4002, "RegisterNewUser returned but Person doc has no Certificate"
+	' the Notes name must be First Last/OU/Org - stop the whole run at the first wrong name
+	nameProb = BR_NameProblem(u.FullNameAfter, u)
+	If nameProb <> "" Then
+		gStopRun = "Wrong Notes name created - run stopped so no further users get it: " & nameProb & ". Check CertifierName and OrgUnit (guide D6)."
+		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED_WRONG_NAME", BR_Elapsed(t0), nameProb)
+		BR_Log LVL_ERROR, "WRONG NAME " & nameProb
+		BR_RegisterOne = "FAIL:name"
+		Exit Function
+	End If
 
 	' ---------- mail file ----------
 	stage = "mailfile"
 	BR_Log LVL_INFO, "Mail: system '" & u.MailSystemBefore & "' -> '" & u.MailSystemAfter & "', MailFile in Person doc: " & BR_Item(doc, "MailFile")
 	If BR_MailFileExists(u.HomeServer, u.MailFile) Then
 		u.MailFileStatus = "MAILFILE_OK"
+		' database title of the mail file (e.g. "Neha Arora") - set BEFORE the replicas are requested
+		titleRes = BR_MailTitleFix(u.HomeServer, u.MailFile, BR_MailTitle(u), True, CfgB("MailFileTitleOverwrite", False))
+		u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & titleRes & " '" & BR_MailTitle(u) & "'"
+		If Left$(titleRes, 11) = "TITLE_ERROR" Then BR_Log LVL_WARN, "Mail file title not set for " & u.MailFile & ": " & titleRes
 	Else
 		u.MailFileStatus = "MAILFILE_PENDING"       ' may still be created in the background - re-check with Agent 04
 	End If
@@ -1021,11 +1044,13 @@ Sub BR_RunVerify()
 	On Error GoTo ErrH
 	' library variables keep their value between runs in the same client session - reset them
 	gVUnreg = 0: gVInV = 0: gVNotV = 0: gVErr = 0: gVGone = 0: gVMailBad = 0: gVRepBad = 0
+	gVNameBad = 0: gVTitleBad = 0
+	Erase gVTitles
 	Dim ws As NotesUIWorkspace, ans As Variant
 	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
 	Dim scopeFile As String, bname As String, fh As Integer, txt As String
 	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, nid As String, rep As String
-	Dim summary As String, total As Long
+	Dim summary As String, total As Long, nSet As Long, tr As String
 
 	If Not BR_Init("Verify") Then Exit Sub
 	Set ws = New NotesUIWorkspace
@@ -1082,10 +1107,25 @@ Sub BR_RunVerify()
 	End If
 
 	summary = BR_IIfStr(gBatchID = "", "All DirSync users", gBatchID) & ": checked=" & total & " | registered+in vault=" & gVInV & _
-	" | registered NOT in vault=" & gVNotV & " | unregistered=" & gVUnreg & " | check errors=" & gVErr & " | not found=" & gVGone & " | mail file missing=" & gVMailBad & " | replicas missing=" & gVRepBad
+	" | registered NOT in vault=" & gVNotV & " | unregistered=" & gVUnreg & " | check errors=" & gVErr & " | not found=" & gVGone & " | mail file missing=" & gVMailBad & " | replicas missing=" & gVRepBad & _
+	" | wrong Notes name=" & gVNameBad & " | mail file title empty=" & gVTitleBad
+
+	' optional fix: set the missing mail file titles (asks first; only the title is changed)
+	If gVTitleBad > 0 Then
+		ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Verify", gVTitleBad & " mail file(s) have no database title." & Chr$(10) & Chr$(10) & _
+		"Set the title now (" & CfgS("MailFileTitle", "{CN}") & ", e.g. 'Neha Arora')?" & Chr$(10) & "Nothing else is changed.")
+		If ans = 1 Then
+			ForAll tt In gVTitles
+				tr = BR_MailTitleFix(StrLeft(ListTag(tt), "!!"), StrRight(ListTag(tt), "!!"), CStr(tt), True, False)
+				If tr = "TITLE_SET" Then nSet = nSet + 1
+				BR_Log BR_IIfInt2(tr = "TITLE_SET", LVL_INFO, LVL_WARN), "Mail file title " & ListTag(tt) & " -> '" & tt & "': " & tr
+			End ForAll
+			summary = summary & " | titles set now=" & nSet
+		End If
+	End If
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & BR_IIfStr(gResultsFile <> "", gResultsFile, gAuditFile), _
-	CInt(BR_IIfStr(gVNotV + gVErr + gVGone + gVMailBad + gVRepBad > 0, "48", "64"))
+	CInt(BR_IIfStr(gVNotV + gVErr + gVGone + gVMailBad + gVRepBad + gVNameBad > 0, "48", "64"))
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Verify aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
@@ -1097,7 +1137,7 @@ End Sub
 ' rep = replica servers from the batch file, or "*auto" = other members of the
 '       mail cluster of the user's mail server (MailClusterServers)
 Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
-	Dim u As BRUser, t0 As Double, res As String
+	Dim u As BRUser, t0 As Double, res As String, nmProb As String, tRes As String
 	t0 = Timer
 	If doc Is Nothing Then
 		u.NoteID = nid
@@ -1123,6 +1163,16 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 			u.MailFileStatus = "MAILFILE_MISSING"
 		End If
 		If u.MailFileStatus <> "MAILFILE_OK" Then gVMailBad = gVMailBad + 1
+		' Notes name hierarchy and mail file title
+		nmProb = BR_NameProblem(u.FullNameBefore, u)
+		If nmProb <> "" Then gVNameBad = gVNameBad + 1
+		If u.MailFileStatus = "MAILFILE_OK" Then
+			tRes = BR_MailTitleFix(BR_Item(doc, "MailServer"), u.MailFile, BR_MailTitle(u), False, False)
+			If tRes = "TITLE_EMPTY" Then
+				gVTitleBad = gVTitleBad + 1
+				gVTitles(BR_Item(doc, "MailServer") & "!!" & u.MailFile) = BR_MailTitle(u)
+			End If
+		End If
 		' cluster replicas of the mail file
 		u.HomeServer = BR_SrvAbbr(BR_Item(doc, "MailServer"))
 		If rep = "*auto" Then u.ClusterReplicas = BR_ReplicaServers(u.HomeServer, "") Else u.ClusterReplicas = BR_SrvList(rep, u.HomeServer)
@@ -1140,7 +1190,8 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 		Case Else: res = "CHECK_ERROR": gVErr = gVErr + 1
 		End Select
 	End If
-	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), BR_IIfStr(res = "UNREGISTERED" And u.InternetAddress = "", "no InternetAddress - " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped until the address exists in AD", "will be registered without address"), ""))
+	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), BR_IIfStr(res = "UNREGISTERED" And u.InternetAddress = "", "no InternetAddress - " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped until the address exists in AD", "will be registered without address"), "") & _
+	BR_IIfStr(nmProb <> "", " WRONG NAME: " & nmProb, "") & BR_IIfStr(tRes <> "", " mail file " & tRes, ""))
 	BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus & " mail=" & u.MailFileStatus & " replicas=" & u.ReplicaStatus
 End Sub
 

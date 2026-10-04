@@ -1,7 +1,7 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 3.4.1 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), same version as the kit (3.4.1). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+BulkReg 3.5.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), same version as the kit (3.5.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## Updating to a new release
 A release only changes the two script libraries. In Designer replace the whole content of **BulkRegCommon**, then **BulkRegAgents**: click in the editor, Ctrl+A, paste the whole .lss file (Designer puts Options, Declarations and every Sub/Function in place automatically), Ctrl+S, run **Tools > Recompile All LotusScript** and re-sign the database (guide B17a). The agents stay as they are.
@@ -72,6 +72,8 @@ Wave 2  server_mapping.csv:  *;*;DominoADMail2/Demo;;;;;   -> 3 batches (1000+10
 | 3 Register | `BulkReg\03 - Register Batch` | Registers **only** the Include=Y rows of the file you choose, after a per-server summary and you typing the **batch ID**. Writes `BATCH-<id>_results.csv`. |
 | 4 Verify | `BulkReg\04 - Verify Registration and Vault` | Registration, vault, mail file and replica status for that batch (`_verify_<run>.csv`). |
 
+**Notes names:** with `CertifierName=/Demo` users become `Neha Arora/Demo` (with OrgUnit Sales: `Neha Arora/Sales/Demo`). The batch file shows each user's `NotesName` before registration, and 03 stops at the first wrong name. Every new mail file gets the user's name as its database title (`MailFileTitle={CN}`).
+
 Explicit policy names are written as Domino stores them: `*/PolicyName`. Agent 03 never searches names.nsf by itself. Each row's `objectGUID` must still match the Person document. A user in an OPEN batch is never selected into another batch.
 
 ## Names and policies (examples use the organization Demo)
@@ -132,7 +134,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (3.4.1)   ·   CHANGELOG.md   release history
+VERSION      current release (3.5.0)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv                 (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (ALL code - the two script libraries)
              Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile (.lss)
