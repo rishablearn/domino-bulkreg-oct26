@@ -1,7 +1,7 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 3.0.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v3.0. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+BulkReg 3.1.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v3.1. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## Agent run order (per batch)
 All agents run from bulkreg.nsf > **Actions > BulkReg** in the Windows Domino Administrator client.
@@ -66,21 +66,32 @@ Explicit policy names are written as Domino stores them: `*/PolicyName`. Agent 0
 
 Mapping columns: empty = use the default from bulkreg.ini; `-` = explicitly none.
 
-## Multiple servers
+## Multiple servers: `config\server_mapping.csv`
 - **Registration server:** one per Domino domain (the directory master). All registrations run against it.
-- **Home servers:** any number. They're assigned per user by `config\server_mapping.csv` (first matching rule wins), reviewable per row, and passed to `RegisterNewUser` in canonical form.
-- **ID Vault:** chosen by the **explicit policy** of each rule. The optional `VaultServer` column is where BulkReg checks `IsIDInVault`.
-- **Waves:**
-  - Mixed batches of 500.
-  - `BatchServerFilter=DominoADMail2/Demo` for one server per wave.
-  - `ExtraSelection` for department or region waves.
+- **Home servers:** any number. Each user's home server (where the mail file is created) comes from the mapping file and can be reviewed per row in the batch file.
+- **ID Vault:** decided by the user's policy (explicit policy from the mapping or `DefaultPolicy`, or an organizational policy). The optional `VaultServer` column is only where BulkReg checks `IsIDInVault`.
+
+**How the mapping file works** (full instructions and examples: guide **B12**):
+- **One line per rule.** Each rule has 7 columns separated by `;`:
+
+  `MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer`
+- **First match wins.** For every user the rules are read **top to bottom**. If the Person document field `MatchField` matches `MatchPattern` (not case-sensitive; `*` = any text, `?` = one character), that rule decides the user's home server, OU, explicit policy, groups and vault check server.
+- **Empty and `-` columns.** An empty column means "use the default from bulkreg.ini". A hyphen `-` means "none" (OrgUnit, Policy and Groups only).
+- **Catch-all last.** The last rule `*;*;<server>;;;;` catches everyone else. **With only one home server, that single line is all you need.**
+- **No placeholders.** Any rule still containing `<…>` stops the agents.
+- **Test it before any batch.** `01 - Preflight Check` writes `BulkReg_Preflight_<run>_mapping.txt` with the number of users per rule.
 
 ```
 MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer
-InternetAddress;*@emea.demo.com;CN=DominoADMail2/O=Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo
+InternetAddress;*@emea.demo.com;DominoADMail2/Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo
 Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;
 *;*;DominoADMail/Demo;;;;
 ```
+
+**Waves:**
+- mixed batches of 500;
+- `BatchServerFilter=DominoADMail2/Demo` for one server per wave;
+- `ExtraSelection` for a department or region.
 
 ## Steps
 | Step | Do | Done when |
@@ -101,7 +112,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;
 
 ## Kit contents
 ```
-VERSION      current release (3.0.0)   ·   CHANGELOG.md   release history
+VERSION      current release (3.1.0)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv                 (templates – no secrets)
 lotusscript/ BulkRegCommon.lss, Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
              Agent04_VerifyVaultStatus, Agent05_ExportToBatchRegFile (.lss)

@@ -1,11 +1,11 @@
-// BulkReg Administrator Guide v3.0 (BulkReg 3.0.0) — single source for Word + Web.
+// BulkReg Administrator Guide v3.1 (BulkReg 3.1.0) — single source for Word + Web.
 // Assumes NOTHING exists yet. Every procedure: purpose, who/where, before you start,
 // numbered single-action steps with expected results, and a "Done when" check.
 const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "3.0",
+  version: "3.1",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -38,11 +38,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 3.0.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 3.1.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["3.1", "**Release 3.1.0.** server_mapping.csv fully documented (B12.1–B12.9: format, matching, fields, order, step-by-step, worked examples, testing, common mistakes) and a self-explaining template. Preflight writes a **mapping test** (_mapping.txt: users per rule). Agents stop if a mapping rule still contains a <placeholder>; warning when no catch-all rule exists. Consistency check of all settings, names and versions."],
   ["3.0", "**Release 3.0.0.** One version number across the whole kit: guide 3.0, library and all agents 3.0.0, bulkreg.ini, server_mapping.csv, PowerShell helper, Audit Viewer, README, VERSION and CHANGELOG.md. Content as in 2.9."],
   ["2.9", "**DryRun explained** (D3b, bulkreg.ini). **Central BulkReg log database is now required** (B15): every run, every action and one AUDIT entry per user are written there; agents stop if it cannot be opened."],
   ["2.8", "Mail folder layout made explicit: mail1, mail2 … are created **directly under the Domino data directory**, next to the existing mail folder, not inside it. Folder diagram, plain explanation of MailFolderPrefix / MailFileDir / new MailExistingFolders. BulkReg rejects a prefix with a number (mail1) or a path (mail\\mail) at start-up."],
@@ -481,40 +482,123 @@ tbl(["Key", "Enter", "From"], [
 done("bulkreg.ini contains no `<` or `>` characters except in comment lines (starting with `#`), and DryRun=1.");
 
 // ---------- B12
-h2("B12 Fill in server_mapping.csv (your servers)");
+h2("B12 Fill in server_mapping.csv (which user goes to which server)");
 meta("Domino administrator", "Notepad", "C:\\BulkReg\\config\\server_mapping.csv");
-p("Each line is a **rule**: *if this Person document field matches this pattern, use this home server, OU, policy, groups and vault*. Rules are checked top-down; the **first match wins**. The last rule `*;*` catches everyone else.");
-tbl(["Column", "Meaning", "Example"], [
-  ["MatchField", "Person document field to test (any field: Department, InternetAddress, Location, CompanyName…). `*` = any.", "`InternetAddress`"],
-  ["MatchPattern", "Pattern, not case-sensitive. `*` = any text, `?` = one character.", "`*@emea.demo.com`"],
-  ["HomeServer", "Home server for matching users, canonical or abbreviated (empty = DefaultHomeServer)", "`CN=DominoADMail2/O=Demo`"],
-  ["OrgUnit", "OU added to the Notes name (empty = DefaultOrgUnit, `-` = none)", "`EMEA` → John Smith/EMEA/Demo"],
-  ["Policy", "Explicit policy exactly as listed (empty = DefaultPolicy, `-` = none: rely on the organizational policy)", "`*/DirSync-Vault-EMEA` or `-`"],
-  ["Groups", "Comma-separated groups (empty = DefaultGroups, `-` = none)", "`BR-EMEA`"],
-  ["VaultServer", "Vault server for the vault check (empty = VaultServer)", "`DominoVaultEMEA/Demo`"],
-], [2100, 4900, 2360]);
+h3("B12.1 What the mapping file does");
+p("BulkReg has to decide, for **every** DirSync user, where that user goes. server_mapping.csv holds that decision as a short list of **rules**. For each user BulkReg reads the rules **from top to bottom** and uses the **first rule that matches**. A user who matches no rule gets the `Default…` values from bulkreg.ini.");
+tbl(["A matching rule decides", "Example value", "Effect"], [
+  ["Home server", "DominoADMail2/Demo", "The server where the user's mail file is created (mail1\\smith.nsf on that server)"],
+  ["OrgUnit", "EMEA", "The user's Notes name becomes John Smith/EMEA/Demo"],
+  ["Policy", "*/DirSync-Vault-EMEA", "Explicit policy given at registration (assigns the ID Vault)"],
+  ["Groups", "BR-EMEA", "The user is added to these groups"],
+  ["VaultServer", "DominoVaultEMEA/Demo", "Where BulkReg checks that the ID arrived in the vault"],
+], [2300, 2500, 4560]);
+note("**Only one home server?** Then you need only one line, the catch-all: `*;*;DominoADMail/Demo;;;;`. Everything else comes from bulkreg.ini. Skip to B12.6, step 5.");
+h3("B12.2 The format of a rule");
+p("One rule is one line with **7 columns separated by semicolons** (`;`). Keep all 6 semicolons, even when a column is empty. Lines starting with `#` are comments. Line 1, the header, must stay unchanged.");
+code(`InternetAddress;*@emea.demo.com;DominoADMail2/Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo
+
+column 1  MatchField    InternetAddress
+column 2  MatchPattern  *@emea.demo.com
+column 3  HomeServer    DominoADMail2/Demo
+column 4  OrgUnit       EMEA
+column 5  Policy        */DirSync-Vault-EMEA
+column 6  Groups        BR-EMEA
+column 7  VaultServer   DominoVaultEMEA/Demo`);
+tbl(["#", "Column", "Required", "What to enter", "Empty means", "`-` means"], [
+  ["1", "MatchField", "Yes", "Name of a Person document field to test (B12.4), or `*` for every user", "–", "–"],
+  ["2", "MatchPattern", "Yes", "The value to compare with (B12.3)", "same as `*`", "–"],
+  ["3", "HomeServer", "No", "Server name, abbreviated `DominoADMail2/Demo` or canonical `CN=DominoADMail2/O=Demo`", "DefaultHomeServer", "not allowed"],
+  ["4", "OrgUnit", "No", "One OU name, e.g. `EMEA`", "DefaultOrgUnit", "no OU"],
+  ["5", "Policy", "No", "Explicit policy exactly as listed in the Policies view, e.g. `*/DirSync-Vault-EMEA`", "DefaultPolicy", "no explicit policy (an organizational policy assigns the vault)"],
+  ["6", "Groups", "No", "Group names separated by commas, e.g. `BR-EMEA,All-EMEA`", "DefaultGroups", "no groups"],
+  ["7", "VaultServer", "No", "Vault server name, e.g. `DominoVaultEMEA/Demo`", "VaultServer from bulkreg.ini", "not allowed"],
+], [400, 1500, 900, 3400, 1500, 1660]);
+h3("B12.3 How a rule matches");
 ol(
-  "Open `C:\\BulkReg\\config\\server_mapping.csv` in **Notepad** (do not use Excel for this file).",
-  "Keep line 1 (the header) unchanged. Lines starting with `#` are comments.",
-  "Delete the example rules and write one rule per user group from worksheet row 4, most specific first.",
-  "Make the last line the catch-all: `*;*;<DefaultHomeServer>;;;;`.",
-  "Separate columns with a **semicolon** `;`. Leave a column empty but keep its semicolon.",
-  "Save with **File > Save** (UTF-8)."
+  "BulkReg reads the field named in **MatchField** from the user's Person document. If the field has several values, the first one is used.",
+  "Both the field value and the pattern are compared **without regard to upper/lower case**.",
+  "The pattern may contain `*` (any text, also none) and `?` (exactly one character). Without `*` or `?` the value must match exactly.",
+  "If it matches, this rule is used and the following rules are ignored for this user."
 );
-p("Worked example for three servers:");
-code(`MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer
-InternetAddress;*@emea.demo.com;CN=DominoADMail2/O=Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo
+tbl(["MatchPattern", "Matches", "Does not match"], [
+  ["`*@emea.demo.com`", "anna@emea.demo.com, JOHN@EMEA.DEMO.COM", "anna@demo.com, anna@emea.demo.com.au"],
+  ["`Sales*`", "Sales, Sales EMEA, sales-uk", "Presales"],
+  ["`*london*`", "London, Office London 2, london", "Londn"],
+  ["`Finance`", "Finance, finance", "Finance EMEA"],
+  ["`HR-??`", "HR-UK, HR-DE", "HR-USA, HR"],
+  ["`*`", "every value, also an empty field", "–"],
+], [2200, 3700, 3460]);
+warn("Do not use `#`, `[` or `]` in a pattern: they have a special meaning (digit, character range) and give unexpected results.");
+h3("B12.4 Which fields can you use, and how to see their values");
+ol(
+  "In Domino Administrator, open **People & Groups > People** and select a DirSync user.",
+  "Choose **File > Document Properties** and click the **Fields** tab (second tab).",
+  "Click a field name on the left to see its value on the right. The name shown on the left (for example `InternetAddress`) is what you write in MatchField.",
+  "Repeat for a few users of each group you want to split, so you know the real values."
+);
+tbl(["Typical field", "Typical use"], [
+  ["InternetAddress", "Split by e-mail domain (*@emea.demo.com)"],
+  ["Department", "Split by department (Sales*, Finance)"],
+  ["CompanyName", "Split by company or subsidiary"],
+  ["Location / OfficeCity / OfficeCountry", "Split by site or country"],
+  ["ShortName or InternetAddress (exact value)", "Exceptions for single users"],
+], [3800, 5560]);
+note("Which fields contain data depends on your DirSync field mapping (Directory Sync configuration, Synchronization tab). Always check the Fields tab. If a field is empty for many users, a rule on it will not match them.");
+h3("B12.5 Order, defaults and the catch-all");
+ul(
+  "**Order matters:** put exceptions and the most specific rules at the top, general rules below.",
+  "**Catch-all last:** end with `*;*;<server>;;;;` so that every user is mapped. Without it, unmatched users get the Default… values. Preflight warns about this.",
+  "**Empty column:** use the default from bulkreg.ini. **Hyphen `-`:** explicitly none (OrgUnit, Policy, Groups only).",
+  "**No placeholders:** a rule that still contains `<…>` stops every agent with a message naming the line."
+);
+h3("B12.6 Write the file, step by step");
+ol(
+  "Open **Notepad** and choose **File > Open**. Set the file type to **All files** and open `C:\\BulkReg\\config\\server_mapping.csv`.",
+  "Read the comment block at the top. It summarises this procedure.",
+  "Go to the line `# ACTIVE RULES - edit below this line`.",
+  "For each group of users from worksheet row 4, add one rule **above** the last line. Start from the examples in the comment block: copy an example line, remove the leading `# ` and replace the example values with yours.",
+  "Change the last line, the catch-all, to your default home server, for example `*;*;DominoADMail/Demo;;;;`.",
+  "Check every rule: 7 columns, 6 semicolons, no `<` or `>`, server and policy names exactly as in Domino.",
+  "Choose **File > Save**, keeping the encoding **UTF-8**."
+);
+h3("B12.7 Worked examples");
+p("**Example 1: one home server.** Everybody goes to DominoADMail/Demo; policy, OU and groups come from bulkreg.ini.");
+code(`*;*;DominoADMail/Demo;;;;`);
+p("**Example 2: three servers by e-mail domain.** EMEA and APAC users get their own server, OU, explicit vault policy, group and vault; everyone else goes to DominoADMail/Demo with the defaults.");
+code(`InternetAddress;*@emea.demo.com;DominoADMail2/Demo;EMEA;*/DirSync-Vault-EMEA;BR-EMEA;DominoVaultEMEA/Demo
 InternetAddress;*@apac.demo.com;DominoADMail3/Demo;APAC;*/DirSync-Vault-APAC;BR-APAC;DominoVaultAPAC/Demo
-Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;
 *;*;DominoADMail/Demo;;;;`);
-tbl(["Rule", "Result for a matching user"], [
-  ["1 (EMEA)", "Home server DominoADMail2/Demo, name John Smith/EMEA/Demo, explicit policy */DirSync-Vault-EMEA, group BR-EMEA, vault checked on DominoVaultEMEA/Demo"],
-  ["2 (APAC)", "Home server DominoADMail3/Demo, name …/APAC/Demo, explicit policy */DirSync-Vault-APAC"],
-  ["3 (Sales)", "Home server DominoADMail/Demo, name John Smith/Sales/Demo, **no explicit policy**: the organizational policy */Sales/Demo assigns the vault"],
-  ["4 (everyone else)", "Defaults from bulkreg.ini"],
-], [1800, 7560]);
-done("Every rule names an existing server and policy from the worksheet, and the last rule is the catch-all.");
-pb();
+p("**Example 3: by department, with an organizational policy.** Sales users get the OU Sales (John Smith/Sales/Demo). The organizational policy `*/Sales/Demo` assigns their vault, so Policy is `-`.");
+code(`Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;
+Department;Finance;DominoADMail2/Demo;Finance;*/DirSync-Vault;BR-Finance;
+*;*;DominoADMail/Demo;;;;`);
+p("**Example 4: an exception for one person.** The exception must come before the general rule that would otherwise catch the user.");
+code(`InternetAddress;ceo@demo.com;DominoADMail/Demo;-;*/DirSync-Vault;VIP;
+InternetAddress;*@demo.com;DominoADMail2/Demo;;;;
+*;*;DominoADMail/Demo;;;;`);
+tbl(["User", "Example 2 result", "Why"], [
+  ["anna@emea.demo.com", "DominoADMail2/Demo, Anna …/EMEA/Demo, */DirSync-Vault-EMEA, BR-EMEA", "Rule 1 matches first"],
+  ["li@apac.demo.com", "DominoADMail3/Demo, …/APAC/Demo, */DirSync-Vault-APAC", "Rule 2"],
+  ["tom@demo.com", "DominoADMail/Demo with the bulkreg.ini defaults", "Only the catch-all matches"],
+], [2200, 4800, 2360]);
+h3("B12.8 Test the mapping before any batch");
+ol(
+  "Run **01 - Preflight Check** (C1).",
+  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt`. For every rule it shows **how many users matched** and the values the rule gives. A rule with **0 users** usually means a wrong field name or pattern.",
+  "For individual users, open the Preflight audit CSV. The **MapRule** column shows which rule each user matched, and HomeServer / OrgUnit / Policy show the result.",
+  "Correct server_mapping.csv and run Preflight again until every group lands where intended."
+);
+h3("B12.9 Common mistakes");
+tbl(["Symptom", "Cause", "Fix"], [
+  ["Agents stop: 'still contains a <placeholder>'", "A `<…>` value was not replaced", "Replace it with your real value, or delete the rule"],
+  ["A rule matches 0 users", "Wrong field name, pattern without `*`, or field empty in DirSync", "Check the Fields tab (B12.4); use `*` where needed"],
+  ["Everybody lands on the catch-all", "The catch-all is at the top", "Move `*;*;…` to the last line"],
+  ["Wrong OU / policy for some users", "An earlier, more general rule catches them", "Move the specific rule above it"],
+  ["'Mapping line ignored (needs >= 3 columns)' in the log", "Missing semicolons", "Use 7 columns / 6 semicolons"],
+  ["Strange characters in names", "File saved in another encoding", "Save as UTF-8 in Notepad"],
+], [3000, 3200, 3160]);
+done("Every rule has real values, the catch-all is last, and the Preflight mapping test shows each group of users on the intended server, OU and policy.");
 
 // ---------- B13
 h2("B13 Create the tool database bulkreg.nsf");
@@ -647,7 +731,7 @@ ol(
   "Note the totals: candidates, OK / WARN / ERROR, and **candidates per home server**.",
   "Open the newest `C:\\BulkReg\\audit\\BulkReg_Preflight_*_audit.csv` (D4 lists the columns).",
   "For each **ERROR** row, read the Message column. Fix the cause in Active Directory, for example a missing last name or a duplicate email address, and let DirSync synchronise.",
-  "If a user lands on the wrong server (HomeServer / MapRule columns), correct server_mapping.csv (B12) and run Preflight again.",
+  "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt` (the mapping test): users per rule and the values each rule gives. If a group lands on the wrong server (also visible in the HomeServer / MapRule columns of the audit CSV), correct server_mapping.csv (B12) and run Preflight again.",
   "Open `C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt`. For each home server it lists the users and the folders needed (for example `mail1 .. mail5`), with the create commands. Create any folder that does not exist yet (B4), and make sure `MailFolderMax` is high enough. Preflight warns if it is too low."
 );
 done("0 environment errors, every user lands on the intended home server, and every mail folder listed in the _mailfolders.txt file exists on its server.");
@@ -926,6 +1010,8 @@ warn("From now on, Domino delivers mail for these users to their **Domino mail f
 h2("D4 Outputs, audit and result codes");
 tbl(["Output", "Location", "Content"], [
   ["**Central log database (required)**", "LogServer!!bulkreg_log.nsf", "One entry per run: start/end, every action and error, and an AUDIT line per user (result, home server, mail file, vault, batch). The shared record for administrators and auditors."],
+  ["Preflight mapping test", "C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mapping.txt", "Users matched by each mapping rule, and the values per rule (B12.8)"],
+  ["Preflight mail folders", "C:\\BulkReg\\audit\\BulkReg_Preflight_<run>_mailfolders.txt", "Mail folders needed per home server, with create commands (B4)"],
   ["Batch files", "C:\\BulkReg\\batches\\", "D2"],
   ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_audit.csv", "One row per user per action, including BatchID, MailFile, MailFileStatus and MailFileNote. **No passwords.**"],
   ["Debug log", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_debug.log", "Every step, the approval line, and the batch file size and time"],

@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent name : BulkReg\01 - Preflight Check   (READ-ONLY - changes nothing)
 '              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.0.0  (BulkReg release; library BulkRegCommon 3.0.0)
+' Version    : 3.1.0  (BulkReg release; library BulkRegCommon 3.1.0)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -29,6 +29,7 @@ Sub Initialize
 	Dim seenShort List As String, seenMail List As String
 	Dim servers List As String, usersView As NotesView, dupCol As NotesDocumentCollection
 	Dim t0 As Double, srvCount List As Long, hk As String, srvText As String
+	Dim ruleCount List As Long, mapFile As String, ri As Integer, rk As String
 
 	If Not BR_Init("Preflight") Then Exit Sub
 
@@ -92,6 +93,8 @@ Sub Initialize
 			If servers(LCase$(u.HomeServer)) <> "OK" Then issues = issues & "ERROR:HomeServer unreachable; "
 		End If
 
+		' how many users each mapping rule catches (mapping test, written to _mapping.txt)
+		If IsElement(ruleCount(u.MapRule)) Then ruleCount(u.MapRule) = ruleCount(u.MapRule) + 1 Else ruleCount(u.MapRule) = 1
 		hk = u.HomeServer
 		If hk = "" Then hk = "(none)"
 		If IsElement(srvCount(hk)) Then srvCount(hk) = srvCount(hk) + 1 Else srvCount(hk) = 1
@@ -106,6 +109,25 @@ Sub Initialize
 		Call BR_Audit(u, "PREFLIGHT", "CHECK", res, BR_Elapsed(t0), issues)
 		Set doc = col.GetNextDocument(doc)
 	Loop
+
+	' ---------- mapping test: users per rule ----------
+	mapFile = BR_CfgDir("AuditDir", "audit") & "BulkReg_Preflight_" & gRunID & "_mapping.txt"
+	Call BR_AppendLine(mapFile, "BulkReg " & BR_VERSION & " - mapping test (which rule each candidate matched)")
+	Call BR_AppendLine(mapFile, "Mapping file: " & BR_CfgFile("MappingFile", "config\server_mapping.csv"))
+	Call BR_AppendLine(mapFile, "Rules are checked top-down; the first match wins. Per-user detail: MapRule column of " & gAuditFile)
+	Call BR_AppendLine(mapFile, "")
+	For ri = 0 To gMapCount - 1
+		rk = "rule#" & (ri + 1) & " " & gMap(ri).MatchField & "=" & gMap(ri).MatchPattern
+		If IsElement(ruleCount(rk)) Then
+			Call BR_AppendLine(mapFile, "Rule " & (ri + 1) & " : " & ruleCount(rk) & " users  | IF " & gMap(ri).MatchField & " matches '" & gMap(ri).MatchPattern & "'")
+		Else
+			Call BR_AppendLine(mapFile, "Rule " & (ri + 1) & " : 0 users  | IF " & gMap(ri).MatchField & " matches '" & gMap(ri).MatchPattern & "'   <-- matched nobody: check field name and pattern")
+		End If
+		Call BR_AppendLine(mapFile, "          THEN HomeServer=" & BR_IIf(gMap(ri).HomeServer = "", "(default " & CfgS("DefaultHomeServer", "") & ")", gMap(ri).HomeServer) & _
+		"  OrgUnit=" & BR_IIf(gMap(ri).OrgUnit = "", "(default)", gMap(ri).OrgUnit) & "  Policy=" & BR_IIf(gMap(ri).Policy = "", "(default)", gMap(ri).Policy) & _
+		"  Groups=" & BR_IIf(gMap(ri).Groups = "", "(default)", gMap(ri).Groups) & "  VaultServer=" & BR_IIf(gMap(ri).VaultServer = "", "(default)", gMap(ri).VaultServer))
+	Next
+	If IsElement(ruleCount("defaults")) Then Call BR_AppendLine(mapFile, "No rule matched: " & ruleCount("defaults") & " users -> all defaults from bulkreg.ini")
 
 	' ---------- mail folders to pre-create (prerequisite B4) ----------
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String
@@ -140,7 +162,7 @@ Sub Initialize
 	summary = "Environment errors=" & envErr & " warnings=" & envWarn & _
 	" | Candidates=" & col.Count & " OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr
 	BR_Close summary
-	BR_Msg summary & Chr$(10) & Chr$(10) & "Candidates per home server:" & Chr$(10) & srvText & Chr$(10) & BR_IIf(UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED", "Mail folders to create: " & fldFile & Chr$(10), "") & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Candidates per home server:" & Chr$(10) & srvText & Chr$(10) & "Mapping test: " & mapFile & Chr$(10) & BR_IIf(UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED", "Mail folders to create: " & fldFile & Chr$(10), "") & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
 	CInt(BR_IIf(envErr + nErr > 0, 48, 64))
 	Exit Sub
 ErrH:

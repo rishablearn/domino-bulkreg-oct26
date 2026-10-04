@@ -4,7 +4,8 @@ All components carry the same release number (see `VERSION`). The guide's docume
 
 | Release | Guide | Date | Changes |
 |---|---|---|---|
-| **3.0.0** | 3.0 | 2026-10-04 | One version number across the kit: library and all 5 agents, `bulkreg.ini`, `server_mapping.csv`, PowerShell helper, Audit Viewer, README, guide. `VERSION` and `CHANGELOG.md` added. No functional change from 1.8.0. |
+| **3.1.0** | 3.1 | 2026-10-04 | server_mapping.csv fully documented (guide B12.1–B12.9) with a self-explaining template (one active catch-all, commented examples). Preflight writes a mapping test (`_mapping.txt`, users per rule). Agents stop if a mapping rule still contains a `<placeholder>`; warning without catch-all. Library header names corrected. Full consistency check of settings, names and versions. |
+| 3.0.0 | 3.0 | 2026-10-04 | One version number across the kit: library and all 5 agents, `bulkreg.ini`, `server_mapping.csv`, PowerShell helper, Audit Viewer, README, guide. `VERSION` and `CHANGELOG.md` added. No functional change from 1.8.0. |
 | 1.8.0 | 2.9 | 2026-10-04 | Central log database (Agent Log template) **required**: agents stop if it can't be opened; one AUDIT entry per user. DryRun explained (guide D3b); Agent 03 dialog shows DRY RUN / LIVE; dry run checks home server reachability. |
 | 1.7.0 | 2.8 | 2026-10-04 | Numbered mail folders directly under the Domino data directory; `MailExistingFolders`; startup check rejects `MailFolderPrefix` with a number or path. |
 | – | 2.7 | 2026-10-04 | One-page Agent Run Order. |

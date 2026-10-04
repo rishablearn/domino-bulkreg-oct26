@@ -1,9 +1,9 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.0.0
+' Script Library : BulkRegCommon            Version 3.1.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
-' Used by        : Agent01_Preflight, Agent02_ExportToBatchRegFile,
-'                  Agent03_BulkRegister, Agent04_VerifyVaultStatus
+' Used by        : Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
+'                  Agent04_VerifyVaultStatus, Agent05_ExportToBatchRegFile
 ' Runs in        : HCL Domino Administrator client on WINDOWS only
 '                  (agent trigger: Action menu selection, Target: None).
 '                  BR_Init refuses to run on a server or a non-Windows client.
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "3.0.0"
+Public Const BR_VERSION = "3.1.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -320,6 +320,13 @@ Function BR_LoadMapping(path As String) As Boolean
 		Line Input #fh, txt
 		txt = Trim$(Replace(txt, Uchr$(&HFEFF), ""))
 		If txt <> "" And Left$(txt, 1) <> "#" And LCase$(Left$(txt, 10)) <> "matchfield" Then
+			' a rule that still contains a <placeholder> must never be used
+			If InStr(txt, "<") > 0 And InStr(txt, ">") > 0 Then
+				Close #fh
+				BR_Msg "server_mapping.csv still contains a <placeholder> in this rule:" & Chr$(10) & Chr$(10) & txt & Chr$(10) & Chr$(10) & _
+				"Replace it with your real value (remove the < and >) or delete the rule." & Chr$(10) & path, 16
+				Exit Function
+			End If
 			parts = Split(txt, ";")
 			If UBound(parts) >= 2 Then
 				ReDim Preserve gMap(gMapCount) As BRMapRule
@@ -330,6 +337,9 @@ Function BR_LoadMapping(path As String) As Boolean
 				gMap(gMapCount).Policy = BR_Part(parts, 4)
 				gMap(gMapCount).Groups = BR_Part(parts, 5)
 				gMap(gMapCount).VaultServer = BR_Part(parts, 6)
+				If gMap(gMapCount).MatchPattern = "" Then gMap(gMapCount).MatchPattern = "*"
+				BR_Log LVL_DEBUG, "Rule #" & (gMapCount + 1) & ": IF " & gMap(gMapCount).MatchField & " LIKE '" & gMap(gMapCount).MatchPattern & "' THEN home=" & _
+				gMap(gMapCount).HomeServer & " ou=" & gMap(gMapCount).OrgUnit & " policy=" & gMap(gMapCount).Policy & " groups=" & gMap(gMapCount).Groups & " vault=" & gMap(gMapCount).VaultServer
 				gMapCount = gMapCount + 1
 			Else
 				BR_Log LVL_WARN, "Mapping line ignored (needs >= 3 columns): " & txt
@@ -338,6 +348,11 @@ Function BR_LoadMapping(path As String) As Boolean
 	Loop
 	Close #fh
 	BR_Log LVL_INFO, "Loaded " & gMapCount & " mapping rule(s) from " & path
+	Dim hasCatchAll As Boolean, ri As Integer
+	For ri = 0 To gMapCount - 1
+		If gMap(ri).MatchField = "*" Then hasCatchAll = True
+	Next
+	If Not hasCatchAll Then BR_Log LVL_WARN, "server_mapping.csv has no catch-all rule (*;*;...) - users that match no rule get the defaults from bulkreg.ini"
 	BR_LoadMapping = True
 	Exit Function
 ErrH:
