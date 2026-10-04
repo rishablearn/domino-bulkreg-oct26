@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "3.2",  // release 3.2.4
+  version: "3.2",  // release 3.2.5
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -38,11 +38,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 3.2.4: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 3.2.5: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["3.2.5", "**Release 3.2.5.** Compile fix in Agent 01 (constants DBACL_CREATE_DOCUMENTS / DBACL_DELETE_DOCUMENTS); all Domino constants and NotesRegistration properties checked against the HCL reference."],
   ["3.2.4", "**Release 3.2.4.** Compile fix in BulkRegCommon and Agent 03: `UBound(Split(...))` replaced by the new helper BR_ListCount (Type mismatch)."],
   ["3.2.3", "**Release 3.2.3.** Full syntax review of the code: reserved word `base` renamed, Type assignment replaced by BR_ClearUser, **IsIDInVault arguments corrected** (username, servername). Re-paste the library and Agent 03 (and recompile all agents)."],
   ["3.2.2", "**Release 3.2.2.** Compile fixes in BulkRegCommon (B17): the selection formula string now uses `{…}` delimiters because the formula contains `|`; two missing quotes fixed. Re-paste the library (STEP C) and recompile all agents."],

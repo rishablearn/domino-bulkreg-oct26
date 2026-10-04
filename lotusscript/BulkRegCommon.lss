@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.2.4
+' Script Library : BulkRegCommon            Version 3.2.5
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "3.2.4"
+Public Const BR_VERSION = "3.2.5"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
