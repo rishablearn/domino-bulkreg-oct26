@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.2.1
+' Script Library : BulkRegCommon            Version 3.2.2
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "3.2.1"
+Public Const BR_VERSION = "3.2.2"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -614,7 +614,8 @@ End Function
 Function BR_SelectionFormula(onlyUnregistered As Boolean) As String
 	Dim f As String
 	f = |Form = "Person" & @IsAvailable(objectGUID)|
-	If onlyUnregistered Then f = f & | & (!@IsAvailable(Certificate) | @Trim(@Text(Certificate)) = "")|
+	' {braces} delimit this string because the formula itself contains the | (OR) operator
+	If onlyUnregistered Then f = f & { & (!@IsAvailable(Certificate) | @Trim(@Text(Certificate)) = "")}
 	If CfgS("ExtraSelection", "") <> "" Then f = "(" & f & ") & (" & CfgS("ExtraSelection", "") & ")"
 	BR_SelectionFormula = f
 End Function
@@ -928,7 +929,7 @@ Function BR_AllocMailFile(u As BRUser, names List As String, counts List As Long
 		' MailFolderMax = number of folders pre-created on the servers (prerequisite B4)
 		If CfgL("MailFolderMax", 0) > 0 And k > CfgL("MailFolderMax", 0) Then
 			u.MailFileNote = "folders " & prefix & "1.." & prefix & CfgL("MailFolderMax", 0) & " are full"
-			BR_AllocMailFile = "ERROR:All pre-created mail folders (" & prefix & "1.." & prefix & CfgL("MailFolderMax", 0) & ) on " & BR_IIfStr(sk = "mail cluster", "the mail cluster", u.HomeServer) & " are full - create " & prefix & CStr(k) & " and raise MailFolderMax; "
+			BR_AllocMailFile = "ERROR:All pre-created mail folders (" & prefix & "1.." & prefix & CfgL("MailFolderMax", 0) & ") on " & BR_IIfStr(sk = "mail cluster", "the mail cluster", u.HomeServer) & " are full - create " & prefix & CStr(k) & " and raise MailFolderMax; "
 			Exit Function
 		End If
 		folder = prefix & CStr(k)
@@ -1055,7 +1056,7 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	' same row, compact, in the central log database (one entry per user per action)
 	If Not (gNLog Is Nothing) Then
 		Call gNLog.LogAction("AUDIT " & mode & " " & action & " " & result & " | " & BR_IIfStr(u.FullNameAfter <> "", u.FullNameAfter, u.FullNameBefore) & _
-		" | " & u.InternetAddress & " | " & u.HomeServer & " | " & u.MailFile &  | vault " & u.VaultStatus & BR_IIfStr(u.ReplicaStatus <> "", " | replicas " & u.ReplicaStatus, "") & " | batch " & gBatchID & " | " & msg)
+		" | " & u.InternetAddress & " | " & u.HomeServer & " | " & u.MailFile & " | vault " & u.VaultStatus & BR_IIfStr(u.ReplicaStatus <> "", " | replicas " & u.ReplicaStatus, "") & " | batch " & gBatchID & " | " & msg)
 	End If
 	Exit Sub
 ErrH:
