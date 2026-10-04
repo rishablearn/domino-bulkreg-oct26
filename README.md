@@ -1,6 +1,6 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 3.2.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+BulkReg 3.2.1 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
 **Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), v3.2. It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## Agent run order (per batch)
@@ -21,6 +21,7 @@ All agents run from bulkreg.nsf > **Actions > BulkReg** in the Windows Domino Ad
 - **First time only:** run steps 2–8 once with a 2-user pilot batch.
 - **Agent 05** (text-file export) is **not** part of this sequence.
 - **DryRun** only affects agent 03. `1` = simulate everything and change nothing (the batch stays open). `0` = register for real (the batch is closed). Always dry-run first, then run live on the same batch file, then set it back to `1`.
+- **Where the databases live:** `bulkreg.nsf` (code only) is **local** on the admin workstation, locally encrypted (guide B13–B14). `bulkreg_log.nsf` is on a **server** (guide B15): operators get Author + Create documents, no Delete. Preflight checks both.
 - **Central log database is required:** create `bulkreg_log.nsf` from the Agent Log template (`alog4.ntf`) on a server and set `LogServer` / `LogDb`. Every run, every action and one AUDIT entry per user are written there. If it can't be opened, the agents stop before doing anything.
 - **03 cannot run without a batch file from 02**, and each batch can be registered live only once.
 
@@ -127,7 +128,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (3.2.0)   ·   CHANGELOG.md   release history
+VERSION      current release (3.2.1)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv                 (templates – no secrets)
 lotusscript/ BulkRegCommon.lss, Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
              Agent04_VerifyVaultStatus, Agent05_ExportToBatchRegFile (.lss)

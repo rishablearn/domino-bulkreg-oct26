@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "3.2",
+  version: "3.2",  // release 3.2.1
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -38,11 +38,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 3.2.0: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 3.2.1: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["3.2.1", "**Release 3.2.1.** Database placement re-validated: tool database **local** (code only, client UI, your ID), log database on a **server** (shared audit record). B13 explains why; B14 adds local encryption and consistent ACL (a local ACL alone is not a boundary); B15 tightens the log ACL (operators Author + Create documents, no Delete; owner group separate), template-server tip, backup and size. Preflight checks both: tool database local, and your access to the log database."],
   ["3.2", "**Release 3.2.0.** **Mail cluster replicas:** list the cluster once (`MailClusterServers`); 03 requests a replica of every new mail file on each other member through AdminP (Create Replica), 04 verifies them (REPLICAS_OK). Mail file names and numbered folders are allocated once for the whole cluster. Mapping column 8 ClusterReplicas. **Batches of 1000** (BatchSize default). Worked example for one cluster of 4 servers (2 DC, 2 DR) with 2 × 2500 users (B12.7). New D3c; B4 cluster prerequisites; pattern ranges `[a-l]*` documented."],
   ["3.1", "**Release 3.1.0.** server_mapping.csv fully documented (B12.1–B12.9: format, matching, fields, order, step-by-step, worked examples, testing, common mistakes) and a self-explaining template. Preflight writes a **mapping test** (_mapping.txt: users per rule). Agents stop if a mapping rule still contains a <placeholder>; warning when no catch-all rule exists. Consistency check of all settings, names and versions."],
   ["3.0", "**Release 3.0.0.** One version number across the whole kit: guide 3.0, library and all agents 3.0.0, bulkreg.ini, server_mapping.csv, PowerShell helper, Audit Viewer, README, VERSION and CHANGELOG.md. Content as in 2.9."],
@@ -663,6 +664,11 @@ done("Every rule has real values, the catch-all is last, and the Preflight mappi
 // ---------- B13
 h2("B13 Create the tool database bulkreg.nsf");
 meta("Domino administrator", "Domino Administrator (or Notes client)", "creates a local database");
+p("bulkreg.nsf only **holds the code** (library and agents). It is created **locally** on the admin workstation on purpose: the agents use the Notes client user interface (dialogs, prompts), run with **your** admin ID and rights, and refuse to run on a server. They never store documents in bulkreg.nsf; everything they produce goes to `C:\\BulkReg\\…` and to the central log database on the server (B15).");
+tbl(["Database", "Where", "Why there", "Contains"], [
+  ["bulkreg.nsf (tool)", "**Local**, admin workstation", "Agents need the client UI and your ID; NotesRegistration runs from the client", "Code only (library + 5 agents)"],
+  ["bulkreg_log.nsf (log)", "**Server**, e.g. the registration server", "Shared, permanent, backed-up record for all administrators and auditors", "One entry per run, action and user"],
+], [2200, 2300, 2900, 1960]);
 ol(
   "Choose **File > Application > New**. *Result:* the New Application dialog opens.",
   "In **Server**, keep **Local**.",
@@ -672,16 +678,18 @@ ol(
   "Click **OK**. *Result:* an empty database opens. Close it."
 );
 done("bulkreg.nsf exists in your local Notes data directory.");
+note("**Several administrators:** each one creates their own local bulkreg.nsf from the kit (B13–B19), or copies a finished one and re-signs it with their own ID (B19). The code comes from Git, so a lost local copy is rebuilt in minutes.");
 
 // ---------- B14
 h2("B14 Restrict access to bulkreg.nsf");
+p("A **local** database is not protected by its ACL alone: whoever can copy the file can open it locally, where the ACL is not a security boundary. Only **local encryption** ties the file to your ID. Protect it in three layers:");
 ol(
-  "Select the bulkreg.nsf icon (or open the database) and choose **File > Application > Access Control**.",
-  "Set **-Default-** to **No Access**. Set **Anonymous** to **No Access** (add it if missing).",
-  "Make sure your admin ID (or admin group) has **Manager** access.",
-  "Click **OK**."
+  "**ACL:** select the bulkreg.nsf icon (or open the database) and choose **File > Application > Access Control**. Set **-Default-** to **No Access** and **Anonymous** to **No Access** (add it if missing). Make sure your admin ID has **Manager** access.",
+  "In the same dialog click **Advanced** and tick **Enforce a consistent Access Control List across all replicas**. Click **OK**.",
+  "**Local encryption:** choose **File > Application > Properties**, click **Encryption Settings**, select **Locally encrypt this database using** your ID and **Strong encryption**, and click **OK**. Close the database and open it again. *Result:* only your ID can open the file, even if it is copied.",
+  "**Windows:** the local Notes data directory is in your Windows user profile. Do not share it, and do not copy bulkreg.nsf to a shared drive."
 );
-done("Only administrators have access to bulkreg.nsf.");
+done("bulkreg.nsf has -Default- and Anonymous = No Access, consistent ACL enforced, and is locally encrypted for your ID.");
 
 // ---------- B15
 h2("B15 Create the central BulkReg log database (required)");
@@ -691,10 +699,21 @@ ol(
   "Choose **File > Application > New**.",
   "In **Server**, select the server that will hold the log, for example the registration server `DominoAdmin/Demo`. Do not keep Local.",
   "In **Title**, type `BulkReg Log`. In **File Name**, type `bulkreg_log.nsf`.",
-  "Tick **Show advanced templates** and select the **Agent Log** template (file `alog4.ntf`; some releases list it as alog.ntf). Click **OK**. *Result:* the empty log database opens.",
-  "Choose **File > Application > Access Control** and set: **-Default-** = No Access; **Anonymous** = No Access; the BulkReg administrators (your admin ID or group) = **Author** with **Create documents** ticked (Editor is also fine); auditors = **Reader**; the server group (e.g. LocalDomainServers) = Manager. Click **OK**.",
+  "Tick **Show advanced templates** and select the **Agent Log** template (file `alog4.ntf`; some releases list it as alog.ntf). If it is not listed, click **Template Server**, choose **Local** and look again: the template is then taken from your client. Click **OK**. *Result:* the empty log database opens.",
+  "Choose **File > Application > Access Control** and set the entries below. Click **OK**."
+);
+tbl(["ACL entry", "Access", "Why"], [
+  ["-Default-, Anonymous", "No Access", "Nobody else reads the audit trail"],
+  ["BulkReg operators (your admin ID or their group)", "**Author**, **Create documents** ticked, **Delete documents** NOT ticked", "Agents can add entries but cannot change or delete earlier ones"],
+  ["Auditors / reviewers", "Reader", "Read the record"],
+  ["LocalDomainServers", "Manager", "Replication and server tasks"],
+  ["Database owner (a group the operators are NOT in, e.g. the platform owner)", "Manager", "Separation of duties: the people who run BulkReg cannot alter its log"],
+], [3400, 3100, 2860]);
+note("When you create the database you become its Manager. After setting the owner entry, lower your own entry to Author. If your ID is still Manager or Editor (for example through LocalDomainAdmins), Preflight shows a **warning**, not an error: decide with your auditor whether that is acceptable.");
+olc(
   "In bulkreg.ini set `LogServer=DominoAdmin/Demo` (your server) and `LogDb=bulkreg_log.nsf`. Save.",
-  "Optional: replicate the database to a second server for resilience, like any other administrative database."
+  "Include the database in the server backup. Optional: replicate it to a second server (for example in DR) for resilience.",
+  "Size: every run writes one entry per action and per user (at LogLevel=INFO, roughly 3–8 entries per registered user, more with DEBUG). For 5000 users expect tens of thousands of entries; keep LogLevel=INFO for normal batches and archive the database when the project is closed."
 );
 done("bulkreg_log.nsf exists on the server, its ACL is set, and bulkreg.ini names it. The smoke test (B21) creates its first entries.");
 
@@ -775,6 +794,7 @@ ol(
   "Let Preflight finish. *Result:* a dialog showing Environment errors, candidate counts (OK / WARN / ERROR) and **candidates per home server**.",
   "Open `C:\\BulkReg\\audit`. *Result:* a file `BulkReg_Preflight_<date-time>_audit.csv` and a `_debug.log`.",
   "Open **bulkreg_log.nsf** on the log server. *Result:* a new entry for `BulkReg Preflight <date-time> by <your name>` containing the run's actions.",
+  "In the debug log, check the lines **PASS Tool database is local** and **PASS Log database: Author with Create documents (or higher)**. A warning about Editor/Manager or Delete documents on the log database means your ACL entry is higher than B15 recommends.",
   "If Environment errors is not 0, open the debug log, find the lines marked `FAIL`, fix the cause (D6), and run Preflight again."
 );
 done("Preflight reports 0 environment errors. **Setup is complete.** Continue with Part C.");
@@ -1194,6 +1214,8 @@ tbl(["Risk", "Control", "Evidence"], [
   ["Weak initial passwords", "Random 16 characters plus a forced change at first use (B7). LotusScript Rnd is not cryptographic.", "Security Settings"],
   ["Unauthorized tool use", "bulkreg.nsf ACL limited to admins; signed design", "B14, B19"],
   ["Missing audit trail", "Central log database is mandatory; agents refuse to run without it; one AUDIT entry per user", "bulkreg_log.nsf (B15)"],
+  ["Audit trail altered", "Operators are Author without Delete documents on the log database; owner is a separate group; Preflight warns about higher access", "Log database ACL, Preflight debug log"],
+  ["Tool database copied or changed", "Local, ACL enforced, locally encrypted; code kept in Git and signed", "B14, B19"],
 ], [2300, 4600, 2460]);
 tbl(["When", "Check"], [
   ["Before each batch", "Preflight clean; batch built, reviewed and attached; dry run clean"],

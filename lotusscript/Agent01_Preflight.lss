@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent name : BulkReg\01 - Preflight Check   (READ-ONLY - changes nothing)
 '              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.2.0  (BulkReg release; library BulkRegCommon 3.2.0)
+' Version    : 3.2.1  (BulkReg release; library BulkRegCommon 3.2.1)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -74,6 +74,36 @@ Sub Initialize
 	Else
 		BR_Log LVL_INFO, "MailClusterServers empty - no mail cluster: mail files get no replicas unless a mapping rule lists ClusterReplicas"
 	End If
+	' tool database bulkreg.nsf: meant to be LOCAL on the admin workstation (guide B13)
+	Dim toolDb As NotesDatabase
+	Set toolDb = gSession.CurrentDatabase
+	If Not (toolDb Is Nothing) Then
+		If toolDb.Server = "" Then
+			BR_Log LVL_INFO, "PASS  Tool database is local: " & toolDb.FilePath
+		Else
+			BR_Log LVL_WARN, "Tool database runs from server " & toolDb.Server & "!!" & toolDb.FilePath & " - BulkReg is designed for a LOCAL bulkreg.nsf (guide B13)"
+			envWarn = envWarn + 1
+		End If
+	End If
+	' central log database on the server: Author + Create documents; Editor/Delete weaken the audit trail (guide B15)
+	Dim logDbObj As NotesDatabase, accLvl As Integer, accPriv As Long
+	On Error Resume Next
+	Set logDbObj = gSession.GetDatabase(CfgS("LogServer", ""), CfgS("LogDb", ""), False)
+	accLvl = logDbObj.CurrentAccessLevel
+	accPriv = logDbObj.QueryAccessPrivileges(gOperator)
+	If Err <> 0 Then
+		BR_Log LVL_WARN, "Could not read your access to the log database: " & Error$
+		envWarn = envWarn + 1
+		Err = 0
+	Else
+		BR_Log LVL_INFO, "Log database " & CfgS("LogServer", "") & "!!" & CfgS("LogDb", "") & ": your access level " & accLvl & " (3 = Author, 4 = Editor), privileges " & accPriv
+		envErr = envErr + BR_Check(accLvl >= ACLLEVEL_AUTHOR And (accLvl > ACLLEVEL_AUTHOR Or (accPriv And DBACL_CREATE_DOCS) <> 0), "Log database: Author with Create documents (or higher)")
+		If accLvl > ACLLEVEL_AUTHOR Or (accPriv And DBACL_DELETE_DOCS) <> 0 Then
+			BR_Log LVL_WARN, "Log database: you have " & BR_IIf(accLvl > ACLLEVEL_AUTHOR, "Editor or higher", "Delete documents") & " access - for a tamper-resistant audit trail use Author, Create documents, without Delete documents (guide B15)"
+			envWarn = envWarn + 1
+		End If
+	End If
+	On Error GoTo ErrH
 	If CfgB("DryRun", True) Then BR_Log LVL_INFO, "DryRun=1 (safe mode) is set"
 	BR_Log LVL_INFO, "Client platform " & gPlatform & " | operator " & gOperator
 
