@@ -1,10 +1,14 @@
 '=====================================================================
-' Agent name : BulkReg\02 - Build Batch   (select + validate; READ-ONLY on names.nsf)
-'              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.2.7  (BulkReg release; library BulkRegCommon 3.2.7)
-' Trigger    : Action menu selection, Target: None
-'              (Windows Domino Administrator client only)
-' Options    : Option Public / Option Declare / Use "BulkRegCommon"
+' Agent name : BulkReg\02 - Build Batch
+' Version    : 3.3.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.3.0)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunBuildBatch).
+'              This agent only calls it, so it never changes between releases.
+'
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunBuildBatch):
 '
 ' Selects the next batch of unregistered DirSync users (default 1000),
 ' resolves each user's home server / mail file / OU / policy / groups from
@@ -39,183 +43,10 @@
 '#####################################################################
 Option Public
 Option Declare
-Use "BulkRegCommon"
-
+Use "BulkRegAgents"
 '#####################################################################
-' ### STEP C: select Initialize and REPLACE its content with the block below
-' ###         (from 'Sub Initialize' to its 'End Sub').
+' ### STEP C: select Initialize and REPLACE its content with the 3 lines below
 '#####################################################################
 Sub Initialize
-	On Error GoTo ErrH
-	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
-	Dim usersView As NotesView, dupCol As NotesDocumentCollection
-	Dim u As BRUser, issues As String, chk As String, inc As String, t0 As Double
-	Dim batchMax As Long, srvFilter As String, bdir As String, bfile As String, sumFile As String
-	Dim openIds List As String, srvCache List As String
-	Dim seenShort List As String, seenMail List As String, seenMF List As String, checkMF As Boolean
-	Dim srvInc List As Long, srvExcl List As Long, polInc List As Long
-	Dim nRows As Long, nInc As Long, nWarn As Long, nErr As Long
-	Dim nInOpen As Long, nOtherSrv As Long, nLeft As Long, r As String, hk As String, pk As String
-	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String, newInFolder List As Long, aIssue As String, fkey As String
-	Dim repByHome List As String, rl As Variant, ri As Integer, foundOn As String
-
-	If Not BR_Init("BuildBatch") Then Exit Sub
-	batchMax = CfgL("BatchSize", 1000)
-	If batchMax < 1 Then batchMax = 1000
-	srvFilter = Trim$(CfgS("BatchServerFilter", ""))
-	checkMF = CfgB("CheckMailFileExists", True)
-
-	bdir = BR_BatchDir()
-	If Not BR_DirWritable(bdir) Then Error 5001, "BatchDir missing or not writable: " & bdir
-	gBatchID = "BATCH-" & gRunID
-	bfile = bdir & gBatchID & ".csv"
-	sumFile = bdir & gBatchID & "_summary.txt"
-
-	Set db = BR_OpenDirectory()
-	' mail file names already in use: open batches, Person documents, files on servers (scanned per server)
-	Call BR_OpenBatchNoteIDs(openIds, mfNames, mfCounts)
-	Call BR_ScanDirectoryMail(db, mfNames)
-	Set usersView = db.GetView("($Users)")
-	Set col = BR_GetCandidates(db, True)
-
-	Call BR_AppendLine(bfile, Uchr$(&HFEFF) & BR_BATCH_COLS)
-	Set doc = col.GetFirstDocument()
-	Do While Not (doc Is Nothing)
-		t0 = Timer
-		Call BR_ReadUser(doc, u)
-		If IsElement(openIds(u.NoteID)) Then
-			nInOpen = nInOpen + 1                                   ' already in a pending batch
-		ElseIf srvFilter <> "" And Not BR_SameServer(u.HomeServer, srvFilter) Then
-			nOtherSrv = nOtherSrv + 1                               ' belongs to another server wave
-		ElseIf nRows >= batchMax Then
-			nLeft = nLeft + 1                                       ' for the next batch
-		Else
-			nRows = nRows + 1
-			issues = BR_Validate(u)
-			If u.ShortName <> "" Then
-				If IsElement(seenShort(LCase$(u.ShortName))) Then issues = issues & "ERROR:Duplicate ShortName in batch; " Else seenShort(LCase$(u.ShortName)) = u.NoteID
-			End If
-			If u.InternetAddress <> "" Then
-				If IsElement(seenMail(LCase$(u.InternetAddress))) Then issues = issues & "ERROR:Duplicate InternetAddress in batch; " Else seenMail(LCase$(u.InternetAddress)) = u.NoteID
-				If Not (usersView Is Nothing) Then
-					Set dupCol = usersView.GetAllDocumentsByKey(u.InternetAddress, True)
-					If dupCol.Count > 1 Then issues = issues & "WARN:InternetAddress used by " & dupCol.Count & " directory entries; "
-				End If
-			End If
-			If u.HomeServer <> "" Then
-				If Not BR_HomeServerOK(u.HomeServer, srvCache) Then
-					issues = issues & "ERROR:HomeServer unreachable; "
-				ElseIf InStr(issues, "ERROR:") = 0 Then
-					' unique mail file name + numbered folder (mail1, mail2 ...) on this home server
-					Call BR_ScanServerMail(u.HomeServer, mfNames, mfCounts, mfScanned)
-					aIssue = BR_AllocMailFile(u, mfNames, mfCounts)
-					issues = issues & aIssue
-					If aIssue = "" And checkMF Then
-						foundOn = BR_MailFileExistsAny(u)
-						If foundOn <> "" Then issues = issues & "ERROR:MailFile " & u.MailFile & " already exists on " & foundOn & "; "
-					End If
-					' replica servers: unreachable now = AdminP will wait for them (warning only)
-					If u.ClusterReplicas <> "" Then
-						rl = Split(u.ClusterReplicas, ",")
-						For ri = 0 To UBound(rl)
-							If Not BR_HomeServerOK(CStr(rl(ri)), srvCache) Then issues = issues & "WARN:Replica server " & rl(ri) & " unreachable; "
-						Next
-					End If
-					If InStr(u.MailFileNote, "already used") > 0 Then issues = issues & "WARN:mail file renamed - " & StrLeft(u.MailFileNote, ";") & "; "
-				End If
-			End If
-
-			If InStr(issues, "ERROR:") > 0 Then
-				chk = "ERROR": inc = "N": nErr = nErr + 1
-			ElseIf InStr(issues, "WARN:") > 0 Then
-				chk = "WARN": inc = "Y": nWarn = nWarn + 1
-			Else
-				chk = "OK": inc = "Y"
-			End If
-			hk = BR_IIfStr(u.HomeServer = "", "(none)", u.HomeServer)
-			pk = BR_IIfStr(u.Policy = "", "(none)", u.Policy)
-			If inc = "Y" Then
-				nInc = nInc + 1
-				If IsElement(srvInc(hk)) Then srvInc(hk) = srvInc(hk) + 1 Else srvInc(hk) = 1
-				repByHome(hk) = BR_IIfStr(u.ClusterReplicas = "", "(no replicas)", u.ClusterReplicas)
-				If IsElement(polInc(pk)) Then polInc(pk) = polInc(pk) + 1 Else polInc(pk) = 1
-				If InStr(u.MailFile, "\") > 0 Then fkey = BR_IIfStr(BR_InMailCluster(u.HomeServer), "mail cluster", hk) & " : " & StrLeftBack(u.MailFile, "\") Else fkey = hk & " : (data directory)"
-				If IsElement(newInFolder(fkey)) Then newInFolder(fkey) = newInFolder(fkey) + 1 Else newInFolder(fkey) = 1
-			Else
-				If IsElement(srvExcl(hk)) Then srvExcl(hk) = srvExcl(hk) + 1 Else srvExcl(hk) = 1
-			End If
-
-			r = Q(inc) & "," & Q(gBatchID) & "," & Q(CStr(nRows)) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & _
-			Q(u.FullNameBefore) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
-			Q(u.HomeServer) & "," & Q(u.MailFile) & "," & Q(u.MailFileNote) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.ClusterReplicas) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues)
-			Call BR_AppendLine(bfile, r)
-			Call BR_Audit(u, "BUILD", "SELECT", chk, BR_Elapsed(t0), "Include=" & inc & " " & issues)
-		End If
-		Set doc = col.GetNextDocument(doc)
-	Loop
-
-	' ---------- summary file ----------
-	Call BR_AppendLine(sumFile, "BulkReg " & BR_VERSION & " - batch summary")
-	Call BR_AppendLine(sumFile, "Batch ID        : " & gBatchID)
-	Call BR_AppendLine(sumFile, "Built by / at   : " & gOperator & " / " & Format$(Now, "yyyy-mm-dd hh:nn:ss"))
-	Call BR_AppendLine(sumFile, "Batch file      : " & bfile)
-	Call BR_AppendLine(sumFile, "Selection       : " & BR_SelectionFormula(True))
-	Call BR_AppendLine(sumFile, "Server filter   : " & BR_IIfStr(srvFilter = "", "(none - all home servers)", srvFilter))
-	Call BR_AppendLine(sumFile, "Batch size limit: " & batchMax)
-	Call BR_AppendLine(sumFile, "")
-	Call BR_AppendLine(sumFile, "Rows in batch   : " & nRows & "   Include=Y: " & nInc & "   (WARN: " & nWarn & ")   Include=N (ERROR): " & nErr)
-	Call BR_AppendLine(sumFile, "Not selected    : already in an open batch: " & nInOpen & " | other home server: " & nOtherSrv & " | left for next batch: " & nLeft)
-	Call BR_AppendLine(sumFile, "")
-	Call BR_AppendLine(sumFile, "Included users per home server:")
-	ForAll fa1 In srvInc
-		Call BR_AppendLine(sumFile, "  " & ListTag(fa1) & " : " & fa1)
-	End ForAll
-	Call BR_AppendLine(sumFile, "Cluster replicas of the mail files (requested by 03 via AdminP" & BR_IIfStr(CfgB("CreateClusterReplicas", True), "", " - OFF: CreateClusterReplicas=0") & "):")
-	ForAll fa6 In repByHome
-		Call BR_AppendLine(sumFile, "  home " & ListTag(fa6) & " -> replicas on " & fa6)
-	End ForAll
-	If CfgS("MailClusterServers", "") <> "" Then Call BR_AppendLine(sumFile, "Mail cluster (names + folders allocated once for all members): " & BR_SrvList(CfgS("MailClusterServers", ""), ""))
-	Call BR_AppendLine(sumFile, "Excluded (ERROR) per home server:")
-	ForAll fa2 In srvExcl
-		Call BR_AppendLine(sumFile, "  " & ListTag(fa2) & " : " & fa2)
-	End ForAll
-	Call BR_AppendLine(sumFile, "Mail files: naming " & UCase$(CfgS("MailFileNaming", "LASTNAME")) & ", collisions " & UCase$(CfgS("MailFileCollision", "SUFFIX")) & _
-	", folders " & UCase$(CfgS("MailFolderMode", "NUMBERED")) & BR_IIfStr(UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED", " (" & CfgS("MailFolderPrefix", "mail") & "1, " & CfgS("MailFolderPrefix", "mail") & "2 ... max " & CfgL("MailFilesPerFolder", 1000) & " per folder)", ""))
-	Call BR_AppendLine(sumFile, "New mail files per home server (or mail cluster) and folder (Include=Y):")
-	ForAll fa3 In newInFolder
-		Call BR_AppendLine(sumFile, "  " & ListTag(fa3) & " : " & fa3)
-	End ForAll
-	Call BR_AppendLine(sumFile, "Folder fill after this batch (existing + open batches + this batch):")
-	ForAll fa4 In mfCounts
-		If LCase$(StrRight(ListTag(fa4), "!!")) Like LCase$(CfgS("MailFolderPrefix", "mail")) & "#*" Then Call BR_AppendLine(sumFile, "  " & Replace(ListTag(fa4), "!!", " : ") & " : " & fa4)
-	End ForAll
-	Call BR_AppendLine(sumFile, "Included users per explicit policy:")
-	ForAll fa5 In polInc
-		Call BR_AppendLine(sumFile, "  " & ListTag(fa5) & " : " & fa5)
-	End ForAll
-	Call BR_AppendLine(sumFile, "")
-	Call BR_AppendLine(sumFile, "Next: review " & gBatchID & ".csv (Include / HomeServer / MailFile / ClusterReplicas / Policy),")
-	Call BR_AppendLine(sumFile, "      then run Actions > BulkReg > 03 - Register Batch and choose this file.")
-
-	BR_Close "batch=" & gBatchID & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft
-	BR_Msg "Batch " & gBatchID & " created." & Chr$(10) & Chr$(10) & _
-	"Rows: " & nRows & "   Include=Y: " & nInc & "   WARN: " & nWarn & "   ERROR (Include=N): " & nErr & Chr$(10) & _
-	"Not selected - in open batch: " & nInOpen & ", other server: " & nOtherSrv & ", left for next batch: " & nLeft & Chr$(10) & Chr$(10) & _
-	"Review:  " & bfile & Chr$(10) & "Summary: " & sumFile & Chr$(10) & Chr$(10) & _
-	"Nothing has been registered. Run Actions > BulkReg > 03 - Register Batch after review.", BR_IIfInt(nErr > 0, 48, 64)
-	Exit Sub
-ErrH:
-	BR_Log LVL_ERROR, "Build Batch aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
-	BR_Close "ABORTED"
-	BR_Msg "Build Batch aborted: " & Error$, 16
-	Exit Sub
+	Call BR_RunBuildBatch()
 End Sub
-'#####################################################################
-' ### STEP D: paste everything from here to the END of the file directly
-' ###         below 'End Sub' of Initialize. Designer creates one entry per
-' ###         Function / Sub automatically.
-'#####################################################################
-
-Function BR_IIfInt(c As Boolean, a As Integer, b As Integer) As Integer
-	If c Then BR_IIfInt = a Else BR_IIfInt = b
-End Function

@@ -1,9 +1,8 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.2.7
+' Script Library : BulkRegCommon            Version 3.3.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
-' Used by        : Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
-'                  Agent04_VerifyVaultStatus, Agent05_ExportToBatchRegFile
+' Used by        : BulkRegAgents (the code of all five agents)
 ' Runs in        : HCL Domino Administrator client on WINDOWS only
 '                  (agent trigger: Action menu selection, Target: None).
 '                  BR_Init refuses to run on a server or a non-Windows client.
@@ -20,7 +19,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "3.2.7"
+Public Const BR_VERSION = "3.3.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -119,6 +118,14 @@ Function BR_Init(toolName As String) As Boolean
 	gLogLevel = LVL_INFO
 	gBase = BR_DEFAULT_BASE
 	gPlatform = gSession.Platform
+	' globals of the libraries survive between agent runs in one client session - start clean
+	gBatchID = ""
+	gResultsFile = ""
+	gDebugFile = ""
+	gAuditFile = ""
+	Set gAdminP = Nothing
+	Set gNLog = Nothing
+	Erase gCfg
 	Randomize
 
 	' ---- supported environment: Windows client only ----

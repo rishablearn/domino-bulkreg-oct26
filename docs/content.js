@@ -46,11 +46,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg " + KIT_VERSION + ": BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg " + KIT_VERSION + ": script libraries BulkRegCommon and BulkRegAgents, 5 one-line agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.3.0", "**Release 3.3.0.** **All code moved into script libraries.** New library **BulkRegAgents** holds the code of the five agents (BR_RunPreflight … BR_RunExport); each agent now contains only `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, so future releases replace only the two libraries (B17a). B17 and B18 rewritten; Appendix B shows the Sub per agent. Library variables are reset at the start of every run. **One-time migration from 3.2: B17 (create BulkRegAgents) and B18 (reduce each agent to 3 + 3 lines).**"],
   ["3.2.7", "**Release 3.2.7.** Version numbers made fully consistent: the guide now carries the full release number (read from the VERSION file) instead of 3.2; revision history and CHANGELOG use full numbers; new helper command `bulkreg.cmd Versions` checks every file against VERSION. No change to the LotusScript logic (only the version lines)."],
   ["3.2.6", "**Release 3.2.6.** Review round: log database opened before the access check (Agent 01), MailSystem set to Notes explicitly (Agent 03), MaxScan default 0. New B17a: how to update the code to a new release."],
   ["3.2.5", "**Release 3.2.5.** Compile fix in Agent 01 (constants DBACL_CREATE_DOCUMENTS / DBACL_DELETE_DOCUMENTS); all Domino constants and NotesRegistration properties checked against the HCL reference."],
@@ -198,7 +199,7 @@ tbl(["Item", "Where", "Created in"], [
   ["Numbered mail folders and replica rights on every mail cluster member", "Domino data directory and Server documents", "B4"],
   ["Tool database bulkreg.nsf", "Local Notes data directory", "B13, B14"],
   ["Central log database bulkreg_log.nsf (required)", "A Domino server, e.g. the registration server", "B15"],
-  ["Script library and 5 agents", "Inside bulkreg.nsf", "B17, B18"],
+  ["Script libraries BulkRegCommon + BulkRegAgents, and 5 one-line agents", "Inside bulkreg.nsf", "B17, B18"],
 ], [4300, 3200, 1860]);
 h2("A4 Organizational or explicit policy: which one assigns the vault?");
 p("The ID reaches the vault because the user's **effective policy** includes a Security Settings document that assigns the vault. HCL: *“If you create an organizational policy, it automatically applies when you register users. If you create an explicit policy, you assign it manually during user registration, in the Person document or by using the Policy Assignment tool.”*");
@@ -473,7 +474,7 @@ ol(
 p("Then copy the two templates into the working folder:");
 code(`Copy-Item C:\\BulkReg-kit\\config\\bulkreg.ini        C:\\BulkReg\\config\\
 Copy-Item C:\\BulkReg-kit\\config\\server_mapping.csv C:\\BulkReg\\config\\`);
-done("`C:\\BulkReg-kit\\lotusscript` contains 6 .lss files, and `C:\\BulkReg\\config` contains bulkreg.ini and server_mapping.csv.");
+done("`C:\\BulkReg-kit\\lotusscript` contains 7 .lss files (2 libraries, 5 agents), and `C:\\BulkReg\\config` contains bulkreg.ini and server_mapping.csv.");
 
 // ---------- B11
 h2("B11 Fill in bulkreg.ini");
@@ -680,7 +681,7 @@ h2("B13 Create the tool database bulkreg.nsf");
 meta("Domino administrator", "Domino Administrator (or Notes client)", "creates a local database");
 p("bulkreg.nsf only **holds the code** (library and agents). It is created **locally** on the admin workstation on purpose: the agents use the Notes client user interface (dialogs, prompts), run with **your** admin ID and rights, and refuse to run on a server. They never store documents in bulkreg.nsf; everything they produce goes to `C:\\BulkReg\\…` and to the central log database on the server (B15).");
 tbl(["Database", "Where", "Why there", "Contains"], [
-  ["bulkreg.nsf (tool)", "**Local**, admin workstation", "Agents need the client UI and your ID; NotesRegistration runs from the client", "Code only (library + 5 agents)"],
+  ["bulkreg.nsf (tool)", "**Local**, admin workstation", "Agents need the client UI and your ID; NotesRegistration runs from the client", "Code only (2 libraries + 5 one-line agents)"],
   ["bulkreg_log.nsf (log)", "**Server**, e.g. the registration server", "Shared, permanent, backed-up record for all administrators and auditors", "One entry per run, action and user"],
 ], [2200, 2300, 2900, 1960]);
 ol(
@@ -738,57 +739,74 @@ ol(
   "Choose **File > Open > HCL Notes Application**, select **Local**, choose `bulkreg.nsf` and click **Open**. *Result:* BulkReg Tool appears in the **Applications Navigator** on the left.",
   "Expand **BulkReg Tool**, then expand **Code**."
 );
-h2("B17 Create the script library BulkRegCommon");
-meta("Domino administrator", "Domino Designer", "adds a script library to bulkreg.nsf");
+h2("B17 Create the two script libraries");
+meta("Domino administrator", "Domino Designer", "adds 2 script libraries to bulkreg.nsf");
+p("All BulkReg code lives in **two script libraries**. The five agents (B18) contain only one line that calls the library, so they never change between releases.");
+tbl(["Library (type the name exactly)", "Source file in C:\\BulkReg-kit\\lotusscript", "Contains", "Blocks"], [
+  ["`BulkRegCommon`", "BulkRegCommon.lss", "Shared functions: configuration, mapping, mail files, cluster replicas, logging, audit, batch files", "A, B, C"],
+  ["`BulkRegAgents`", "BulkRegAgents.lss", "The code of the five agents: BR_RunPreflight, BR_RunBuildBatch, BR_RunRegisterBatch, BR_RunVerify, BR_RunExport. It uses BulkRegCommon.", "A, B, C"],
+], [2300, 2300, 3460, 1300]);
+warn("Create and save **BulkRegCommon first**. BulkRegAgents contains `Use \"BulkRegCommon\"` and does not compile until BulkRegCommon exists.");
+p("Do the following for **each** library, BulkRegCommon first:");
 ol(
   "Under **Code**, double-click **Script Libraries**. Click **New LotusScript Library**.",
-  "Type the name `BulkRegCommon` exactly (no spaces) and click **OK**. *Result:* the LotusScript editor opens, with **(Options)**, **(Declarations)**, **Initialize** and **Terminate** in the outline.",
-  "Open `C:\\BulkReg-kit\\lotusscript\\BulkRegCommon.lss` in **Notepad**. The file contains three marked blocks: **STEP A**, **STEP B** and **STEP C**.",
-  "**STEP A:** in Designer, select **(Options)**. Copy the two lines below the STEP A marker (`Option Public` and `Option Declare`) and paste them there, replacing what is there.",
+  "Type the library name from the table exactly (no spaces) and click **OK**. *Result:* the LotusScript editor opens, with **(Options)**, **(Declarations)**, **Initialize** and **Terminate** in the outline.",
+  "Open the source file in **Notepad**. It contains three marked blocks: **STEP A**, **STEP B** and **STEP C** (lines starting with `' ### STEP`).",
+  "**STEP A:** in Designer, select **(Options)**. Copy the lines below the STEP A marker (`Option Public`, `Option Declare`, and for BulkRegAgents also `Use \"BulkRegCommon\"`) and paste them there, replacing what is there.",
   "**STEP B:** select **(Declarations)**. Copy everything between the STEP B and STEP C markers and paste it there.",
-  "**STEP C:** click at the end of the last line in (Declarations), press **Enter** twice, then copy everything from the STEP C marker to the end of the file and paste it. *Result:* the outline now lists the functions (BR_Init, BR_Log …) as separate entries.",
-  "Press **Ctrl+S** to save. *Result:* no error dialog. If a compile error appears, Designer shows the line. Check that each block went to the right place."
+  "**STEP C:** click at the end of the last line in (Declarations), press **Enter** twice, then copy everything from the STEP C marker to the end of the file and paste it. *Result:* the outline lists the functions (BR_Init, BR_Log … or BR_RunPreflight …) as separate entries.",
+  "Press **Ctrl+S** to save. *Result:* no error dialog. If a compile error appears, note the library, the line and the message (D6)."
 );
-done("BulkRegCommon saves without errors, and its outline shows (Options), (Declarations) and the BR_… functions.");
+done("Both libraries save without errors. BulkRegCommon's outline shows the BR_… functions; BulkRegAgents' outline shows BR_RunPreflight, BR_RunBuildBatch, BR_RunRegisterBatch, BR_RunVerify and BR_RunExport.");
 
 h3("B17a Updating the code to a new release (every time the kit changes)");
-p("When you receive a new release (the CHANGELOG says which files changed), **replace the whole code** of each changed design element. Do not paste single functions on top of old ones: a function that exists twice gives **Duplicate procedure** errors, and a missing one gives **Not declared** errors.");
+p("A new release changes **only the two libraries**. The agents stay as they are, because they only call `BR_Run…`. Replace the **whole** content of each library; never paste single functions on top of old ones (a function that exists twice gives **Duplicate procedure**, a missing one gives **Not declared**).");
 ol(
-  "In Designer, open the design element (the library BulkRegCommon, or an agent).",
-  "Click anywhere in the LotusScript editor, press **Ctrl+A** and then **Delete**. In the outline, (Options), (Declarations), Initialize and Terminate stay; all other entries disappear. Make sure (Options) and (Declarations) are empty and Initialize contains only `Sub Initialize` / `End Sub`.",
-  "Paste the blocks from the new .lss file exactly as in B17 (library: STEP A, B, C) or B18 (agents: STEP A, B if present, C, D if present).",
-  "Press **Ctrl+S**. Fix nothing by hand: if a compile error appears, note the element, the line and the message, and report it.",
-  "**Library first, agents after.** When the library changed, save it first, then open and save each agent (or use **Tools > Recompile All LotusScript**), so every agent compiles against the new library.",
-  "Re-sign the database (B19)."
+  "In Designer, open the library **BulkRegCommon**.",
+  "Click in the LotusScript editor, press **Ctrl+A**, then **Delete**. Check the outline: (Options) and (Declarations) are empty and Initialize contains only `Sub Initialize` / `End Sub`.",
+  "Paste STEP A, STEP B and STEP C from the new BulkRegCommon.lss exactly as in B17. Press **Ctrl+S**.",
+  "Repeat steps 1–3 for **BulkRegAgents** with the new BulkRegAgents.lss.",
+  "Choose **Tools > Recompile All LotusScript**, so the agents load the new libraries.",
+  "Re-sign the database (B19).",
+  "Only if the release notes say so (rare: a new agent or a renamed BR_Run… Sub), update the agents as in B18."
 );
-done("Every changed element saves without errors, the agents recompile, and the first line of the next debug log shows the new version (`==== BulkReg <version> | tool=…`).");
+done("Both libraries save without errors, Recompile All finishes without errors, and the first line of the next debug log shows the new version (`==== BulkReg <version> | tool=…`).");
 
 // ---------- B18
 h2("B18 Create the five agents");
 meta("Domino administrator", "Domino Designer", "adds 5 agents to bulkreg.nsf");
 warn("Type the names exactly as shown. The backslash `\\` creates the **Actions > BulkReg** submenu. Do **not** use `|` in agent names: Notes treats it as the separator between a name and its alias.");
-tbl(["Agent name (type exactly)", "Source file in C:\\BulkReg-kit\\lotusscript", "Blocks in the file"], [
-  ["`BulkReg\\01 - Preflight Check`", "Agent01_Preflight.lss", "A, C, D"],
-  ["`BulkReg\\02 - Build Batch`", "Agent02_BuildBatch.lss", "A, C, D"],
-  ["`BulkReg\\03 - Register Batch`", "Agent03_RegisterBatch.lss", "A, B, C, D"],
-  ["`BulkReg\\04 - Verify Registration and Vault`", "Agent04_VerifyVaultStatus.lss", "A, B, C, D"],
-  ["`BulkReg\\05 - Export to Registration Text File`", "Agent05_ExportToBatchRegFile.lss (optional)", "A, C"],
-], [3600, 3700, 2060]);
+p("Every agent has the same two parts: three lines in **(Options)** and three lines in **Initialize**. Only the name of the `BR_Run…` Sub differs.");
+tbl(["Agent name (type exactly)", "Line in Initialize", "Source file (same content)"], [
+  ["`BulkReg\\01 - Preflight Check`", "`Call BR_RunPreflight()`", "Agent01_Preflight.lss"],
+  ["`BulkReg\\02 - Build Batch`", "`Call BR_RunBuildBatch()`", "Agent02_BuildBatch.lss"],
+  ["`BulkReg\\03 - Register Batch`", "`Call BR_RunRegisterBatch()`", "Agent03_RegisterBatch.lss"],
+  ["`BulkReg\\04 - Verify Registration and Vault`", "`Call BR_RunVerify()`", "Agent04_VerifyVaultStatus.lss"],
+  ["`BulkReg\\05 - Export to Registration Text File`", "`Call BR_RunExport()`", "Agent05_ExportToBatchRegFile.lss (optional)"],
+], [3600, 2800, 2960]);
 p("Do the following for **each** agent in the table:");
 ol(
   "Under **Code**, double-click **Agents**, then click **New Agent**.",
   "In **Name**, type the agent name from the table.",
   "Under **Type**, select **LotusScript**. Make sure the agent is **Shared** (HCL: private agents do not appear on the Actions menu). Click **OK**. *Result:* the agent's properties box and the LotusScript editor open.",
   "In the properties box, **Basics** tab: under **Runtime**, choose **On event** and then **Action menu selection**. Set **Target** to **None**.",
-  "Open the source file in Notepad.",
-  "**STEP A:** select **(Options)** in the agent outline and paste the three lines under the STEP A marker (`Option Public`, `Option Declare`, `Use \"BulkRegCommon\"`).",
-  "**STEP B** (only Agents 03 and 04): select **(Declarations)** and paste the `Dim` lines under the STEP B marker.",
-  "**STEP C:** select **Initialize**, select all its text (Ctrl+A), and paste the block under the STEP C marker, from `Sub Initialize` to its `End Sub`.",
-  "**STEP D** (if present): click after the final `End Sub` of Initialize, press Enter twice, and paste everything from the STEP D marker to the end of the file. *Result:* the extra subs and functions appear as separate entries in the outline.",
+  "**(Options):** select **(Options)** in the outline and type or paste these three lines, replacing what is there:"
+);
+code(`Option Public
+Option Declare
+Use "BulkRegAgents"`);
+olc(
+  "**Initialize:** select **Initialize**, press **Ctrl+A** and type or paste the three lines below, with the Sub name from the table:"
+);
+code(`Sub Initialize
+	Call BR_RunPreflight()
+End Sub`);
+olc(
   "Press **Ctrl+S**. *Result:* it saves without a compile error. HCL: saving also signs the agent with your current ID.",
   "Close the agent and repeat for the next row."
 );
-done("All five agents are listed under Code > Agents with the exact names, trigger 'Action menu selection', target 'None', and they save without errors.");
+note("The .lss files of the agents contain exactly these lines (STEP A and STEP C) plus a description in comments. Nothing else has to be pasted into an agent. **(Declarations)** of an agent stays empty.");
+done("All five agents are listed under Code > Agents with the exact names, trigger 'Action menu selection', target 'None', each contains `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, and they save without errors.");
 pb();
 
 // ---------- B19
@@ -1199,8 +1217,9 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["Actions menu shows only \"01\", \"02\"…", "`|` used in the agent names (alias separator)", "Rename the agents exactly as in B18"],
   ["Agents not in the Actions menu", "Private agent, or wrong trigger", "B18: Shared, On event > Action menu selection"],
   ["Execution Security Alert every time", "Signer not trusted in the ECL", "B19 sign; trust the signer if your policy allows"],
-  ["Compile error when saving", "A block was pasted into the wrong section", "Redo B17/B18 steps A–D"],
-  ["Duplicate procedure … / Not declared …", "A new release was pasted on top of the old code, so functions exist twice or are missing", "Replace the whole element as in B17a"],
+  ["Compile error when saving", "A block was pasted into the wrong section", "Redo B17 (libraries: STEP A, B, C) or B18 (agents: 3 + 3 lines)"],
+  ["\"Error loading USE or USELSX module: BulkRegCommon/BulkRegAgents\"", "Library missing, misspelt, or not saved yet; BulkRegAgents saved before BulkRegCommon", "Check the names exactly (B17); save BulkRegCommon, then BulkRegAgents, then Tools > Recompile All LotusScript"],
+  ["Duplicate procedure … / Not declared …", "A new release was pasted on top of the old code, so functions exist twice or are missing; or an agent from release 3.2 still contains its old code", "Replace the whole library as in B17a; reduce every agent to the 3 + 3 lines of B18"],
   ["Unexpected / Type mismatch / Variable not declared in BulkReg code", "A defect in the kit", "Note element, line and message and report it; do not edit the code by hand"],
   ["\"supported only in the Domino Administrator client on Windows\"", "Run outside the Windows client", "Run from the admin workstation"],
   ["Audit folder not writable", "B9 not done, or wrong permissions", "Redo B9; `bulkreg.cmd Check`"],
@@ -1299,12 +1318,12 @@ p("**Register Selected Person:** in Domino Administrator, People & Groups > sele
 p("**Registration text file:** Agent 05 writes `C:\\BulkReg\\secure\\BatchReg_DirSync_<run>.txt` (HCL 20-field format, UTF-8 BOM, contains passwords). Import it with **People > Register > Import Text File**. HCL documents this for new users, so test 1–2 DirSync users first.");
 
 h2("Appendix B – Agent reference");
-tbl(["Agent", "Reads", "Writes", "Asks for"], [
-  ["01 - Preflight Check", "names.nsf, servers", "Audit, debug log", "Config path"],
-  ["02 - Build Batch", "names.nsf, open batches, servers", "BATCH-<id>.csv, _summary.txt, audit", "Config path"],
-  ["03 - Register Batch", "One batch file, names.nsf", "names.nsf (LIVE), ID files, AdminP Create Replica requests (admin4.nsf), _results/_dryrun, password file, audit", "Config path, batch file, Yes/No, batch ID (LIVE), certifier password (UseCA=0)"],
-  ["04 - Verify Registration and Vault", "A batch file or all users, ID Vault, mail files and their replicas", "_verify.csv, audit", "Config path, batch file or empty"],
-  ["05 - Export (optional)", "names.nsf", "Text file, audit", "Config path, password Yes/No"],
+tbl(["Agent (code in BulkRegAgents)", "Reads", "Writes", "Asks for"], [
+  ["01 - Preflight Check (BR_RunPreflight)", "names.nsf, servers", "Audit, debug log", "Config path"],
+  ["02 - Build Batch (BR_RunBuildBatch)", "names.nsf, open batches, servers", "BATCH-<id>.csv, _summary.txt, audit", "Config path"],
+  ["03 - Register Batch (BR_RunRegisterBatch)", "One batch file, names.nsf", "names.nsf (LIVE), ID files, AdminP Create Replica requests (admin4.nsf), _results/_dryrun, password file, audit", "Config path, batch file, Yes/No, batch ID (LIVE), certifier password (UseCA=0)"],
+  ["04 - Verify Registration and Vault (BR_RunVerify)", "A batch file or all users, ID Vault, mail files and their replicas", "_verify.csv, audit", "Config path, batch file or empty"],
+  ["05 - Export (optional, BR_RunExport)", "names.nsf", "Text file, audit", "Config path, password Yes/No"],
 ], [2300, 2300, 2800, 1960]);
 
 h2("Appendix C – HCL documentation used");

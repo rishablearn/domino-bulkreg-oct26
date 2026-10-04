@@ -1,11 +1,15 @@
 '=====================================================================
-' Agent name : BulkReg\05 - Export to Registration Text File   (OPTIONAL, manual method)
-'              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.2.7  (BulkReg release; library BulkRegCommon 3.2.7)
+' Agent name : BulkReg\05 - Export to Registration Text File
+' Version    : 3.3.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.3.0)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunExport).
+'              This agent only calls it, so it never changes between releases.
+'
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunExport):
 '              (READ-ONLY on names.nsf)
-' Trigger    : Action menu selection, Target: None
-'              (Windows Domino Administrator client only)
-' Options    : Option Public / Option Declare / Use "BulkRegCommon"
 '
 ' Produces the 20-field ';' separated, UTF-8 BOM file documented in
 ' "Registering users from a text file" (Domino 14.5.1) for use with
@@ -29,88 +33,10 @@
 '#####################################################################
 Option Public
 Option Declare
-Use "BulkRegCommon"
-
+Use "BulkRegAgents"
 '#####################################################################
-' ### STEP C: select Initialize and REPLACE its content with the block below
-' ###         (from 'Sub Initialize' to its 'End Sub').
+' ### STEP C: select Initialize and REPLACE its content with the 3 lines below
 '#####################################################################
 Sub Initialize
-	On Error GoTo ErrH
-	Dim ws As NotesUIWorkspace
-	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
-	Dim u As BRUser, st As NotesStream, outFile As String, ln As String, secDir As String
-	Dim nOut As Long, nSkip As Long, issues As String, pw As String, idDirForImport As String
-	Dim genPw As Boolean, ans As Variant, t0 As Double
-
-	If Not BR_Init("ExportBatchReg") Then Exit Sub
-
-	' --- password option ---
-	Set ws = New NotesUIWorkspace
-	ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Export", _
-	"Generate a random initial password per user?" & Chr$(10) & Chr$(10) & _
-	"YES = random password per user (recommended)" & Chr$(10) & _
-	"NO  = leave column 5 empty (you must fill it in before importing; it is required)")
-	genPw = (ans = 1)
-	BR_Log LVL_INFO, "Generate initial passwords: " & BR_IIfStr(genPw, "yes", "no")
-
-	secDir = BR_CfgDir("PasswordDir", "secure")
-	If Not BR_DirWritable(secDir) Then Error 3001, "PasswordDir not writable: " & secDir
-	outFile = secDir & "BatchReg_DirSync_" & gRunID & ".txt"
-
-	idDirForImport = BR_CfgDir("IDFileDir", "ids")
-
-	Set st = gSession.CreateStream()
-	If Not st.Open(outFile, "UTF-8") Then Error 3002, "Cannot create " & outFile
-	Call st.Truncate()
-	' U+FEFF written as UTF-8 = EF BB BF  -> the "UTF-8 BOM" the import requires
-	Call st.WriteText(Uchr$(&HFEFF), EOL_NONE)
-
-	Set db = BR_OpenDirectory()
-	Set col = BR_GetCandidates(db, True)
-	Set doc = col.GetFirstDocument()
-	Do While Not (doc Is Nothing)
-		t0 = Timer
-		Call BR_ReadUser(doc, u)
-		issues = BR_Validate(u)
-		If InStr(issues, "ERROR:") > 0 Then
-			nSkip = nSkip + 1
-			BR_Log LVL_WARN, "SKIP " & u.FullNameBefore & " : " & issues
-			Call BR_Audit(u, "EXPORT", "EXPORT", "SKIPPED", BR_Elapsed(t0), issues)
-		Else
-			If genPw Then pw = BR_GenPassword(CInt(CfgL("InitialPasswordLength", 16))) Else pw = ""
-			ln = u.LastName & ";" & u.FirstName & ";" & u.MiddleInitial & ";" & u.OrgUnit & ";" & _
-			pw & ";" & idDirForImport & ";" & BR_SafeFile(u) & ".id" & ";" & _
-			u.HomeServer & ";" & BR_Path(CfgS("MailFileDir", "mail")) & ";" & BR_MailBase(u) & ".nsf" & ";" & _
-			"" & ";" & "DirSync objectGUID " & u.GUID & ";" & "" & ";" & _
-			"" & ";" & "" & ";" & u.InternetAddress & ";" & u.ShortName & ";" & _
-			"" & ";" & "" & ";" & CfgS("MailTemplate", "")
-			Call st.WriteText(ln, EOL_CRLF)
-			pw = ""
-			nOut = nOut + 1
-			Call BR_Audit(u, "EXPORT", "EXPORT", "EXPORTED", BR_Elapsed(t0), issues)
-		End If
-		Set doc = col.GetNextDocument(doc)
-	Loop
-	Call st.Close()
-
-	Dim summary As String
-	summary = "Exported=" & nOut & " Skipped=" & nSkip
-	BR_Log LVL_INFO, "Registration text file: " & outFile
-	BR_Log LVL_WARN, "File contains initial passwords - restrict access and delete after use."
-	BR_Close summary
-	BR_Msg summary & Chr$(10) & Chr$(10) & _
-	"Text file (contains passwords!):" & Chr$(10) & outFile & Chr$(10) & Chr$(10) & _
-	"Review CSV (no passwords): " & gAuditFile & Chr$(10) & Chr$(10) & _
-	"Next (Windows Domino Administrator): People & Groups > People > Register >" & Chr$(10) & _
-	"select the ID-Vault explicit policy > Import Text File > Register All." & Chr$(10) & _
-	"Test with 1-2 users first (see guide Appendix A).", 64
-	Exit Sub
-ErrH:
-	BR_Log LVL_ERROR, "Export aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
-	On Error Resume Next
-	If Not (st Is Nothing) Then Call st.Close()
-	BR_Close "ABORTED"
-	BR_Msg "Export aborted: " & Error$, 16
-	Exit Sub
+	Call BR_RunExport()
 End Sub
