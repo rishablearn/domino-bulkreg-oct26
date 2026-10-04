@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.2.2
+' Script Library : BulkRegCommon            Version 3.2.3
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : Agent01_Preflight, Agent02_BuildBatch, Agent03_RegisterBatch,
@@ -20,7 +20,7 @@ Option Declare
 ' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
 '#####################################################################
 
-Public Const BR_VERSION = "3.2.2"
+Public Const BR_VERSION = "3.2.3"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -639,10 +639,19 @@ Function BR_IsRegistered(doc As NotesDocument) As Boolean
 	BR_IsRegistered = (Trim$(doc.GetFirstItem("Certificate").Text) <> "")
 End Function
 
+' Empties every field of a BRUser (LotusScript cannot reliably assign one Type variable to another)
+Sub BR_ClearUser(u As BRUser)
+	u.NoteID = "": u.UNID = "": u.GUID = "": u.FullNameBefore = "": u.FullNameAfter = ""
+	u.FirstName = "": u.LastName = "": u.MiddleInitial = "": u.ShortName = "": u.InternetAddress = ""
+	u.MailSystemBefore = "": u.MailFileBefore = "": u.MailSystemAfter = "": u.MailFile = ""
+	u.MailFileStatus = "": u.MailFileNote = "": u.HomeServer = "": u.OrgUnit = "": u.Policy = ""
+	u.Groups = "": u.MapRule = "": u.IDFile = "": u.VaultStatus = "": u.VaultServer = ""
+	u.ClusterReplicas = "": u.ReplicaStatus = "": u.Issues = ""
+End Sub
+
 ' Reads a Person document into a BRUser and applies mapping
 Sub BR_ReadUser(doc As NotesDocument, u As BRUser)
-	Dim blank As BRUser
-	u = blank
+	Call BR_ClearUser(u)
 	u.NoteID = doc.NoteID
 	u.UNID = doc.UniversalID
 	u.GUID = BR_Item(doc, "objectGUID")
@@ -761,7 +770,7 @@ End Sub
 Sub BR_ScanOneServer(server As String, key As String, names List As String, counts List As Long, scanned List As String)
 	On Error GoTo ErrH
 	Dim sk As String, dbdir As NotesDbDirectory, d As NotesDatabase, fp As String
-	Dim folder As String, base As String, n As Long
+	Dim folder As String, fbase As String, n As Long
 	sk = LCase$(BR_SrvAbbr(server))
 	If IsElement(scanned(sk)) Then Exit Sub
 	scanned(sk) = "1"
@@ -772,14 +781,14 @@ Sub BR_ScanOneServer(server As String, key As String, names List As String, coun
 		fp = LCase$(BR_Path(d.FilePath))
 		If InStr(fp, "\") > 0 Then
 			folder = StrLeftBack(fp, "\")
-			base = StrRightBack(fp, "\")
+			fbase = StrRightBack(fp, "\")
 		Else
 			folder = ""
-			base = fp
+			fbase = fp
 		End If
-		If Right$(base, 4) = ".nsf" Then base = Left$(base, Len(base) - 4)
+		If Right$(fbase, 4) = ".nsf" Then fbase = Left$(fbase, Len(fbase) - 4)
 		If BR_IsMailFolder(folder) Then
-			If Not IsElement(names(key & "!!" & base)) Then names(key & "!!" & base) = "file " & fp & " on " & BR_SrvAbbr(server)
+			If Not IsElement(names(key & "!!" & fbase)) Then names(key & "!!" & fbase) = "file " & fp & " on " & BR_SrvAbbr(server)
 			' count each path once per key (a cluster replica has the same path on every member)
 			If Not IsElement(names(key & "!!path:" & fp)) Then
 				names(key & "!!path:" & fp) = "1"
@@ -871,18 +880,18 @@ End Function
 ' Mail files already referenced by Person documents (MailServer + MailFile)
 Sub BR_ScanDirectoryMail(db As NotesDatabase, names List As String)
 	On Error GoTo ErrH
-	Dim col As NotesDocumentCollection, doc As NotesDocument, sk As String, fp As String, base As String
+	Dim col As NotesDocumentCollection, doc As NotesDocument, sk As String, fp As String, fbase As String
 	Set col = db.Search(|Form = "Person" & MailFile != ""|, Nothing, 0)
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
 		sk = ""
 		If BR_Item(doc, "MailServer") <> "" Then sk = BR_MailKey(BR_Item(doc, "MailServer"))
 		fp = LCase$(BR_Path(BR_Item(doc, "MailFile")))
-		base = fp
-		If InStr(base, "\") > 0 Then base = StrRightBack(base, "\")
-		If Right$(base, 4) = ".nsf" Then base = Left$(base, Len(base) - 4)
-		If sk <> "" And base <> "" Then
-			If Not IsElement(names(sk & "!!" & base)) Then names(sk & "!!" & base) = "Person doc " & BR_Item(doc, "FullName")
+		fbase = fp
+		If InStr(fbase, "\") > 0 Then fbase = StrRightBack(fbase, "\")
+		If Right$(fbase, 4) = ".nsf" Then fbase = Left$(fbase, Len(fbase) - 4)
+		If sk <> "" And fbase <> "" Then
+			If Not IsElement(names(sk & "!!" & fbase)) Then names(sk & "!!" & fbase) = "Person doc " & BR_Item(doc, "FullName")
 		End If
 		Set doc = col.GetNextDocument(doc)
 	Loop
@@ -896,26 +905,26 @@ End Sub
 ' Chooses a unique name and a folder for u (u.HomeServer must be set), reserves
 ' them, sets u.MailFile and u.MailFileNote. Returns "" or an "ERROR:..." issue.
 Function BR_AllocMailFile(u As BRUser, names List As String, counts List As Long) As String
-	Dim sk As String, base0 As String, base As String, n As Integer, folder As String
+	Dim sk As String, base0 As String, fbase As String, n As Integer, folder As String
 	Dim prefix As String, limit As Long, k As Integer, fk As String, note As String
 	sk = BR_MailKey(u.HomeServer)      ' one shared key for all members of the mail cluster
 	base0 = BR_MailBase(u)
-	base = base0
+	fbase = base0
 	n = 1
-	Do While IsElement(names(sk & "!!" & base))
+	Do While IsElement(names(sk & "!!" & fbase))
 		If UCase$(CfgS("MailFileCollision", "SUFFIX")) = "ERROR" Then
 			u.MailFileNote = "name " & base0 & ".nsf already used (" & names(sk & "!!" & base0) & ")"
 			BR_AllocMailFile = "ERROR:Mail file name " & base0 & ".nsf already used on " & BR_IIfStr(sk = "mail cluster", "the mail cluster", u.HomeServer) & " (" & names(sk & "!!" & base0) & "); "
 			Exit Function
 		End If
 		n = n + 1
-		base = base0 & CStr(n)
+		fbase = base0 & CStr(n)
 		If n > 999 Then
 			BR_AllocMailFile = "ERROR:No free mail file name for " & base0 & "; "
 			Exit Function
 		End If
 	Loop
-	If base <> base0 Then note = base0 & ".nsf already used (" & names(sk & "!!" & base0) & ") -> " & base & ".nsf; "
+	If fbase <> base0 Then note = base0 & ".nsf already used (" & names(sk & "!!" & base0) & ") -> " & fbase & ".nsf; "
 
 	If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" Then
 		prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
@@ -939,8 +948,8 @@ Function BR_AllocMailFile(u As BRUser, names List As String, counts List As Long
 	End If
 	fk = sk & "!!" & folder
 	If IsElement(counts(fk)) Then counts(fk) = counts(fk) + 1 Else counts(fk) = 1
-	names(sk & "!!" & base) = "batch " & gBatchID & " (" & u.FullNameBefore & ")"
-	If folder = "" Then u.MailFile = base & ".nsf" Else u.MailFile = folder & "\" & base & ".nsf"
+	names(sk & "!!" & fbase) = "batch " & gBatchID & " (" & u.FullNameBefore & ")"
+	If folder = "" Then u.MailFile = fbase & ".nsf" Else u.MailFile = folder & "\" & fbase & ".nsf"
 	If limit > 0 Then
 		u.MailFileNote = note & "naming " & UCase$(CfgS("MailFileNaming", "LASTNAME")) & "; folder " & folder & " " & counts(fk) & "/" & limit
 	Else
@@ -1081,7 +1090,8 @@ Function BR_VaultStatus(fullName As String, vaultServer As String) As String
 		Exit Function
 	End If
 	Set vault = gSession.GetIDVault()
-	If vault.IsIDInVault(vaultServer, fullName) Then
+	' HCL syntax: IsIDInVault(username, servername)
+	If vault.IsIDInVault(fullName, vaultServer) Then
 		BR_VaultStatus = "IN_VAULT"
 	Else
 		BR_VaultStatus = "NOT_IN_VAULT"
@@ -1270,7 +1280,7 @@ Sub BR_OpenBatchNoteIDs(ids List As String, names List As String, counts List As
 	On Error GoTo ErrH
 	Dim d As String, f As String, files List As String, fh As Integer, txt As String
 	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
-	Dim sk As String, mfp As String, base As String, folder As String
+	Dim sk As String, mfp As String, fbase As String, folder As String
 	d = BR_BatchDir()
 	f = Dir$(d & "BATCH-*.csv")
 	Do While f <> ""
@@ -1297,13 +1307,13 @@ Sub BR_OpenBatchNoteIDs(ids List As String, names List As String, counts List As
 						mfp = LCase$(BR_Path(BR_CsvGet(parts, cols, "MailFile")))
 						If sk <> "" And mfp <> "" Then
 							folder = ""
-							base = mfp
+							fbase = mfp
 							If InStr(mfp, "\") > 0 Then
 								folder = StrLeftBack(mfp, "\")
-								base = StrRightBack(mfp, "\")
+								fbase = StrRightBack(mfp, "\")
 							End If
-							If Right$(base, 4) = ".nsf" Then base = Left$(base, Len(base) - 4)
-							If Not IsElement(names(sk & "!!" & base)) Then names(sk & "!!" & base) = "open " & CStr(bf)
+							If Right$(fbase, 4) = ".nsf" Then fbase = Left$(fbase, Len(fbase) - 4)
+							If Not IsElement(names(sk & "!!" & fbase)) Then names(sk & "!!" & fbase) = "open " & CStr(bf)
 							If IsElement(counts(sk & "!!" & folder)) Then counts(sk & "!!" & folder) = counts(sk & "!!" & folder) + 1 Else counts(sk & "!!" & folder) = 1
 						End If
 					End If

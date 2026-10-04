@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent name : BulkReg\03 - Register Batch   (ID -> ID Vault)
 '              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.2.2  (BulkReg release; library BulkRegCommon 3.2.2)
+' Version    : 3.2.3  (BulkReg release; library BulkRegCommon 3.2.3)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
 ' Options    : Option Public / Option Declare / Use "BulkRegCommon"
@@ -67,7 +67,7 @@ Sub Initialize
 	Dim n As Long, i As Long, seen List As String, srvCount List As Long, srvText As String, hk As String
 	Dim nExcluded As Long, maxRows As Long, pauseMs As Long, maxConsec As Long
 	Dim nOK As Long, nFail As Long, nSkip As Long, nConsec As Long, res As String, stopReason As String
-	Dim j As Long, blank As BRUser, summary As String
+	Dim j As Long, summary As String
 
 	If Not BR_Init("Register") Then Exit Sub
 	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
@@ -130,7 +130,7 @@ Sub Initialize
 				vs(n) = BR_CsvGet(parts, cols, "VaultServer")
 				If vs(n) = "" Then vs(n) = CfgS("VaultServer", "")
 				hs(n) = BR_SrvAbbr(hs(n))          ' accept CN=Srv/O=Org or Srv/Org
-				' reviewed replica list; a batch built before 3.2.2 has no such column -> from the mapping
+				' reviewed replica list; a batch built before 3.2.3 has no such column -> from the mapping
 				If IsElement(cols("clusterreplicas")) Then cr(n) = BR_SrvList(BR_CsvGet(parts, cols, "ClusterReplicas"), hs(n)) Else cr(n) = "*auto"
 				If Not IsElement(repSeen(LCase$(hs(n)))) Then
 					repSeen(LCase$(hs(n))) = "1"
@@ -199,7 +199,7 @@ Sub Initialize
 	' rows not reached (circuit breaker) are recorded so the results file is complete
 	If i < n - 1 Then
 		For j = i + 1 To n - 1
-			u = blank
+			Call BR_ClearUser(u)
 			u.NoteID = nid(j): u.GUID = gid(j): u.HomeServer = hs(j): u.OrgUnit = ou(j): u.Policy = po(j)
 			u.MailFile = mf(j): u.ClusterReplicas = BR_IIfStr(cr(j) = "*auto", "", cr(j))
 			Call BR_Audit(u, gMode, "REGISTER", "NOT_PROCESSED", 0, stopReason & " - will be offered again by the next 02 - Build Batch")

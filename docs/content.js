@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "3.2",  // release 3.2.2
+  version: "3.2",  // release 3.2.3
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -38,11 +38,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg 3.2.2: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg 3.2.3: BulkRegCommon library, 5 agents, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["3.2.3", "**Release 3.2.3.** Full syntax review of the code: reserved word `base` renamed, Type assignment replaced by BR_ClearUser, **IsIDInVault arguments corrected** (username, servername). Re-paste the library and Agent 03 (and recompile all agents)."],
   ["3.2.2", "**Release 3.2.2.** Compile fixes in BulkRegCommon (B17): the selection formula string now uses `{…}` delimiters because the formula contains `|`; two missing quotes fixed. Re-paste the library (STEP C) and recompile all agents."],
   ["3.2.1", "**Release 3.2.1.** Database placement re-validated: tool database **local** (code only, client UI, your ID), log database on a **server** (shared audit record). B13 explains why; B14 adds local encryption and consistent ACL (a local ACL alone is not a boundary); B15 tightens the log ACL (operators Author + Create documents, no Delete; owner group separate), template-server tip, backup and size. Preflight checks both: tool database local, and your access to the log database."],
   ["3.2", "**Release 3.2.0.** **Mail cluster replicas:** list the cluster once (`MailClusterServers`); 03 requests a replica of every new mail file on each other member through AdminP (Create Replica), 04 verifies them (REPLICAS_OK). Mail file names and numbered folders are allocated once for the whole cluster. Mapping column 8 ClusterReplicas. **Batches of 1000** (BatchSize default). Worked example for one cluster of 4 servers (2 DC, 2 DR) with 2 × 2500 users (B12.7). New D3c; B4 cluster prerequisites; pattern ranges `[a-l]*` documented."],

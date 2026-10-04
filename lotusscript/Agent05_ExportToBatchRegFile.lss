@@ -1,7 +1,7 @@
 '=====================================================================
 ' Agent name : BulkReg\05 - Export to Registration Text File   (OPTIONAL, manual method)
 '              (backslash = Actions > BulkReg submenu; do NOT use '|' - it is the alias separator)
-' Version    : 3.2.2  (BulkReg release; library BulkRegCommon 3.2.2)
+' Version    : 3.2.3  (BulkReg release; library BulkRegCommon 3.2.3)
 '              (READ-ONLY on names.nsf)
 ' Trigger    : Action menu selection, Target: None
 '              (Windows Domino Administrator client only)
@@ -104,7 +104,7 @@ Sub Initialize
 	"Review CSV (no passwords): " & gAuditFile & Chr$(10) & Chr$(10) & _
 	"Next (Windows Domino Administrator): People & Groups > People > Register >" & Chr$(10) & _
 	"select the ID-Vault explicit policy > Import Text File > Register All." & Chr$(10) & _
-	"Test with 1-2 users first (see guide section 7.2).", 64
+	"Test with 1-2 users first (see guide Appendix A).", 64
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Export aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
