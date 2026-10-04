@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.3.0
+' Script Library : BulkRegAgents            Version 3.3.1
 ' Purpose        : The code of the five BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\01 - Preflight Check                -> BR_RunPreflight
@@ -12,17 +12,19 @@
 ' Uses           : BulkRegCommon (create and save that library FIRST)
 ' Runs in        : HCL Domino Administrator client on WINDOWS only
 '
-' Paste this into  Designer > Code > Script Libraries > New LotusScript
-' Library, name it exactly "BulkRegAgents".
+' HOW TO INSTALL : Designer > Code > Script Libraries > New LotusScript Library,
+'                  name it exactly "BulkRegAgents". Click in the editor, Ctrl+A, Delete,
+'                  paste this WHOLE file, Ctrl+S. Designer puts (Options), (Declarations)
+'                  and every Sub/Function in its place automatically.
 '=====================================================================
 '#####################################################################
-' ### STEP A: paste the 3 lines below into (Options)
+' --- part 1: (Options) ---
 '#####################################################################
 Option Public
 Option Declare
 Use "BulkRegCommon"
 '#####################################################################
-' ### STEP B: paste the block below (shared variables) into (Declarations)
+' --- part 2: (Declarations) ---
 '#####################################################################
 
 ' --- BR_RunRegisterBatch (gCertPwd, gPwFile, gMode, gSrvOK) and BR_RunVerify (gV... counters) ---
@@ -33,9 +35,7 @@ Dim gSrvOK List As String      ' home-server reachability cache
 Dim gVUnreg As Long, gVInV As Long, gVNotV As Long, gVErr As Long, gVGone As Long, gVMailBad As Long, gVRepBad As Long
 
 '#####################################################################
-' ### STEP C: paste everything from here to the END of the file AFTER the
-' ###         last line in (Declarations). Designer creates one entry per
-' ###         Function / Sub automatically.
+' --- part 3: Subs and Functions (Designer gives each its own entry) ---
 '#####################################################################
 '=====================================================================
 ' BR_RunPreflight  -  runs agent BulkReg\01 - Preflight Check

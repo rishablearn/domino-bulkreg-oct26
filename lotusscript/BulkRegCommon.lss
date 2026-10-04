@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.3.0
+' Script Library : BulkRegCommon            Version 3.3.1
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -7,19 +7,21 @@
 '                  (agent trigger: Action menu selection, Target: None).
 '                  BR_Init refuses to run on a server or a non-Windows client.
 '
-' Paste this into  Designer > Code > Script Libraries > New LotusScript
-' Library, name it exactly "BulkRegCommon".
+' HOW TO INSTALL : Designer > Code > Script Libraries > New LotusScript Library,
+'                  name it exactly "BulkRegCommon". Click in the editor, Ctrl+A, Delete,
+'                  paste this WHOLE file, Ctrl+S. Designer puts (Options), (Declarations)
+'                  and every Sub/Function in its place automatically.
 '=====================================================================
 '#####################################################################
-' ### STEP A: paste the 2 lines below into (Options)
+' --- part 1: (Options) ---
 '#####################################################################
 Option Public
 Option Declare
 '#####################################################################
-' ### STEP B: paste the block below (constants, types, globals) into (Declarations)
+' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.3.0"
+Public Const BR_VERSION = "3.3.1"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -95,9 +97,7 @@ Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes
 Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues"
 
 '#####################################################################
-' ### STEP C: paste everything from here to the END of the file AFTER the
-' ###         last line in (Declarations). Designer creates one entry per
-' ###         Function / Sub automatically.
+' --- part 3: Subs and Functions (Designer gives each its own entry) ---
 '#####################################################################
 '=====================================================================
 ' INITIALISATION

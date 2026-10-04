@@ -1,9 +1,11 @@
 '=====================================================================
 ' Agent name : BulkReg\01 - Preflight Check
-' Version    : 3.3.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.3.0)
+' Version    : 3.3.1  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.3.1)
 ' Code       : ALL logic is in the script library BulkRegAgents (BR_RunPreflight).
 '              This agent only calls it, so it never changes between releases.
 '
+' HOW TO INSTALL: open the agent, click in the editor, Ctrl+A, Delete, paste this
+'              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
 ' Designer   : Shared agent, LotusScript
 '              Runtime: On event > Action menu selection, Target: None
 '              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
@@ -17,13 +19,13 @@
 '   <AuditDir>\BulkReg_Preflight_<run>_mailfolders.txt  (folders to create, per server)
 '=====================================================================
 '#####################################################################
-' ### STEP A: paste the 3 lines below into (Options)
+' --- part 1: (Options) ---
 '#####################################################################
 Option Public
 Option Declare
 Use "BulkRegAgents"
 '#####################################################################
-' ### STEP C: select Initialize and REPLACE its content with the 3 lines below
+' --- part 2: Initialize ---
 '#####################################################################
 Sub Initialize
 	Call BR_RunPreflight()

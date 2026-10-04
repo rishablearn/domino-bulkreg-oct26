@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.3.1", "**Release 3.3.1.** Installation simplified: Domino Designer distributes pasted LotusScript automatically, so B17, B17a and B18 now say **paste the whole file** (Ctrl+A, Ctrl+V) instead of pasting STEP blocks into each section. The STEP markers in the .lss files are replaced by `--- part …` labels and a HOW TO INSTALL note. No code change."],
   ["3.3.0", "**Release 3.3.0.** **All code moved into script libraries.** New library **BulkRegAgents** holds the code of the five agents (BR_RunPreflight … BR_RunExport); each agent now contains only `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, so future releases replace only the two libraries (B17a). B17 and B18 rewritten; Appendix B shows the Sub per agent. Library variables are reset at the start of every run. **One-time migration from 3.2: B17 (create BulkRegAgents) and B18 (reduce each agent to 3 + 3 lines).**"],
   ["3.2.7", "**Release 3.2.7.** Version numbers made fully consistent: the guide now carries the full release number (read from the VERSION file) instead of 3.2; revision history and CHANGELOG use full numbers; new helper command `bulkreg.cmd Versions` checks every file against VERSION. No change to the LotusScript logic (only the version lines)."],
   ["3.2.6", "**Release 3.2.6.** Review round: log database opened before the access check (Agent 01), MailSystem set to Notes explicitly (Agent 03), MaxScan default 0. New B17a: how to update the code to a new release."],
@@ -742,19 +743,18 @@ ol(
 h2("B17 Create the two script libraries");
 meta("Domino administrator", "Domino Designer", "adds 2 script libraries to bulkreg.nsf");
 p("All BulkReg code lives in **two script libraries**. The five agents (B18) contain only one line that calls the library, so they never change between releases.");
-tbl(["Library (type the name exactly)", "Source file in C:\\BulkReg-kit\\lotusscript", "Contains", "Blocks"], [
-  ["`BulkRegCommon`", "BulkRegCommon.lss", "Shared functions: configuration, mapping, mail files, cluster replicas, logging, audit, batch files", "A, B, C"],
-  ["`BulkRegAgents`", "BulkRegAgents.lss", "The code of the five agents: BR_RunPreflight, BR_RunBuildBatch, BR_RunRegisterBatch, BR_RunVerify, BR_RunExport. It uses BulkRegCommon.", "A, B, C"],
-], [2300, 2300, 3460, 1300]);
+tbl(["Library (type the name exactly)", "Source file in C:\\BulkReg-kit\\lotusscript", "Contains"], [
+  ["`BulkRegCommon`", "BulkRegCommon.lss", "Shared functions: configuration, mapping, mail files, cluster replicas, logging, audit, batch files"],
+  ["`BulkRegAgents`", "BulkRegAgents.lss", "The code of the five agents: BR_RunPreflight, BR_RunBuildBatch, BR_RunRegisterBatch, BR_RunVerify, BR_RunExport. It uses BulkRegCommon."],
+], [2400, 2600, 4360]);
+note("**Paste the whole file.** When you paste LotusScript into the editor, Domino Designer puts each part in its place automatically: `Option` and `Use` lines into **(Options)**, constants, types and variables into **(Declarations)**, and every Sub and Function into its own entry. The `--- part …` comment lines in the files only show where each part begins.");
 warn("Create and save **BulkRegCommon first**. BulkRegAgents contains `Use \"BulkRegCommon\"` and does not compile until BulkRegCommon exists.");
 p("Do the following for **each** library, BulkRegCommon first:");
 ol(
   "Under **Code**, double-click **Script Libraries**. Click **New LotusScript Library**.",
   "Type the library name from the table exactly (no spaces) and click **OK**. *Result:* the LotusScript editor opens, with **(Options)**, **(Declarations)**, **Initialize** and **Terminate** in the outline.",
-  "Open the source file in **Notepad**. It contains three marked blocks: **STEP A**, **STEP B** and **STEP C** (lines starting with `' ### STEP`).",
-  "**STEP A:** in Designer, select **(Options)**. Copy the lines below the STEP A marker (`Option Public`, `Option Declare`, and for BulkRegAgents also `Use \"BulkRegCommon\"`) and paste them there, replacing what is there.",
-  "**STEP B:** select **(Declarations)**. Copy everything between the STEP B and STEP C markers and paste it there.",
-  "**STEP C:** click at the end of the last line in (Declarations), press **Enter** twice, then copy everything from the STEP C marker to the end of the file and paste it. *Result:* the outline lists the functions (BR_Init, BR_Log … or BR_RunPreflight …) as separate entries.",
+  "Open the source file in **Notepad**, press **Ctrl+A** and **Ctrl+C** to copy the whole file.",
+  "In Designer, click anywhere in the LotusScript editor, press **Ctrl+A**, then **Ctrl+V**. *Result:* the outline shows (Options), (Declarations) and the functions (BR_Init, BR_Log … or BR_RunPreflight …) as separate entries.",
   "Press **Ctrl+S** to save. *Result:* no error dialog. If a compile error appears, note the library, the line and the message (D6)."
 );
 done("Both libraries save without errors. BulkRegCommon's outline shows the BR_… functions; BulkRegAgents' outline shows BR_RunPreflight, BR_RunBuildBatch, BR_RunRegisterBatch, BR_RunVerify and BR_RunExport.");
@@ -764,8 +764,8 @@ p("A new release changes **only the two libraries**. The agents stay as they are
 ol(
   "In Designer, open the library **BulkRegCommon**.",
   "Click in the LotusScript editor, press **Ctrl+A**, then **Delete**. Check the outline: (Options) and (Declarations) are empty and Initialize contains only `Sub Initialize` / `End Sub`.",
-  "Paste STEP A, STEP B and STEP C from the new BulkRegCommon.lss exactly as in B17. Press **Ctrl+S**.",
-  "Repeat steps 1–3 for **BulkRegAgents** with the new BulkRegAgents.lss.",
+  "Paste the **whole** new BulkRegCommon.lss (Notepad: Ctrl+A, Ctrl+C; Designer: Ctrl+V). Press **Ctrl+S**.",
+  "Repeat steps 1–3 for **BulkRegAgents** with the whole new BulkRegAgents.lss.",
   "Choose **Tools > Recompile All LotusScript**, so the agents load the new libraries.",
   "Re-sign the database (B19).",
   "Only if the release notes say so (rare: a new agent or a renamed BR_Run… Sub), update the agents as in B18."
@@ -790,22 +790,21 @@ ol(
   "In **Name**, type the agent name from the table.",
   "Under **Type**, select **LotusScript**. Make sure the agent is **Shared** (HCL: private agents do not appear on the Actions menu). Click **OK**. *Result:* the agent's properties box and the LotusScript editor open.",
   "In the properties box, **Basics** tab: under **Runtime**, choose **On event** and then **Action menu selection**. Set **Target** to **None**.",
-  "**(Options):** select **(Options)** in the outline and type or paste these three lines, replacing what is there:"
+  "Open the agent's source file from the table in **Notepad**, press **Ctrl+A** and **Ctrl+C**.",
+  "In Designer, click in the agent's LotusScript editor, press **Ctrl+A**, then **Ctrl+V**. *Result:* (Options) contains the three lines below and Initialize contains the call, for example:"
 );
-code(`Option Public
-Option Declare
-Use "BulkRegAgents"`);
-olc(
-  "**Initialize:** select **Initialize**, press **Ctrl+A** and type or paste the three lines below, with the Sub name from the table:"
-);
-code(`Sub Initialize
-	Call BR_RunPreflight()
-End Sub`);
+code(`(Options)      Option Public
+               Option Declare
+               Use "BulkRegAgents"
+
+Initialize     Sub Initialize
+                   Call BR_RunPreflight()
+               End Sub`);
 olc(
   "Press **Ctrl+S**. *Result:* it saves without a compile error. HCL: saving also signs the agent with your current ID.",
   "Close the agent and repeat for the next row."
 );
-note("The .lss files of the agents contain exactly these lines (STEP A and STEP C) plus a description in comments. Nothing else has to be pasted into an agent. **(Declarations)** of an agent stays empty.");
+note("The agent files contain only these lines plus a description in comments. **(Declarations)** of an agent stays empty. You can also type the 3 + 3 lines by hand instead of pasting.");
 done("All five agents are listed under Code > Agents with the exact names, trigger 'Action menu selection', target 'None', each contains `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, and they save without errors.");
 pb();
 
@@ -1217,7 +1216,7 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["Actions menu shows only \"01\", \"02\"…", "`|` used in the agent names (alias separator)", "Rename the agents exactly as in B18"],
   ["Agents not in the Actions menu", "Private agent, or wrong trigger", "B18: Shared, On event > Action menu selection"],
   ["Execution Security Alert every time", "Signer not trusted in the ECL", "B19 sign; trust the signer if your policy allows"],
-  ["Compile error when saving", "A block was pasted into the wrong section", "Redo B17 (libraries: STEP A, B, C) or B18 (agents: 3 + 3 lines)"],
+  ["Compile error when saving", "Old code was not removed before pasting, or only part of the file was copied", "Ctrl+A, Delete, then paste the whole file again (B17, B18)"],
   ["\"Error loading USE or USELSX module: BulkRegCommon/BulkRegAgents\"", "Library missing, misspelt, or not saved yet; BulkRegAgents saved before BulkRegCommon", "Check the names exactly (B17); save BulkRegCommon, then BulkRegAgents, then Tools > Recompile All LotusScript"],
   ["Duplicate procedure … / Not declared …", "A new release was pasted on top of the old code, so functions exist twice or are missing; or an agent from release 3.2 still contains its old code", "Replace the whole library as in B17a; reduce every agent to the 3 + 3 lines of B18"],
   ["Unexpected / Type mismatch / Variable not declared in BulkReg code", "A defect in the kit", "Note element, line and message and report it; do not edit the code by hand"],
