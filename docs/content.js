@@ -5,7 +5,7 @@ const META = {
   title: "BulkReg Framework",
   subtitle: "Step-by-step guide: bulk registration of Directory Sync (Active Directory) users in HCL Domino – Notes ID, mail file and ID Vault – in reviewed batches across multiple servers, from the Windows Domino Administrator client",
   docType: "Administrator Setup, Operations & Audit Guide",
-  version: "2.5",
+  version: "2.6",
   date: "October 2026",
   author: "Rishab Sharma",
   classification: "HCL Confidential – Internal Use",
@@ -43,6 +43,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 1.4", "Framework, runbook, Windows-client model, reviewed batch workflow"],
+  ["2.6", "RegistrationLog corrected: registration is logged to the **Certification Log certlog.nsf** on the registration server (HCL: any non-empty value → CERTLOG.NSF; empty = no logging). log.nsf is the server's general log. Prerequisite check for certlog.nsf added (B4)."],
   ["2.5", "**Prerequisite: pre-create the numbered mail folders** (mail1…mailN, one per 1000 users) on every home server (B4). Preflight calculates the folders needed per server and writes the create commands. New `MailFolderMax`: Build Batch never assigns a folder above the number you created."],
   ["2.4", "Mail file **naming = last name** (configurable), **uniqueness** checked against all mail folders on the home server, Person documents, open batches and the batch itself (clash → smith2.nsf or ERROR), **numbered folders** mail1, mail2… with max 1000 mail files each. MailFileNote recorded in batch file, summary, results and audit."],
   ["2.3", "**Every registered user now gets a Domino mail file** on the home server (MailFile column in the batch, reviewable). CreateMailDb / PreserveMailSystem removed. Mail file settings (folder, template, ACL manager, quota, full-text index), existence checks before and after registration, and mail file status in Verify."],
@@ -238,7 +239,8 @@ ol(
   "Open the Server document of the first home server (worksheet row 3) and click **Edit Server**.",
   "Click the **Security** tab. In **Create databases & templates**, make sure your admin ID (or a group it belongs to) is listed, or that the field allows everyone your policy permits.",
   "Click **Save & Close**. Repeat for every home server.",
-  "Check that the mail template from worksheet row 11b exists on every home server (**Files** tab of each server, filter on .ntf)."
+  "Check that the mail template from worksheet row 11b exists on every home server (**Files** tab of each server, filter on .ntf).",
+  "On the **registration server**, check that the Certification Log `certlog.nsf` exists in the data directory (**Files** tab) and that your admin ID can write to it. If it is missing, create it with **File > Application > New** on that server from the **Certification Log** template (certlog.ntf, under **Show advanced templates**)."
 );
 done("Your admin ID has Editor access with [UserCreator] and [UserModifier] (and the Policy roles if needed) in names.nsf. The numbered mail folders exist on every home server. Your admin ID can create databases there, and the mail template exists on each of them.");
 
@@ -387,6 +389,7 @@ ol(
 tbl(["Key", "Enter", "From"], [
   ["DirectoryServer", "The registration server: `DominoAdmin/Demo` or `CN=DominoAdmin/O=Demo`", "Worksheet 2"],
   ["RegistrationServer", "The same server", "Worksheet 2"],
+  ["RegistrationLog", "Leave `certlog.nsf`. Registration records go to the Certification Log on the registration server.", "–"],
   ["UseCA", "`1` for the Domino CA, `0` for a certifier ID file", "Worksheet 5"],
   ["CertifierName", "With UseCA=1: the CA certifier, e.g. `O=Demo` or `OU=Sales/O=Demo`", "Worksheet 6"],
   ["CertifierIDFile", "With UseCA=0: `C:\\BulkReg\\cert\\<file>.id`. With UseCA=1: leave the placeholder or clear it.", "B5 Option 2"],
@@ -731,7 +734,7 @@ h2("D3 bulkreg.ini – all settings");
 tbl(["Key", "Default", "Meaning"], [
   ["BaseDir", "C:\\BulkReg\\", "Base for default paths"],
   ["DirectoryServer / DirectoryFile", "– / names.nsf", "Directory that DirSync writes into"],
-  ["RegistrationServer / RegistrationLog", "– / log.nsf", "Server that registers; Domino registration log"],
+  ["RegistrationServer / RegistrationLog", "– / certlog.nsf", "Server that registers. RegistrationLog: HCL logs to **CERTLOG.NSF** on the registration server when the value is not empty (empty = no certification logging). Keep certlog.nsf."],
   ["UseCA / CertifierName / CertifierIDFile", "1 / – / –", "Domino CA or certifier ID (password prompted, never stored)"],
   ["DefaultHomeServer / DefaultOrgUnit / DefaultPolicy / DefaultGroups", "–", "Defaults when no mapping rule sets a value. Servers: canonical or abbreviated."],
   ["OrgPolicyAssignsVault", "0", "1 = an organizational policy (*/Demo, */OU/Demo) assigns the vault; no explicit policy needed"],
@@ -814,7 +817,8 @@ tbl(["Output", "Location", "Content"], [
   ["Audit CSV", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_audit.csv", "One row per user per action, including BatchID, MailFile, MailFileStatus and MailFileNote. **No passwords.**"],
   ["Debug log", "C:\\BulkReg\\audit\\BulkReg_<Tool>_<run>_debug.log", "Every step, the approval line, and the batch file size and time"],
   ["Password file", "C:\\BulkReg\\secure\\BulkReg_InitialPasswords_<batch>_<run>.csv", "Initial passwords (delete in C8)"],
-  ["Domino registration log", "log.nsf on the registration server", "Domino's own records"],
+  ["Certification Log", "certlog.nsf on the registration server", "Domino's record of every certification and registration (written because RegistrationLog is not empty)"],
+  ["Domino server log", "log.nsf on the registration and home servers", "General server events, e.g. mail file creation and Administration Process messages; useful for troubleshooting"],
   ["Helper actions log", "C:\\BulkReg\\audit\\bulkreg_admin_actions.log", "PowerShell helper changes"],
 ], [2000, 4300, 3060]);
 tbl(["Result", "Meaning", "Action"], [
@@ -843,7 +847,7 @@ tbl(["Command", "Does"], [
 ], [3800, 5560]);
 
 h2("D6 Troubleshooting");
-p("General method: set `LogLevel=DEBUG`, rebuild a 1-user batch (ExtraSelection), dry-run it, and read the debug log. FAILED rows show the stage (load, validate, configure, RegisterNewUser, verify, preserveMail, vault) and the Notes error.");
+p("General method: set `LogLevel=DEBUG`, rebuild a 1-user batch (ExtraSelection), dry-run it, and read the debug log. FAILED rows show the stage (load, validate, configure, RegisterNewUser, verify, preserveMail, vault) and the Notes error. Cross-check the same time in **certlog.nsf** on the registration server (certification and registration records) and in **log.nsf** on the registration and home servers (server events, mail file creation, Administration Process).");
 tbl(["Symptom", "Likely cause", "Fix"], [
   ["Actions menu shows only \"01\", \"02\"…", "`|` used in the agent names (alias separator)", "Rename the agents exactly as in B18"],
   ["Agents not in the Actions menu", "Private agent, or wrong trigger", "B18: Shared, On event > Action menu selection"],

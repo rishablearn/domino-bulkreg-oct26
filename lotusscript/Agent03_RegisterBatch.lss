@@ -352,7 +352,7 @@ Function RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGui
 	reg.MinPasswordLength = CInt(CfgL("MinPasswordLength", 8))
 	reg.IsNorthAmerican = CfgB("IsNorthAmerican", True)
 	reg.OrgUnit = u.OrgUnit
-	reg.RegistrationLog = CfgS("RegistrationLog", "log.nsf")
+	reg.RegistrationLog = CfgS("RegistrationLog", "certlog.nsf")   ' HCL: non-empty -> CERTLOG.NSF on the registration server
 	reg.UpdateAddressBook = True
 	reg.StoreIDInAddressBook = CfgB("StoreIDInAddressBook", False)
 	reg.EnforceUniqueShortName = CfgB("EnforceUniqueShortName", True)
