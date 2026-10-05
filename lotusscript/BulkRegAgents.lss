@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.6.1
+' Script Library : BulkRegAgents            Version 3.6.2
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -1324,20 +1324,22 @@ End Sub
 Sub BR_RunSetupLog()
 	On Error GoTo ErrH
 	Dim ws As NotesUIWorkspace, ans As Variant, res As String, report As String, nBad As Integer
-	Dim i As Integer, defs As Variant, parts As Variant
+	Dim i As Integer, defs As Variant, parts As Variant, logName As String
 
 	If Not BR_Init("SetupLog") Then Exit Sub
+	' remember the name now: BR_Close releases gLogDb, and the messages below come after it
+	logName = gLogDb.Server & "!!" & gLogDb.FilePath
 	If gLogDb.CurrentAccessLevel < ACLLEVEL_DESIGNER Then
 		BR_Close "No Designer access to the log database"
 		BR_Msg "Setting up the views needs Designer or Manager access to the log database" & Chr$(10) & _
-		gLogDb.Server & "!!" & gLogDb.FilePath & Chr$(10) & Chr$(10) & _
+		logName & Chr$(10) & Chr$(10) & _
 		"Ask the database owner (guide B15) to run Actions > BulkReg > 00 - Set Up Log Database.", 48
 		Exit Sub
 	End If
 	Set ws = New NotesUIWorkspace
 	ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Set up log database", _
 	"Create or replace the BulkReg form and the 8 views ""BulkReg\..."" in" & Chr$(10) & _
-	gLogDb.Server & "!!" & gLogDb.FilePath & " ?" & Chr$(10) & Chr$(10) & _
+	logName & " ?" & Chr$(10) & Chr$(10) & _
 	"Existing log documents are not changed. Other views in the database are not touched.")
 	If ans <> 1 Then
 		BR_Close "Cancelled by operator"
@@ -1346,6 +1348,7 @@ Sub BR_RunSetupLog()
 
 	res = BR_LogImportForm(gLogDb)
 	report = "Form BRLogEntry: " & res & Chr$(10)
+	BR_Log BR_IIfInt2(res = "OK", LVL_INFO, LVL_ERROR), "Form BRLogEntry: " & res
 	If res <> "OK" Then nBad = nBad + 1
 
 	defs = BR_LogViewDefs()
@@ -1358,7 +1361,7 @@ Sub BR_RunSetupLog()
 	Next
 
 	BR_Close "Log database set up: " & (UBound(defs) + 1) & " views, problems=" & nBad
-	BR_Msg "Log database " & gLogDb.Server & "!!" & gLogDb.FilePath & Chr$(10) & Chr$(10) & report & Chr$(10) & _
+	BR_Msg "Log database " & logName & Chr$(10) & Chr$(10) & report & Chr$(10) & _
 	"Open the database and expand the view folder ""BulkReg"" in the navigator.", CInt(BR_IIfStr(nBad > 0, "48", "64"))
 	Exit Sub
 ErrH:
