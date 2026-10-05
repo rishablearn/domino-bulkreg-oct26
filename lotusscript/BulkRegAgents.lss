@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.6.3
+' Script Library : BulkRegAgents            Version 3.6.4
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -34,7 +34,7 @@ Dim gPwFile As String
 Dim gMode As String
 Dim gSrvOK List As String      ' home-server reachability cache
 Dim gStopRun As String          ' set by BR_RegisterOne when the whole run must stop (e.g. wrong Notes name)
-Dim gVNameBad As Long, gVTitleBad As Long, gVTitles List As String
+Dim gVNameBad As Long, gVTitleBad As Long, gVTitles List As String, gVAclBad As Long, gVAcls List As String
 Dim gVUnreg As Long, gVInV As Long, gVNotV As Long, gVErr As Long, gVGone As Long, gVMailBad As Long, gVRepBad As Long
 
 '#####################################################################
@@ -96,10 +96,7 @@ Sub BR_RunPreflight()
 			envWarn = envWarn + BR_Check(BR_ServerReachable(CStr(rl(rj))), "Mail cluster member reachable: " & rl(rj))
 		Next
 		' AdminP "Check access": the requester (your admin ID) needs at least Reader access to each new mail file
-		If CfgB("CreateClusterReplicas", True) And Trim$(CfgS("MailACLManager", "")) = "" Then
-			BR_Log LVL_WARN, "CreateClusterReplicas=1 but MailACLManager is empty - set it to a group that contains your admin ID (e.g. LocalDomainAdmins), otherwise AdminP may refuse the Create Replica requests (guide B4)"
-			envWarn = envWarn + 1
-		End If
+		BR_Log LVL_INFO, "Mail file managers (Manager access in every new mail file, needed for the replica requests): " & BR_MailManagers()
 	Else
 		BR_Log LVL_INFO, "MailClusterServers empty - no mail cluster: mail files get no replicas unless a mapping rule lists ClusterReplicas"
 	End If
@@ -790,7 +787,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	Dim doc As NotesDocument, reg As NotesRegistration, u As BRUser
 	Dim t0 As Double, issues As String, userPwd As String, mailFile As String
 	Dim stage As String, emsg As String, homeCanon As String, nn As NotesName
-	Dim foundOn As String, rl As Variant, ri As Integer, repOK As Boolean, nameProb As String, titleRes As String
+	Dim foundOn As String, rl As Variant, ri As Integer, repOK As Boolean, nameProb As String, titleRes As String, aclRes As String
 	t0 = Timer
 	On Error GoTo ErrH
 
@@ -899,7 +896,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	reg.CreateMailDb = True
 	reg.MailSystem = REG_MAILSYSTEM_NOTES                ' HCL default, set explicitly: DirSync users had Other Internet Mail
 	If CfgS("MailTemplate", "") <> "" Then reg.MailTemplateName = CfgS("MailTemplate", "")
-	If CfgS("MailACLManager", "") <> "" Then reg.MailACLManager = CfgS("MailACLManager", "")
+	reg.MailACLManager = Trim$(StrLeft(BR_MailManagers() & ",", ","))   ' first manager; all of them are enforced after registration
 	reg.MailCreateFTIndex = CfgB("MailCreateFTIndex", False)
 	If CfgL("MailQuotaSizeLimit", 0) > 0 Then reg.MailQuotaSizeLimit = CfgL("MailQuotaSizeLimit", 0)
 	If CfgL("MailQuotaWarningThreshold", 0) > 0 Then reg.MailQuotaWarningThreshold = CfgL("MailQuotaWarningThreshold", 0)
@@ -964,6 +961,10 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		titleRes = BR_MailTitleFix(u.HomeServer, u.MailFile, BR_MailTitle(u), True, CfgB("MailFileTitleOverwrite", False))
 		u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & titleRes & " '" & BR_MailTitle(u) & "'"
 		If Left$(titleRes, 11) = "TITLE_ERROR" Then BR_Log LVL_WARN, "Mail file title not set for " & u.MailFile & ": " & titleRes
+		' Manager access for the admin ID / MailACLManager - BEFORE the replicas (they copy the ACL)
+		aclRes = BR_MailAclFix(u.HomeServer, u.MailFile, True)
+		u.MailFileNote = u.MailFileNote & "; " & aclRes
+		If Left$(aclRes, 9) = "ACL_ERROR" Then BR_Log LVL_WARN, "Mail file managers not set for " & u.MailFile & ": " & aclRes Else BR_Log LVL_INFO, "Mail file managers " & u.MailFile & ": " & aclRes
 	Else
 		u.MailFileStatus = "MAILFILE_PENDING"       ' may still be created in the background - re-check with Agent 04
 	End If
@@ -1044,13 +1045,14 @@ Sub BR_RunVerify()
 	On Error GoTo ErrH
 	' library variables keep their value between runs in the same client session - reset them
 	gVUnreg = 0: gVInV = 0: gVNotV = 0: gVErr = 0: gVGone = 0: gVMailBad = 0: gVRepBad = 0
-	gVNameBad = 0: gVTitleBad = 0
+	gVNameBad = 0: gVTitleBad = 0: gVAclBad = 0
 	Erase gVTitles
+	Erase gVAcls
 	Dim ws As NotesUIWorkspace, ans As Variant
 	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
 	Dim scopeFile As String, bname As String, fh As Integer, txt As String
 	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, nid As String, rep As String
-	Dim summary As String, total As Long, nSet As Long, tr As String
+	Dim summary As String, total As Long, nSet As Long, tr As String, nAcl As Long
 
 	If Not BR_Init("Verify") Then Exit Sub
 	Set ws = New NotesUIWorkspace
@@ -1108,7 +1110,7 @@ Sub BR_RunVerify()
 
 	summary = BR_IIfStr(gBatchID = "", "All DirSync users", gBatchID) & ": checked=" & total & " | registered+in vault=" & gVInV & _
 	" | registered NOT in vault=" & gVNotV & " | unregistered=" & gVUnreg & " | check errors=" & gVErr & " | not found=" & gVGone & " | mail file missing=" & gVMailBad & " | replicas missing=" & gVRepBad & _
-	" | wrong Notes name=" & gVNameBad & " | mail file title empty=" & gVTitleBad
+	" | wrong Notes name=" & gVNameBad & " | mail file title empty=" & gVTitleBad & " | mail file manager missing=" & gVAclBad
 
 	' optional fix: set the missing mail file titles (asks first; only the title is changed)
 	If gVTitleBad > 0 Then
@@ -1121,6 +1123,19 @@ Sub BR_RunVerify()
 				BR_Log BR_IIfInt2(tr = "TITLE_SET", LVL_INFO, LVL_WARN), "Mail file title " & ListTag(tt) & " -> '" & tt & "': " & tr
 			End ForAll
 			summary = summary & " | titles set now=" & nSet
+		End If
+	End If
+	' optional fix: add the missing mail file managers (asks first; only the ACL entries are added)
+	If gVAclBad > 0 Then
+		ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Verify", gVAclBad & " mail file(s) do not give Manager access to: " & BR_MailManagers() & Chr$(10) & Chr$(10) & _
+		"Add them to the ACL now (Manager, Delete documents)?" & Chr$(10) & "Nothing else is changed.")
+		If ans = 1 Then
+			ForAll ta In gVAcls
+				tr = BR_MailAclFix(StrLeft(ListTag(ta), "!!"), StrRight(ListTag(ta), "!!"), True)
+				If Left$(tr, 7) = "ACL_SET" Then nAcl = nAcl + 1
+				BR_Log BR_IIfInt2(Left$(tr, 7) = "ACL_SET", LVL_INFO, LVL_WARN), "Mail file managers " & ListTag(ta) & ": " & tr
+			End ForAll
+			summary = summary & " | managers added now=" & nAcl
 		End If
 	End If
 	BR_Close summary
@@ -1137,7 +1152,7 @@ End Sub
 ' rep = replica servers from the batch file, or "*auto" = other members of the
 '       mail cluster of the user's mail server (MailClusterServers)
 Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
-	Dim u As BRUser, t0 As Double, res As String, nmProb As String, tRes As String
+	Dim u As BRUser, t0 As Double, res As String, nmProb As String, tRes As String, aRes As String
 	t0 = Timer
 	If doc Is Nothing Then
 		u.NoteID = nid
@@ -1172,6 +1187,11 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 				gVTitleBad = gVTitleBad + 1
 				gVTitles(BR_Item(doc, "MailServer") & "!!" & u.MailFile) = BR_MailTitle(u)
 			End If
+			aRes = BR_MailAclFix(BR_Item(doc, "MailServer"), u.MailFile, False)
+			If Left$(aRes, 11) = "ACL_MISSING" Then
+				gVAclBad = gVAclBad + 1
+				gVAcls(BR_Item(doc, "MailServer") & "!!" & u.MailFile) = aRes
+			End If
 		End If
 		' cluster replicas of the mail file
 		u.HomeServer = BR_SrvAbbr(BR_Item(doc, "MailServer"))
@@ -1191,7 +1211,7 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 		End Select
 	End If
 	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), BR_IIfStr(res = "UNREGISTERED" And u.InternetAddress = "", "no InternetAddress - " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped until the address exists in AD", "will be registered without address"), "") & _
-	BR_IIfStr(nmProb <> "", " WRONG NAME: " & nmProb, "") & BR_IIfStr(tRes <> "", " mail file " & tRes, ""))
+	BR_IIfStr(nmProb <> "", " WRONG NAME: " & nmProb, "") & BR_IIfStr(tRes <> "", " mail file " & tRes, "") & BR_IIfStr(aRes <> "", " " & aRes, ""))
 	BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus & " mail=" & u.MailFileStatus & " replicas=" & u.ReplicaStatus
 End Sub
 

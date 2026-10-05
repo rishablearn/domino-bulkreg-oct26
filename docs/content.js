@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.6.4", "**Release 3.6.4.** **Mail file managers:** the admin ID running BulkReg (or the names in MailACLManager, comma separated) is added with Manager access to every new mail file after registration and before the replicas; Verify reports missing entries and can add them. Re-paste both libraries."],
   ["3.6.3", "**Release 3.6.3.** Log views: groups now have twisties and can be expanded/collapsed; view 1 opens by default. Re-paste BulkRegAgents and run 00 - Set Up Log Database again."],
   ["3.6.2", "**Release 3.6.2.** Fix in 00 - Set Up Log Database: the final dialog failed with *Object variable not set* after the views had been created. Re-paste BulkRegAgents."],
   ["3.6.1", "**Release 3.6.1.** Compile fix in BulkRegAgents: variable `imp` renamed (Imp is a LotusScript operator). Re-paste BulkRegAgents."],
@@ -348,7 +349,7 @@ p("Agent 03 asks the Administration Process (AdminP) to create a replica of each
 ol(
   "**Cluster:** click the **Configuration** tab > **Server > Clusters**. *Result:* one cluster lists all members from worksheet row 3a (for example the 2 DC and 2 DR servers). On a member's console, `show cluster` lists the same servers.",
   "**Create replica rights:** open each cluster member's Server document > **Edit Server** > **Security** tab. In **Create new replicas**, make sure your admin ID (or a group it is in, e.g. LocalDomainAdmins) **and** the other cluster members (e.g. LocalDomainServers) are listed. Also check **Create databases & templates**. Click **Save & Close**. Repeat for every member.",
-  "**Reader access to the new mail files:** in bulkreg.ini set `MailACLManager` to a group that contains your admin ID, for example `LocalDomainAdmins` (B11). The mail template normally gives LocalDomainServers Manager access; check the template's ACL on the home servers.",
+  "**Access to the new mail files:** BulkReg adds your admin ID (or the names in `MailACLManager`) with **Manager** access to every new mail file right after registration, before the replicas are requested. Your admin ID therefore needs Manager access to new mail files at that moment: check the ACL of the mail template on the home servers (for example a `LocalDomainAdmins` entry with Manager access that contains your admin ID), or work with **Full Access Administration** enabled in Domino Administrator.",
   "**Connection documents:** HCL notes that AdminP assumes Connection documents exist to schedule replication between the source and destination servers. Check **Configuration > Server > Connections** for each home server ↔ each other member.",
   "**AdminP running:** on every member, `show tasks` lists the Administration Process. admin4.nsf replicates within the domain."
 );
@@ -521,7 +522,7 @@ tbl(["Key", "Enter", "From"], [
   ["MailFileTitle", "Leave `{CN}`: each new mail file gets the user's name as its database title (e.g. *Neha Arora*)", "–"],
   ["MailFolderMax", "The number of folders you created in B4, e.g. `5` for mail1–mail5 (mail cluster: users of all home servers together)", "Worksheet 11d"],
   ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default)", "Worksheet 11b"],
-  ["MailACLManager / MailQuotaSizeLimit", "Manager of each new mail file (**required with a mail cluster**: a group containing your admin ID, e.g. `LocalDomainAdmins`); quota in MB (0 = none)", "Worksheet 11c"],
+  ["MailACLManager / MailQuotaSizeLimit", "Who gets **Manager** access to each new mail file: leave **empty** = your admin ID (the operator); or names separated by commas, e.g. `Admin User/Demo,LocalDomainAdmins`. Quota in MB (0 = none).", "Worksheet 11c"],
   ["LogServer / LogDb", "**Required.** The server and file of the central log database from B15, e.g. `DominoAdmin/Demo` and `bulkreg_log.nsf`", "B15"],
   ["DryRun", "Leave `1`", "–"],
 ], [2300, 5100, 1960]);
@@ -627,7 +628,7 @@ bulkreg.ini   (MailClusterServers is ONE line in the file)
   MailClusterServers=DominoADMail/Demo,DominoADMail2/Demo,
                      DominoADMailDR1/Demo,DominoADMailDR2/Demo
   CreateClusterReplicas=1
-  MailACLManager=LocalDomainAdmins
+  MailACLManager=           (empty = your admin ID; or e.g. Admin User/Demo,LocalDomainAdmins)
   BatchSize=1000
   MailFilesPerFolder=1000
   MailFolderMax=5     (5000 users -> mail1..mail5 on ALL 4 servers)`);
@@ -883,7 +884,7 @@ ol(
   "For each **ERROR** row, read the Message column. Fix the cause in Active Directory, for example a missing last name or a duplicate email address, and let DirSync synchronise.",
   "Open `C:\\BulkReg\\audit\\<run folder>\\BulkReg_Preflight_<run>_mapping.txt` (the mapping test): users per rule and the values each rule gives. If a group lands on the wrong server (also visible in the HomeServer / MapRule columns of the audit CSV), correct server_mapping.csv (B12) and run Preflight again.",
   "Open `C:\\BulkReg\\audit\\<run folder>\\BulkReg_Preflight_<run>_mailfolders.txt`. For each home server, or for the whole **mail cluster**, it lists the users, the folders needed (for example `mail1 .. mail5`) and **the servers to create them on** (with a cluster: all members), with the create commands. Create any folder that does not exist yet (B4), and make sure `MailFolderMax` is high enough. Preflight warns if it is too low.",
-  "With a mail cluster, check the environment lines in the debug log: every member **reachable**, and no warning about `MailACLManager`."
+  "With a mail cluster, check the environment lines in the debug log: every member **reachable**, and the line *Mail file managers …* names your admin ID."
 );
 done("0 environment errors, every user lands on the intended home server (with the intended replica servers), and every mail folder listed in the _mailfolders.txt file exists on every server named there.");
 
@@ -951,7 +952,7 @@ ol(
   "Read the end dialog: ok=2. Open `BATCH-<id>_results.csv`. *Result:* both rows REGISTERED with VaultStatus IN_VAULT.",
   "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), full name **Neha Arora/Demo** (First Last/Demo, or First Last/OU/Demo - never with `O=` in it), **MailServer** = the intended home server, **MailFile** = the path from the batch, **MailSystem** = Notes, and **Policy synopsis** showing the policy with the vault. Then open the home server's **Files** tab and confirm the mail file exists. With a mail cluster, open the **Files** tab of each other member after a few minutes: the same path (e.g. `mail1\\smith.nsf`) must exist there too, and admin4.nsf shows the Create Replica requests as processed.",
   "On a test PC, set up Notes for one pilot user: the ID must download from the vault, the user must be asked to change the password, and the mail file must open. Send a test mail to the user's Internet address and confirm it arrives in the Domino mail file.",
-  "Open the pilot user's mail file (Files tab of the home server): its **Title** is the user's name (e.g. *Neha Arora*), not empty.",
+  "Open the pilot user's mail file (Files tab of the home server): its **Title** is the user's name (e.g. *Neha Arora*), not empty, and its **ACL** (Database > Manage ACL) lists your admin ID (or the MailACLManager names) with **Manager** access.",
   "Run **04 - Verify Registration and Vault** and choose the pilot batch. *Result:* 2 × REGISTERED, IN_VAULT, MAILFILE_OK, wrong Notes name = 0, mail file title empty = 0 and (with a cluster) REPLICAS_OK 3/3.",
   "Set `DryRun=1` and clear `ExtraSelection=` in bulkreg.ini. Save."
 );
@@ -1075,7 +1076,7 @@ tbl(["Key", "Default", "Meaning"], [
   ["MailFolderMax", "5", "Number of pre-created folders (B4); no folder above it is assigned (0 = no limit)"],
   ["MailTemplate", "(empty)", "Mail template (empty = registration default)"],
   ["MailFileTitle / MailFileTitleOverwrite", "{CN} / 0", "Database title of each new mail file ({CN} = Neha Arora; also {FirstName} {LastName} {ShortName} {InternetAddress}); set right after registration, before the cluster replicas. 1 = replace a title that is already set."],
-  ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Mail file settings (quota in MB). MailACLManager is required with a mail cluster (B4). MailCreateFTIndex also applies to the replicas."],
+  ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Mail file settings (quota in MB). MailACLManager: empty = the operator's admin ID; comma separated names allowed; all of them get Manager access in every new mail file. MailCreateFTIndex also applies to the replicas."],
   ["CheckMailFileExists", "1", "Refuse users whose mail file already exists on the home server or a replica server"],
   ["MailClusterServers", "(empty)", "All members of the mail cluster, comma separated (2–6). Members' users get replicas on the other members; names and folders are allocated cluster-wide (D3c)."],
   ["CreateClusterReplicas", "1", "1 = 03 posts AdminP Create Replica requests; 0 = you create the replicas (04 still checks them)"],
@@ -1154,7 +1155,7 @@ tbl(["Record", "Content"], [
 h3("5. Other mail file settings");
 tbl(["Setting", "Effect"], [
   ["MailTemplate", "Template for new mail files (empty = registration default). Must exist on every home server (B4)."],
-  ["MailACLManager", "Extra person or group with Manager access to every new mail file"],
+  ["MailACLManager", "Names with Manager access (and Delete documents) in every new mail file; empty = the admin ID running BulkReg. Set after registration and checked by Verify (MailFileNote: ACL_OK / ACL_SET)."],
   ["MailQuotaSizeLimit / MailQuotaWarningThreshold", "Quota and warning threshold in MB (0 = none)"],
   ["MailCreateFTIndex", "Create a full-text index for new mail files"],
   ["CheckMailFileExists", "Direct check of the exact path (Build and Register Batch)"],
@@ -1300,7 +1301,7 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["REPLICAS_MISSING after several hours", "AdminP request failed: requester or destination server has no Reader access to the mail file, no 'Create new replicas' right, no Connection document, or AdminP not running", "Open admin4.nsf > All Requests by Action, find Create Replica for the user and read the response document; fix B4 (cluster section); create the replicas manually (D3c)"],
   ["REQUEST_FAILED / REQUESTED k/n FAILED", "AdminP request could not be created (RegistrationServer unreachable, no rights to admin4.nsf, unrestricted methods not allowed)", "Check the message; create the replicas manually (D3c); confirm in the pilot (D9)"],
   ["NOT_REQUESTED (mail file not yet on home server)", "The mail file was created in the background after 03 finished", "When 04 shows MAILFILE_OK, create the replicas manually (D3c)"],
-  ["Preflight: 'MailACLManager is empty'", "AdminP needs the requester to read the mail file", "Set MailACLManager to a group containing your admin ID (B11)"],
+  ["Admin ID is not Manager of the new mail files (MailFileNote / Verify: ACL_MISSING or ACL_ERROR)", "Releases before 3.6.4 relied only on the registration option, which did not add the entry; ACL_ERROR means your ID could not change the ACL", "3.6.4 adds the entry after registration. For existing mail files run 04 - Verify and answer **Yes** to 'Add them to the ACL now'. For ACL_ERROR give your admin ID Manager access through the mail template ACL (e.g. LocalDomainAdmins) or enable Full Access Administration, then run Verify again."],
   ["\"MailClusterServers lists only one server / more than 6\" at start-up", "Incomplete or wrong cluster list", "List all 2–6 members, comma separated"],
   ["WARN: Replica server … unreachable", "A cluster member is down or not reachable from the workstation", "AdminP creates the replica when it is back; or exclude the server for this batch by editing ClusterReplicas"],
   ["Mail fields change after the next DirSync", "DirSync attribute mapping overwrites MailSystem / MailServer / MailFile", "Remove those fields from the DirSync mapping (Directory Sync configuration, Synchronization tab)"],

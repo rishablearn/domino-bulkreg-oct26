@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.6.3
+' Script Library : BulkRegCommon            Version 3.6.4
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.6.3"
+Public Const BR_VERSION = "3.6.4"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -1218,6 +1218,72 @@ Function BR_MailTitleFix(server As String, path As String, title As String, doSe
 	Exit Function
 ErrH:
 	BR_MailTitleFix = "TITLE_ERROR(" & Error$ & ")"
+	Exit Function
+End Function
+
+'=====================================================================
+' MAIL FILE MANAGERS  (MailACLManager in bulkreg.ini)
+'   Every new mail file gets these names with Manager access (Delete documents
+'   allowed). Empty = the admin ID that runs BulkReg. Several names: comma separated,
+'   e.g.  MailACLManager=Admin User/Demo,LocalDomainAdmins
+'=====================================================================
+Function BR_MailManagers() As String
+	Dim s As String
+	s = Trim$(CfgS("MailACLManager", ""))
+	If s = "" Then s = BR_Abbr(gOperator)
+	BR_MailManagers = s
+End Function
+
+' Ensures every manager name is in the ACL of the mail file with Manager access.
+' doSet=False only checks. Returns ACL_OK, ACL_SET (names), ACL_MISSING (names) or ACL_ERROR(...)
+Function BR_MailAclFix(server As String, path As String, doSet As Boolean) As String
+	On Error GoTo ErrH
+	Dim db As NotesDatabase, acl As NotesACL, e As NotesACLEntry, lst As Variant, i As Integer
+	Dim nm As String, changed As String, missing As String, nn As NotesName
+	Set db = gSession.GetDatabase(server, path, False)
+	If Not db.IsOpen Then Call db.Open("", "")
+	If Not db.IsOpen Then
+		BR_MailAclFix = "ACL_ERROR(mail file not found)"
+		Exit Function
+	End If
+	Set acl = db.ACL
+	lst = Split(BR_MailManagers(), ",")
+	For i = 0 To UBound(lst)
+		nm = Trim$(CStr(lst(i)))
+		If nm <> "" Then
+			If InStr(nm, "/") > 0 Then              ' a person or server: ACL entries use the canonical form
+				Set nn = New NotesName(nm)
+				nm = nn.Canonical
+			End If
+			Set e = acl.GetEntry(nm)
+			If e Is Nothing Then
+				missing = missing & BR_IIfStr(missing = "", "", ", ") & BR_Abbr(nm)
+				If doSet Then
+					Set e = acl.CreateACLEntry(nm, ACLLEVEL_MANAGER)
+					e.CanDeleteDocuments = True
+					changed = changed & BR_IIfStr(changed = "", "", ", ") & BR_Abbr(nm)
+				End If
+			ElseIf e.Level < ACLLEVEL_MANAGER Then
+				missing = missing & BR_IIfStr(missing = "", "", ", ") & BR_Abbr(nm) & " (has level " & e.Level & ")"
+				If doSet Then
+					e.Level = ACLLEVEL_MANAGER
+					e.CanDeleteDocuments = True
+					changed = changed & BR_IIfStr(changed = "", "", ", ") & BR_Abbr(nm)
+				End If
+			End If
+		End If
+	Next
+	If changed <> "" Then
+		Call acl.Save()
+		BR_MailAclFix = "ACL_SET (" & changed & ")"
+	ElseIf missing <> "" Then
+		BR_MailAclFix = "ACL_MISSING (" & missing & ")"
+	Else
+		BR_MailAclFix = "ACL_OK"
+	End If
+	Exit Function
+ErrH:
+	BR_MailAclFix = "ACL_ERROR(" & Error$ & " - your ID needs Manager access to the mail file, see guide D6)"
 	Exit Function
 End Function
 

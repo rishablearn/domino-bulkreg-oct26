@@ -1,6 +1,6 @@
 MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer;ClusterReplicas
 # =====================================================================================
-# BulkReg 3.6.3 - server_mapping.csv : WHICH USER GOES TO WHICH HOME SERVER
+# BulkReg 3.6.4 - server_mapping.csv : WHICH USER GOES TO WHICH HOME SERVER
 # Full instructions with examples: Admin Guide, procedure B12.
 # =====================================================================================
 # WHAT IT DOES
