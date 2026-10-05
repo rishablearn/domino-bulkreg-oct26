@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.6.4
+' Script Library : BulkRegAgents            Version 3.6.5
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -97,6 +97,7 @@ Sub BR_RunPreflight()
 		Next
 		' AdminP "Check access": the requester (your admin ID) needs at least Reader access to each new mail file
 		BR_Log LVL_INFO, "Mail file managers (Manager access in every new mail file, needed for the replica requests): " & BR_MailManagers()
+		BR_Log LVL_INFO, "Mail file owner access: " & BR_LevelText(BR_OwnerLevel()) & " + Delete documents (MailOwnerAccess)"
 	Else
 		BR_Log LVL_INFO, "MailClusterServers empty - no mail cluster: mail files get no replicas unless a mapping rule lists ClusterReplicas"
 	End If
@@ -897,6 +898,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	reg.MailSystem = REG_MAILSYSTEM_NOTES                ' HCL default, set explicitly: DirSync users had Other Internet Mail
 	If CfgS("MailTemplate", "") <> "" Then reg.MailTemplateName = CfgS("MailTemplate", "")
 	reg.MailACLManager = Trim$(StrLeft(BR_MailManagers() & ",", ","))   ' first manager; all of them are enforced after registration
+	reg.MailOwnerAccess = BR_OwnerRegConst()                          ' owner = Editor by default (MailOwnerAccess); enforced after registration
 	reg.MailCreateFTIndex = CfgB("MailCreateFTIndex", False)
 	If CfgL("MailQuotaSizeLimit", 0) > 0 Then reg.MailQuotaSizeLimit = CfgL("MailQuotaSizeLimit", 0)
 	If CfgL("MailQuotaWarningThreshold", 0) > 0 Then reg.MailQuotaWarningThreshold = CfgL("MailQuotaWarningThreshold", 0)
@@ -962,7 +964,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & titleRes & " '" & BR_MailTitle(u) & "'"
 		If Left$(titleRes, 11) = "TITLE_ERROR" Then BR_Log LVL_WARN, "Mail file title not set for " & u.MailFile & ": " & titleRes
 		' Manager access for the admin ID / MailACLManager - BEFORE the replicas (they copy the ACL)
-		aclRes = BR_MailAclFix(u.HomeServer, u.MailFile, True)
+		aclRes = BR_MailAclFix(u.HomeServer, u.MailFile, u.FullNameAfter, True)
 		u.MailFileNote = u.MailFileNote & "; " & aclRes
 		If Left$(aclRes, 9) = "ACL_ERROR" Then BR_Log LVL_WARN, "Mail file managers not set for " & u.MailFile & ": " & aclRes Else BR_Log LVL_INFO, "Mail file managers " & u.MailFile & ": " & aclRes
 	Else
@@ -1110,7 +1112,7 @@ Sub BR_RunVerify()
 
 	summary = BR_IIfStr(gBatchID = "", "All DirSync users", gBatchID) & ": checked=" & total & " | registered+in vault=" & gVInV & _
 	" | registered NOT in vault=" & gVNotV & " | unregistered=" & gVUnreg & " | check errors=" & gVErr & " | not found=" & gVGone & " | mail file missing=" & gVMailBad & " | replicas missing=" & gVRepBad & _
-	" | wrong Notes name=" & gVNameBad & " | mail file title empty=" & gVTitleBad & " | mail file manager missing=" & gVAclBad
+	" | wrong Notes name=" & gVNameBad & " | mail file title empty=" & gVTitleBad & " | mail file ACL not standard=" & gVAclBad
 
 	' optional fix: set the missing mail file titles (asks first; only the title is changed)
 	If gVTitleBad > 0 Then
@@ -1127,15 +1129,17 @@ Sub BR_RunVerify()
 	End If
 	' optional fix: add the missing mail file managers (asks first; only the ACL entries are added)
 	If gVAclBad > 0 Then
-		ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Verify", gVAclBad & " mail file(s) do not give Manager access to: " & BR_MailManagers() & Chr$(10) & Chr$(10) & _
-		"Add them to the ACL now (Manager, Delete documents)?" & Chr$(10) & "Nothing else is changed.")
+		ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Verify", gVAclBad & " mail file(s) have an ACL that differs from the BulkReg standard:" & Chr$(10) & _
+		"  managers (Manager + Delete documents): " & BR_MailManagers() & Chr$(10) & _
+		"  owner (the user): " & BR_LevelText(BR_OwnerLevel()) & " + Delete documents" & Chr$(10) & Chr$(10) & _
+		"Correct these ACL entries now?" & Chr$(10) & "Nothing else is changed.")
 		If ans = 1 Then
 			ForAll ta In gVAcls
-				tr = BR_MailAclFix(StrLeft(ListTag(ta), "!!"), StrRight(ListTag(ta), "!!"), True)
+				tr = BR_MailAclFix(StrLeft(ListTag(ta), "!!"), StrRight(ListTag(ta), "!!"), CStr(ta), True)
 				If Left$(tr, 7) = "ACL_SET" Then nAcl = nAcl + 1
 				BR_Log BR_IIfInt2(Left$(tr, 7) = "ACL_SET", LVL_INFO, LVL_WARN), "Mail file managers " & ListTag(ta) & ": " & tr
 			End ForAll
-			summary = summary & " | managers added now=" & nAcl
+			summary = summary & " | ACLs corrected now=" & nAcl
 		End If
 	End If
 	BR_Close summary
@@ -1187,10 +1191,10 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 				gVTitleBad = gVTitleBad + 1
 				gVTitles(BR_Item(doc, "MailServer") & "!!" & u.MailFile) = BR_MailTitle(u)
 			End If
-			aRes = BR_MailAclFix(BR_Item(doc, "MailServer"), u.MailFile, False)
+			aRes = BR_MailAclFix(BR_Item(doc, "MailServer"), u.MailFile, u.FullNameBefore, False)
 			If Left$(aRes, 11) = "ACL_MISSING" Then
 				gVAclBad = gVAclBad + 1
-				gVAcls(BR_Item(doc, "MailServer") & "!!" & u.MailFile) = aRes
+				gVAcls(BR_Item(doc, "MailServer") & "!!" & u.MailFile) = u.FullNameBefore      ' owner, used by the fix below
 			End If
 		End If
 		' cluster replicas of the mail file

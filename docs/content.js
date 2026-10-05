@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.6.5", "**Release 3.6.5.** **Mail file owner = Editor + Delete documents** (new MailOwnerAccess=EDITOR) instead of Domino's default Manager; set at registration, corrected right after it, checked and correctable by Verify together with the managers. Re-paste both libraries."],
   ["3.6.4", "**Release 3.6.4.** **Mail file managers:** the admin ID running BulkReg (or the names in MailACLManager, comma separated) is added with Manager access to every new mail file after registration and before the replicas; Verify reports missing entries and can add them. Re-paste both libraries."],
   ["3.6.3", "**Release 3.6.3.** Log views: groups now have twisties and can be expanded/collapsed; view 1 opens by default. Re-paste BulkRegAgents and run 00 - Set Up Log Database again."],
   ["3.6.2", "**Release 3.6.2.** Fix in 00 - Set Up Log Database: the final dialog failed with *Object variable not set* after the views had been created. Re-paste BulkRegAgents."],
@@ -519,6 +520,7 @@ tbl(["Key", "Enter", "From"], [
   ["MailFilesPerFolder", "`1000`", "–"],
   ["MailExistingFolders", "`mail`: your existing mail folder(s). Their file names are checked so no duplicate is created; BulkReg never writes there.", "–"],
   ["MailFileDir", "Only used with `MailFolderMode=SINGLE`. Leave `mail`.", "–"],
+  ["MailOwnerAccess", "Leave `EDITOR`: the user gets **Editor + Delete documents** in his/her own mail file (Domino's default would be Manager). DESIGNER or MANAGER only if your policy needs it.", "–"],
   ["MailFileTitle", "Leave `{CN}`: each new mail file gets the user's name as its database title (e.g. *Neha Arora*)", "–"],
   ["MailFolderMax", "The number of folders you created in B4, e.g. `5` for mail1–mail5 (mail cluster: users of all home servers together)", "Worksheet 11d"],
   ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default)", "Worksheet 11b"],
@@ -952,7 +954,7 @@ ol(
   "Read the end dialog: ok=2. Open `BATCH-<id>_results.csv`. *Result:* both rows REGISTERED with VaultStatus IN_VAULT.",
   "In Domino Administrator, open each pilot Person document. Check: **Certificate** present (Document Properties > Fields), full name **Neha Arora/Demo** (First Last/Demo, or First Last/OU/Demo - never with `O=` in it), **MailServer** = the intended home server, **MailFile** = the path from the batch, **MailSystem** = Notes, and **Policy synopsis** showing the policy with the vault. Then open the home server's **Files** tab and confirm the mail file exists. With a mail cluster, open the **Files** tab of each other member after a few minutes: the same path (e.g. `mail1\\smith.nsf`) must exist there too, and admin4.nsf shows the Create Replica requests as processed.",
   "On a test PC, set up Notes for one pilot user: the ID must download from the vault, the user must be asked to change the password, and the mail file must open. Send a test mail to the user's Internet address and confirm it arrives in the Domino mail file.",
-  "Open the pilot user's mail file (Files tab of the home server): its **Title** is the user's name (e.g. *Neha Arora*), not empty, and its **ACL** (Database > Manage ACL) lists your admin ID (or the MailACLManager names) with **Manager** access.",
+  "Open the pilot user's mail file (Files tab of the home server): its **Title** is the user's name (e.g. *Neha Arora*), not empty, and its **ACL** (Database > Manage ACL) lists your admin ID (or the MailACLManager names) with **Manager** access and the user himself with **Editor** access and **Delete documents** ticked.",
   "Run **04 - Verify Registration and Vault** and choose the pilot batch. *Result:* 2 × REGISTERED, IN_VAULT, MAILFILE_OK, wrong Notes name = 0, mail file title empty = 0 and (with a cluster) REPLICAS_OK 3/3.",
   "Set `DryRun=1` and clear `ExtraSelection=` in bulkreg.ini. Save."
 );
@@ -1075,6 +1077,7 @@ tbl(["Key", "Default", "Meaning"], [
   ["MailFileDir", "mail", "Only for MailFolderMode=SINGLE"],
   ["MailFolderMax", "5", "Number of pre-created folders (B4); no folder above it is assigned (0 = no limit)"],
   ["MailTemplate", "(empty)", "Mail template (empty = registration default)"],
+  ["MailOwnerAccess", "EDITOR", "Access of the user in his/her own mail file: EDITOR (with Delete documents), DESIGNER or MANAGER. Set at registration and corrected right after it; Verify reports and can correct it. With EDITOR the user cannot change the ACL (Access & Delegation) himself."],
   ["MailFileTitle / MailFileTitleOverwrite", "{CN} / 0", "Database title of each new mail file ({CN} = Neha Arora; also {FirstName} {LastName} {ShortName} {InternetAddress}); set right after registration, before the cluster replicas. 1 = replace a title that is already set."],
   ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Mail file settings (quota in MB). MailACLManager: empty = the operator's admin ID; comma separated names allowed; all of them get Manager access in every new mail file. MailCreateFTIndex also applies to the replicas."],
   ["CheckMailFileExists", "1", "Refuse users whose mail file already exists on the home server or a replica server"],
@@ -1301,6 +1304,7 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["REPLICAS_MISSING after several hours", "AdminP request failed: requester or destination server has no Reader access to the mail file, no 'Create new replicas' right, no Connection document, or AdminP not running", "Open admin4.nsf > All Requests by Action, find Create Replica for the user and read the response document; fix B4 (cluster section); create the replicas manually (D3c)"],
   ["REQUEST_FAILED / REQUESTED k/n FAILED", "AdminP request could not be created (RegistrationServer unreachable, no rights to admin4.nsf, unrestricted methods not allowed)", "Check the message; create the replicas manually (D3c); confirm in the pilot (D9)"],
   ["NOT_REQUESTED (mail file not yet on home server)", "The mail file was created in the background after 03 finished", "When 04 shows MAILFILE_OK, create the replicas manually (D3c)"],
+  ["User is Manager of his own mail file", "Domino's registration default (Manager); releases before 3.6.5 kept it", "3.6.5 registers the owner with Editor + Delete documents (MailOwnerAccess=EDITOR) and corrects it after registration. For existing mail files run 04 - Verify and answer **Yes** to 'Correct these ACL entries now'."],
   ["Admin ID is not Manager of the new mail files (MailFileNote / Verify: ACL_MISSING or ACL_ERROR)", "Releases before 3.6.4 relied only on the registration option, which did not add the entry; ACL_ERROR means your ID could not change the ACL", "3.6.4 adds the entry after registration. For existing mail files run 04 - Verify and answer **Yes** to 'Add them to the ACL now'. For ACL_ERROR give your admin ID Manager access through the mail template ACL (e.g. LocalDomainAdmins) or enable Full Access Administration, then run Verify again."],
   ["\"MailClusterServers lists only one server / more than 6\" at start-up", "Incomplete or wrong cluster list", "List all 2–6 members, comma separated"],
   ["WARN: Replica server … unreachable", "A cluster member is down or not reachable from the workstation", "AdminP creates the replica when it is back; or exclude the server for this batch by editing ClusterReplicas"],

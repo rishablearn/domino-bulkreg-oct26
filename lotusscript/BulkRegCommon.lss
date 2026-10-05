@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.6.4
+' Script Library : BulkRegCommon            Version 3.6.5
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.6.4"
+Public Const BR_VERSION = "3.6.5"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -1234,9 +1234,41 @@ Function BR_MailManagers() As String
 	BR_MailManagers = s
 End Function
 
-' Ensures every manager name is in the ACL of the mail file with Manager access.
-' doSet=False only checks. Returns ACL_OK, ACL_SET (names), ACL_MISSING (names) or ACL_ERROR(...)
-Function BR_MailAclFix(server As String, path As String, doSet As Boolean) As String
+' Access level of the mail file OWNER (MailOwnerAccess in bulkreg.ini): EDITOR (default),
+' DESIGNER or MANAGER. Returns the ACLLEVEL_ value.
+Function BR_OwnerLevel() As Integer
+	Select Case UCase$(Trim$(CfgS("MailOwnerAccess", "EDITOR")))
+	Case "MANAGER": BR_OwnerLevel = ACLLEVEL_MANAGER
+	Case "DESIGNER": BR_OwnerLevel = ACLLEVEL_DESIGNER
+	Case Else: BR_OwnerLevel = ACLLEVEL_EDITOR
+	End Select
+End Function
+
+' The same setting as the NotesRegistration constant (REG_MAIL_OWNER_ACL_...)
+Function BR_OwnerRegConst() As Integer
+	Select Case UCase$(Trim$(CfgS("MailOwnerAccess", "EDITOR")))
+	Case "MANAGER": BR_OwnerRegConst = REG_MAIL_OWNER_ACL_MANAGER
+	Case "DESIGNER": BR_OwnerRegConst = REG_MAIL_OWNER_ACL_DESIGNER
+	Case Else: BR_OwnerRegConst = REG_MAIL_OWNER_ACL_EDITOR
+	End Select
+End Function
+
+Function BR_LevelText(l As Integer) As String
+	Select Case l
+	Case ACLLEVEL_MANAGER: BR_LevelText = "Manager"
+	Case ACLLEVEL_DESIGNER: BR_LevelText = "Designer"
+	Case ACLLEVEL_EDITOR: BR_LevelText = "Editor"
+	Case ACLLEVEL_AUTHOR: BR_LevelText = "Author"
+	Case ACLLEVEL_READER: BR_LevelText = "Reader"
+	Case Else: BR_LevelText = "level " & l
+	End Select
+End Function
+
+' Mail file ACL as BulkReg wants it:
+'   - every MailACLManager name (default: the admin ID) = Manager + Delete documents
+'   - the OWNER (the registered user, if given) = MailOwnerAccess (default Editor) + Delete documents
+' doSet=False only checks. Returns ACL_OK, ACL_SET (...), ACL_MISSING (...) or ACL_ERROR(...)
+Function BR_MailAclFix(server As String, path As String, owner As String, doSet As Boolean) As String
 	On Error GoTo ErrH
 	Dim db As NotesDatabase, acl As NotesACL, e As NotesACLEntry, lst As Variant, i As Integer
 	Dim nm As String, changed As String, missing As String, nn As NotesName
@@ -1273,6 +1305,27 @@ Function BR_MailAclFix(server As String, path As String, doSet As Boolean) As St
 			End If
 		End If
 	Next
+	' the owner: exactly MailOwnerAccess (Editor by default), with Delete documents
+	If Trim$(owner) <> "" Then
+		Set nn = New NotesName(owner)
+		nm = nn.Canonical
+		Set e = acl.GetEntry(nm)
+		If e Is Nothing Then
+			missing = missing & BR_IIfStr(missing = "", "", ", ") & "owner " & BR_Abbr(nm) & " not in ACL"
+			If doSet Then
+				Set e = acl.CreateACLEntry(nm, BR_OwnerLevel())
+				e.CanDeleteDocuments = True
+				changed = changed & BR_IIfStr(changed = "", "", ", ") & "owner " & BR_Abbr(nm) & " " & BR_LevelText(BR_OwnerLevel())
+			End If
+		ElseIf e.Level <> BR_OwnerLevel() Or Not e.CanDeleteDocuments Then
+			missing = missing & BR_IIfStr(missing = "", "", ", ") & "owner " & BR_Abbr(nm) & " has " & BR_LevelText(e.Level) & BR_IIfStr(e.CanDeleteDocuments, "", " without Delete") & ", should be " & BR_LevelText(BR_OwnerLevel())
+			If doSet Then
+				e.Level = BR_OwnerLevel()
+				e.CanDeleteDocuments = True
+				changed = changed & BR_IIfStr(changed = "", "", ", ") & "owner " & BR_Abbr(nm) & " " & BR_LevelText(BR_OwnerLevel())
+			End If
+		End If
+	End If
 	If changed <> "" Then
 		Call acl.Save()
 		BR_MailAclFix = "ACL_SET (" & changed & ")"
