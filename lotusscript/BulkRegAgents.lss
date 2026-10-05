@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.6.5
+' Script Library : BulkRegAgents            Version 3.6.6
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -1105,7 +1105,7 @@ Sub BR_RunVerify()
 		Set doc = col.GetFirstDocument()
 		Do While Not (doc Is Nothing)
 			total = total + 1
-			Call BR_VerifyDoc(doc, doc.NoteID, "*auto")
+			Call BR_VerifyDoc(doc, CStr(doc.NoteID), "*auto")
 			Set doc = col.GetNextDocument(doc)
 		Loop
 	End If

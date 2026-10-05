@@ -1,6 +1,6 @@
 '=====================================================================
 ' Agent name : BulkReg\00 - Set Up Log Database
-' Version    : 3.6.5  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.6.5)
+' Version    : 3.6.6  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.6.6)
 ' Code       : ALL logic is in the script library BulkRegAgents (BR_RunSetupLog).
 '              This agent only calls it, so it never changes between releases.
 '

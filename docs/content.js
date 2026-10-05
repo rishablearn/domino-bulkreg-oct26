@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.6.6", "**Release 3.6.6.** Compile fix in BulkRegCommon (BR_MailAclFix: Type mismatch on CanDeleteDocuments). Re-paste BulkRegCommon."],
   ["3.6.5", "**Release 3.6.5.** **Mail file owner = Editor + Delete documents** (new MailOwnerAccess=EDITOR) instead of Domino's default Manager; set at registration, corrected right after it, checked and correctable by Verify together with the managers. Re-paste both libraries."],
   ["3.6.4", "**Release 3.6.4.** **Mail file managers:** the admin ID running BulkReg (or the names in MailACLManager, comma separated) is added with Manager access to every new mail file after registration and before the replicas; Verify reports missing entries and can add them. Re-paste both libraries."],
   ["3.6.3", "**Release 3.6.3.** Log views: groups now have twisties and can be expanded/collapsed; view 1 opens by default. Re-paste BulkRegAgents and run 00 - Set Up Log Database again."],

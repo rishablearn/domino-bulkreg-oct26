@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.6.5
+' Script Library : BulkRegCommon            Version 3.6.6
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.6.5"
+Public Const BR_VERSION = "3.6.6"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -616,7 +616,7 @@ Function BR_CheckReplicas(home As String, path As String, replicas As String) As
 			On Error GoTo ErrH
 			If found Then
 				nOk = nOk + 1
-				If LCase$(BR_Path(r.FilePath)) <> LCase$(BR_Path(path)) Then BR_Log LVL_WARN, "Replica of " & path & " on " & dest & " is at a different path: " & r.FilePath
+				If LCase$(BR_Path(CStr(r.FilePath))) <> LCase$(BR_Path(path)) Then BR_Log LVL_WARN, "Replica of " & path & " on " & dest & " is at a different path: " & r.FilePath
 			Else
 				missing = missing & BR_IIfStr(missing = "", "", ", ") & dest
 			End If
@@ -855,7 +855,7 @@ Sub BR_ScanOneServer(server As String, key As String, names List As String, coun
 	Set dbdir = gSession.GetDbDirectory(server)
 	Set d = dbdir.GetFirstDatabase(DATABASE)
 	Do While Not (d Is Nothing)
-		fp = LCase$(BR_Path(d.FilePath))
+		fp = LCase$(BR_Path(CStr(d.FilePath)))
 		If InStr(fp, "\") > 0 Then
 			folder = StrLeftBack(fp, "\")
 			fbase = StrRightBack(fp, "\")
@@ -1271,7 +1271,7 @@ End Function
 Function BR_MailAclFix(server As String, path As String, owner As String, doSet As Boolean) As String
 	On Error GoTo ErrH
 	Dim db As NotesDatabase, acl As NotesACL, e As NotesACLEntry, lst As Variant, i As Integer
-	Dim nm As String, changed As String, missing As String, nn As NotesName
+	Dim nm As String, changed As String, missing As String, nn As NotesName, curLevel As Integer, canDel As Boolean
 	Set db = gSession.GetDatabase(server, path, False)
 	If Not db.IsOpen Then Call db.Open("", "")
 	If Not db.IsOpen Then
@@ -1310,6 +1310,8 @@ Function BR_MailAclFix(server As String, path As String, owner As String, doSet 
 		Set nn = New NotesName(owner)
 		nm = nn.Canonical
 		Set e = acl.GetEntry(nm)
+		curLevel = BR_OwnerLevel()               ' assume correct; overwritten below for an existing entry
+		canDel = True
 		If e Is Nothing Then
 			missing = missing & BR_IIfStr(missing = "", "", ", ") & "owner " & BR_Abbr(nm) & " not in ACL"
 			If doSet Then
@@ -1317,8 +1319,14 @@ Function BR_MailAclFix(server As String, path As String, owner As String, doSet 
 				e.CanDeleteDocuments = True
 				changed = changed & BR_IIfStr(changed = "", "", ", ") & "owner " & BR_Abbr(nm) & " " & BR_LevelText(BR_OwnerLevel())
 			End If
-		ElseIf e.Level <> BR_OwnerLevel() Or Not e.CanDeleteDocuments Then
-			missing = missing & BR_IIfStr(missing = "", "", ", ") & "owner " & BR_Abbr(nm) & " has " & BR_LevelText(e.Level) & BR_IIfStr(e.CanDeleteDocuments, "", " without Delete") & ", should be " & BR_LevelText(BR_OwnerLevel())
+		Else
+			' copy the ACL entry properties into typed variables first: passing an object
+			' property straight to a typed parameter gives "Type mismatch"
+			curLevel = e.Level
+			canDel = e.CanDeleteDocuments
+		End If
+		If Not (e Is Nothing) And (curLevel <> BR_OwnerLevel() Or Not canDel) Then
+			missing = missing & BR_IIfStr(missing = "", "", ", ") & "owner " & BR_Abbr(nm) & " has " & BR_LevelText(curLevel) & BR_IIfStr(canDel, "", " without Delete") & ", should be " & BR_LevelText(BR_OwnerLevel())
 			If doSet Then
 				e.Level = BR_OwnerLevel()
 				e.CanDeleteDocuments = True
