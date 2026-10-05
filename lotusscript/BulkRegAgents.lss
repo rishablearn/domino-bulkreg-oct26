@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.6.2
+' Script Library : BulkRegAgents            Version 3.6.3
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -1409,13 +1409,23 @@ Function BR_MakeView(db As NotesDatabase, vname As String, sel As String, spec A
 		Set c = v.CreateColumn(n0 + i + 1, CStr(p(0)), CStr(p(1)))
 		flags = UCase$(CStr(p(2)))
 		If InStr(flags, "S") > 0 Or InStr(flags, "C") > 0 Then c.IsSorted = True
-		If InStr(flags, "C") > 0 Then c.IsCategory = True
+		If InStr(flags, "C") > 0 Then
+			c.IsCategory = True
+			c.IsShowTwistie = True            ' twistie so the group can be expanded / collapsed
+		End If
 		If InStr(flags, "D") > 0 Then c.IsSortDescending = True
 		c.Width = CInt(p(3))
 	Next
 	For i = 1 To n0
 		Call v.RemoveColumn(1)
 	Next
+	' first BulkReg view = the view that opens with the database
+	If InStr(vname, "\1. ") > 0 Then
+		On Error Resume Next
+		v.IsDefaultView = True
+		Err = 0
+		On Error GoTo ErrH
+	End If
 	BR_MakeView = "OK"
 	Exit Function
 ErrH:

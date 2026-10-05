@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.6.3", "**Release 3.6.3.** Log views: groups now have twisties and can be expanded/collapsed; view 1 opens by default. Re-paste BulkRegAgents and run 00 - Set Up Log Database again."],
   ["3.6.2", "**Release 3.6.2.** Fix in 00 - Set Up Log Database: the final dialog failed with *Object variable not set* after the views had been created. Re-paste BulkRegAgents."],
   ["3.6.1", "**Release 3.6.1.** Compile fix in BulkRegAgents: variable `imp` renamed (Imp is a LotusScript operator). Re-paste BulkRegAgents."],
   ["3.6.0", "**Release 3.6.0.** **One audit folder per run**, named `<date>_<time>_<NN-Agent>_<MODE>` with MODE **DRYRUN** or **LIVE-PRODUCTION** for 03 (READ-ONLY / VERIFY / SETUP for the other agents). File names carry the mode too; each folder has a RUN_INFO.txt and a copy of the batch results or dry-run report. The log database shows the mode in view 1 and in the run titles. PowerShell helper searches the run folders."],
@@ -1234,7 +1235,7 @@ tbl(["Result", "Meaning", "Action"], [
 p("To read the results, open any audit or results CSV in `C:\\BulkReg-kit\\tools\\BulkReg_AuditViewer.html` (offline), in Excel (as text), or with `bulkreg.cmd Status <file>`.");
 
 h2("D4a Log database views");
-p("Agent 00 (B20a) creates these views in bulkreg_log.nsf, in the view folder **BulkReg**. Categories open and close with a click (or **View > Expand All / Collapse All**). Newest dates and batches are at the top.");
+p("Agent 00 (B20a) creates these views in bulkreg_log.nsf, in the view folder **BulkReg**; view 1 opens by default. Every group has a **twistie**: click it to open or close the group, or use **View > Expand All / Collapse All** (Ctrl + / Ctrl -). Newest dates and batches are at the top.");
 tbl(["View", "Shows", "Grouped by", "Use it to"], [
   ["1. Runs - by date", "One line per agent run: start time, agent, DryRun, batch, operator, status (RUNNING / FINISHED / CANCELLED / ABORTED), summary", "Date", "See what was run, when and by whom; spot runs that did not finish"],
   ["2. Batches - by batch, tool, result", "One line per user and action", "Batch > agent > result", "Follow one batch from Build through dry run, live run and Verify; count results per step"],
