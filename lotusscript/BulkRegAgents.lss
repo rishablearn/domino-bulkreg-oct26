@@ -123,7 +123,21 @@ Sub BR_RunPreflight()
 		BR_Log LVL_INFO, "HomeServers not set - every user without a named server in the mapping goes to DefaultHomeServer " & CfgS("DefaultHomeServer", "") & " (all users on ONE server)"
 		envWarn = envWarn + 1
 	End If
-	BR_Log LVL_INFO, "Domino server platform " & UCase$(Trim$(CfgS("ServerOS", "LINUX"))) & " | data directory " & CfgS("ServerDataDir", "/local/notesdata") & " | mail file paths sent to the server as e.g. " & BR_SrvPath("mail1\smith.nsf")
+	' platform (path form) of every server concerned: detected from the server, ServerOSMap, or ServerOS
+	Dim osSrv As Variant, oj As Integer, osName As String, osSrc As String, osAll As String
+	osAll = BR_SrvList(BR_HomePool() & "," & CfgS("MailClusterServers", "") & "," & BR_IIfStr(BR_HomePool() = "", CfgS("DefaultHomeServer", ""), ""), "")
+	If osAll <> "" Then
+		osSrv = Split(osAll, ",")
+		For oj = 0 To UBound(osSrv)
+			osName = BR_ServerOSEx(CStr(osSrv(oj)), osSrc)
+			BR_Log LVL_INFO, "Server " & osSrv(oj) & ": " & osName & " (" & osSrc & ") - mail files are sent as " & BR_SrvPathFor(CStr(osSrv(oj)), "mail1\smith.nsf")
+			If osSrc = "detected from the server" And osName <> UCase$(Trim$(CfgS("ServerOS", "LINUX"))) Then
+				BR_Log LVL_WARN, "ServerOS=" & CfgS("ServerOS", "LINUX") & " in bulkreg.ini does not match " & osSrv(oj) & " - the detected " & osName & " is used for this server. Set ServerOS / ServerOSMap to match."
+				envWarn = envWarn + 1
+			End If
+		Next
+	End If
+	BR_Log LVL_INFO, "Fallback platform ServerOS=" & UCase$(Trim$(CfgS("ServerOS", "LINUX"))) & " | ServerOSDetect=" & CfgS("ServerOSDetect", "1") & " | data directory " & CfgS("ServerDataDir", "/local/notesdata")
 	BR_Log LVL_INFO, "Short name read from Person field(s): " & CfgS("ShortNameFields", "ShortName") & " | Internet address constructed as <shortname>@" & CfgS("InternetDomain", "(InternetDomain not set - addresses are NOT constructed)")
 	If CfgB("ConstructInternetAddress", True) And Trim$(CfgS("InternetDomain", "")) = "" Then
 		BR_Log LVL_WARN, "InternetDomain is empty - users without an Internet address in AD cannot get one constructed and will be " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped", "registered without address")
@@ -356,11 +370,15 @@ NextCand:
 			If mk = "mail cluster" Then onSrv = BR_SrvList(CfgS("MailClusterServers", ""), "") Else onSrv = keyRep(mk)
 			Call BR_AppendLine(fldFile, BR_IIf(mk = "mail cluster", "MAIL CLUSTER", "SERVER " & keyRep(mk)) & " : " & ku & " new users (home servers: " & keyHomes(mk) & ")")
 			Call BR_AppendLine(fldFile, "  folders " & prefix & "1 .. " & prefix & need & "   on: " & onSrv)
-			If UCase$(Trim$(CfgS("ServerOS", "LINUX"))) = "WINDOWS" Then
-				Call BR_AppendLine(fldFile, "  Windows server (PowerShell):  1.." & need & " | % { New-Item -ItemType Directory -Force """ & CfgS("ServerDataDir", "<DataDir>") & "\" & prefix & "$_"" }")
-			Else
-				Call BR_AppendLine(fldFile, "  Linux server (as root):       for i in $(seq 1 " & need & "); do mkdir -p " & CfgS("ServerDataDir", "/local/notesdata") & "/" & prefix & "$i; done; chown -R " & CfgS("ServerFileOwner", "<domino-user>:<domino-group>") & " " & CfgS("ServerDataDir", "/local/notesdata") & "/" & prefix & "*")
-			End If
+			' commands for the platform(s) of the servers concerned (default ServerOS, ServerOSMap per server)
+			Dim osList As Variant, oi As Integer, hasWin As Boolean, hasLin As Boolean
+			hasWin = False: hasLin = False
+			osList = Split(onSrv, ",")
+			For oi = 0 To UBound(osList)
+				If BR_ServerOS(CStr(osList(oi))) = "WINDOWS" Then hasWin = True Else hasLin = True
+			Next
+			If hasWin Then Call BR_AppendLine(fldFile, "  Windows server (PowerShell):  1.." & need & " | % { New-Item -ItemType Directory -Force """ & CfgS("ServerDataDirWindows", "<DataDir>") & "\" & prefix & "$_"" }")
+			If hasLin Then Call BR_AppendLine(fldFile, "  Linux server (as root):       for i in $(seq 1 " & need & "); do mkdir -p " & CfgS("ServerDataDir", "/local/notesdata") & "/" & prefix & "$i; done; chown -R " & CfgS("ServerFileOwner", "<domino-user>:<domino-group>") & " " & CfgS("ServerDataDir", "/local/notesdata") & "/" & prefix & "*")
 			Call BR_AppendLine(fldFile, "")
 			srvText = srvText & "   " & prefix & "1.." & prefix & need & " on " & onSrv & Chr$(10)
 			BR_Log LVL_INFO, "Mail folders needed: " & prefix & "1.." & prefix & need & " on " & onSrv & " (" & ku & " users)"
@@ -553,7 +571,7 @@ Sub BR_RunBuildBatch()
 
 			r = Q(inc) & "," & Q(gBatchID) & "," & Q(CStr(nRows)) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & _
 			Q(u.FullNameBefore) & "," & Q(BR_ExpectedName(u)) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
-			Q(u.HomeServer) & "," & Q(BR_SrvPath(u.MailFile)) & "," & Q(u.MailFileNote) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.ClusterReplicas) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues) & "," & Q(u.InetSource)
+			Q(u.HomeServer) & "," & Q(BR_SrvPathFor(u.HomeServer, u.MailFile)) & "," & Q(u.MailFileNote) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.ClusterReplicas) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues) & "," & Q(u.InetSource)
 			Call BR_AppendLine(bfile, r)
 			Call BR_Audit(u, "BUILD", "SELECT", chk, BR_Elapsed(t0), "Include=" & inc & " " & issues)
 			End If
@@ -899,6 +917,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	Dim t0 As Double, issues As String, userPwd As String, mailFile As String
 	Dim stage As String, emsg As String, homeCanon As String, nn As NotesName
 	Dim foundOn As String, rl As Variant, ri As Integer, repOK As Boolean, nameProb As String, titleRes As String, aclRes As String
+	Dim paramDump As String
 	t0 = Timer
 	On Error GoTo ErrH
 
@@ -981,6 +1000,21 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	" home=" & u.HomeServer & " ou=" & u.OrgUnit & " policy=" & u.Policy & " groups=" & u.Groups & _
 	" map=" & u.MapRule & " mailfile=" & u.MailFile & " mailsys=" & u.MailSystemBefore & " idfile=" & u.IDFile
 
+	' ---- checks a dry run CAN do without changing anything (the registration itself is not run) ----
+	' the ID file folder must exist on THIS workstation (the ID file is written locally)
+	If Not BR_DirWritable(StrLeftBack(u.IDFile, "\") & "\") Then issues = issues & "ERROR:ID file folder is missing or not writable: " & StrLeftBack(u.IDFile, "\") & "\ (IDFileDir); "
+	' a configured mail template must exist on the home server
+	If CfgS("MailTemplate", "") <> "" Then
+		If Not BR_MailFileExists(u.HomeServer, CfgS("MailTemplate", "")) Then issues = issues & "ERROR:Mail template " & CfgS("MailTemplate", "") & " not found on " & u.HomeServer & "; "
+	End If
+	If Not CfgB("RegisterCreateMailDb", True) And CfgS("MailTemplate", "") = "" Then issues = issues & "ERROR:RegisterCreateMailDb=0 needs MailTemplate (e.g. mail14.ntf) in bulkreg.ini; "
+	If InStr(issues, "ERROR:") > 0 Then
+		Call BR_Audit(u, gMode, "REGISTER", "FAILED_VALIDATION", BR_Elapsed(t0), issues)
+		BR_Log LVL_ERROR, "VALIDATION " & u.FullNameBefore & " : " & issues
+		BR_RegisterOne = "FAIL:validation"
+		Exit Function
+	End If
+
 	If gMode = "DRYRUN" Then
 		If u.ClusterReplicas = "" Then
 			u.ReplicaStatus = "NONE"
@@ -1008,7 +1042,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		reg.CertifierIDFile = BR_CfgFile("CertifierIDFile", "")
 	End If
 	' ---- Domino mail file: always created on the user's home server ----
-	reg.CreateMailDb = True
+	reg.CreateMailDb = CfgB("RegisterCreateMailDb", True)   ' 0 = BulkReg creates the mail file itself after the registration (needs MailTemplate)
 	reg.MailSystem = REG_MAILSYSTEM_NOTES                ' HCL default, set explicitly: DirSync users had Other Internet Mail
 	If CfgS("MailTemplate", "") <> "" Then reg.MailTemplateName = CfgS("MailTemplate", "")
 	reg.MailACLManager = Trim$(StrLeft(BR_MailManagers() & ",", ","))   ' first manager; all of them are enforced after registration
@@ -1037,7 +1071,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		u.IDFile = Left$(u.IDFile, Len(u.IDFile) - 3) & "_" & gRunID & ".id"
 	End If
 
-	mailFile = BR_SrvPath(u.MailFile)    ' relative to the data directory (/local/notesdata on Linux), e.g. mail1/jsmith.nsf
+	mailFile = BR_SrvPathFor(u.HomeServer, u.MailFile)    ' relative to the data directory (/local/notesdata on Linux), e.g. mail1/jsmith.nsf
 	userPwd = BR_GenPassword(CInt(CfgL("InitialPasswordLength", 16)))
 
 	' RegisterNewUser expects the CANONICAL server name (CN=DominoADMail/O=Demo)
@@ -1045,8 +1079,13 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	homeCanon = nn.Canonical
 
 	' ---------- register ----------
-	stage = "RegisterNewUser"
+	' everything the registration receives - written to the debug log and, on failure, repeated in the error
+	paramDump = "last='" & u.LastName & "' first='" & u.FirstName & "' mi='" & u.MiddleInitial & "' short='" & u.ShortName & "' inet='" & u.InternetAddress & "'" & _
+	" | idfile=" & u.IDFile & " | server=" & homeCanon & " | mailfile=" & mailFile & " | ou='" & u.OrgUnit & "' certifier=" & BR_IIfStr(CfgB("UseCA", True), BR_CertifierForReg() & " (CA)", BR_CfgFile("CertifierIDFile", "")) & _
+	" | policy='" & u.Policy & "' template='" & CfgS("MailTemplate", "") & "' regserver=" & CfgS("RegistrationServer", "") & " log=" & CfgS("RegistrationLog", "") & " serverOS=" & BR_ServerOS(u.HomeServer)
 	BR_Log LVL_INFO, "REGISTER " & u.FullNameBefore & " -> " & u.HomeServer
+	BR_Log LVL_INFO, "Registration parameters: " & paramDump
+	stage = "RegisterNewUser"
 	Call reg.RegisterNewUser(u.LastName, u.IDFile, homeCanon, u.FirstName, u.MiddleInitial, _
 	gCertPwd, "", "BulkReg " & gRunID & " objectGUID=" & u.GUID, mailFile, "", userPwd, NOTES_DESKTOP_CLIENT)
 
@@ -1066,6 +1105,21 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		BR_Log LVL_ERROR, "WRONG NAME " & nameProb
 		BR_RegisterOne = "FAIL:name"
 		Exit Function
+	End If
+
+	' ---------- RegisterCreateMailDb=0: BulkReg creates the mail file itself ----------
+	If Not CfgB("RegisterCreateMailDb", True) Then
+		stage = "createmail"
+		titleRes = BR_CreateMailFile(u.HomeServer, u.MailFile, CfgS("MailTemplate", ""), BR_MailTitle(u))
+		u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & titleRes
+		BR_Log BR_IIfInt2(Left$(titleRes, 12) = "MAIL_CREATED", LVL_INFO, LVL_ERROR), "Mail file " & u.HomeServer & "!!" & u.MailFile & " : " & titleRes
+		' the Person document must point at the mail file
+		If BR_Item(doc, "MailFile") = "" Then
+			Call doc.ReplaceItemValue("MailFile", BR_SrvPathFor(u.HomeServer, u.MailFile))
+			Call doc.ReplaceItemValue("MailServer", homeCanon)
+			Call doc.ReplaceItemValue("MailSystem", "1")
+			Call doc.Save(True, False)
+		End If
 	End If
 
 	' ---------- mail file ----------
@@ -1124,9 +1178,34 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 ErrH:
 	userPwd = ""
 	emsg = "stage=" & stage & " err=" & Err & " " & Error$ & " (line " & Erl & ")"
+	If stage = "RegisterNewUser" Then emsg = emsg & " | parameters: " & paramDump
 	BR_Log LVL_ERROR, "FAIL " & u.FullNameBefore & " : " & emsg
 	Call BR_Audit(u, gMode, "REGISTER", "FAILED", BR_Elapsed(t0), emsg)
 	BR_RegisterOne = "FAIL:" & stage
+	Exit Function
+End Function
+
+' Creates the mail file from the mail template on the home server (RegisterCreateMailDb=0).
+' Returns MAIL_CREATED or MAIL_CREATE_ERROR(...)
+Function BR_CreateMailFile(server As String, path As String, tmplName As String, title As String) As String
+	On Error GoTo ErrH
+	Dim tmpl As NotesDatabase, mdb As NotesDatabase
+	If BR_MailFileExists(server, path) Then
+		BR_CreateMailFile = "MAIL_CREATED (already existed)"
+		Exit Function
+	End If
+	Set tmpl = gSession.GetDatabase(server, tmplName, False)
+	If Not tmpl.IsOpen Then Call tmpl.Open("", "")
+	If Not tmpl.IsOpen Then
+		BR_CreateMailFile = "MAIL_CREATE_ERROR(template " & tmplName & " not found on " & server & ")"
+		Exit Function
+	End If
+	Set mdb = tmpl.CreateFromTemplate(server, BR_SrvPathFor(server, path), True)
+	If title <> "" Then mdb.Title = title
+	BR_CreateMailFile = "MAIL_CREATED"
+	Exit Function
+ErrH:
+	BR_CreateMailFile = "MAIL_CREATE_ERROR(" & Error$ & " err " & Err & ")"
 	Exit Function
 End Function
 
@@ -1329,7 +1408,8 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 		End Select
 	End If
 	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), BR_IIfStr(res = "UNREGISTERED" And u.InternetAddress = "", "no InternetAddress - " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped until the address exists in AD", "will be registered without address"), "") & _
-	BR_IIfStr(nmProb <> "", " WRONG NAME: " & nmProb, "") & BR_IIfStr(tRes <> "", " mail file " & tRes, "") & BR_IIfStr(aRes <> "", " " & aRes, ""))
+	BR_IIfStr(nmProb <> "", " WRONG NAME: " & nmProb, "") & BR_IIfStr(tRes <> "", " mail file " & tRes, "") & BR_IIfStr(aRes <> "", " " & aRes, "") & _
+	BR_IIfStr(u.MailFileStatus <> "" And u.MailFileStatus <> "MAILFILE_OK", " MAIL FILE NOT FOUND: Person doc MailServer='" & BR_Item(doc, "MailServer") & "' MailFile='" & u.MailFile & "' (tried as '" & BR_SrvPathFor(BR_Item(doc, "MailServer"), u.MailFile) & "'). The mail file is created by AdminP on the mail server after registration: check admin4.nsf / the server console for 'Create Mail File' errors, then re-run Verify.", ""))
 	BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus & " mail=" & u.MailFileStatus & " replicas=" & u.ReplicaStatus
 End Sub
 

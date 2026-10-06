@@ -96,6 +96,7 @@ Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
 Public gBatchID As String        ' batch being built / registered (BATCH-yyyymmdd-hhnnss)
 Public gResultsFile As String    ' <BatchDir>\<BatchID>_results.csv (LIVE) or _dryrun.csv
 Public gAdminP As NotesAdministrationProcess   ' AdminP requests (cluster replicas), created on first use
+Public gOSCache List As String      ' detected platform per server (LINUX / WINDOWS / "" = undecided)
 Public gSrvLoad List As Long        ' users per home server: already registered into the new mail folders + open batches + assigned in this run
 
 Public Const gSep = "\"                         ' Windows path separator
@@ -143,6 +144,7 @@ Function BR_Init(toolName As String) As Boolean
 	gRunTitle = ""
 	gLogWriteErr = 0
 	Erase gSrvLoad
+	Erase gOSCache
 	Erase gCfg
 	Randomize
 
@@ -581,12 +583,94 @@ End Function
 '   AdminP replica requests) goes through BR_SrvPath, which uses the separator of
 '   the server platform (ServerOS=LINUX -> /, ServerOS=WINDOWS -> \).
 '=====================================================================
-Function BR_SrvPath(p As String) As String
-	If UCase$(Trim$(CfgS("ServerOS", "LINUX"))) = "WINDOWS" Then
-		BR_SrvPath = Replace(p, "/", "\")
-	Else
-		BR_SrvPath = Replace(p, "\", "/")
+'   Both platforms are supported, also mixed (e.g. one Linux and one Windows mail server):
+'   ServerOS is the default; ServerOSMap overrides it per server, e.g.
+'   ServerOSMap=DominoADMail/Demo:LINUX,DominoADMail2/Demo:WINDOWS
+' Platform of one server: "LINUX" (any Unix) or "WINDOWS". Order of precedence:
+'   1. ServerOSMap entry for the server
+'   2. detected from the server itself (ServerOSDetect=1, default): the path form the server
+'      returns for its databases - mail\x.nsf = Windows, mail/x.nsf = Linux/Unix
+'   3. ServerOS from bulkreg.ini (also used when the server has no database in a sub folder)
+Function BR_ServerOSEx(server As String, src As String) As String
+	Dim lst As Variant, i As Integer, item As String, key As String, det As String
+	BR_ServerOSEx = UCase$(Trim$(CfgS("ServerOS", "LINUX")))
+	src = "ServerOS setting"
+	If Trim$(server) = "" Then Exit Function
+	key = LCase$(BR_SrvAbbr(server))
+	If Trim$(CfgS("ServerOSMap", "")) <> "" Then
+		lst = Split(CfgS("ServerOSMap", ""), ",")
+		For i = 0 To UBound(lst)
+			item = Trim$(CStr(lst(i)))
+			If InStr(item, ":") > 0 Then
+				If LCase$(BR_SrvAbbr(StrLeftBack(item, ":"))) = key Then
+					BR_ServerOSEx = UCase$(Trim$(StrRightBack(item, ":")))
+					src = "ServerOSMap"
+					Exit Function
+				End If
+			End If
+		Next
 	End If
+	If CfgB("ServerOSDetect", True) Then
+		det = BR_DetectOS(server)
+		If det <> "" Then
+			BR_ServerOSEx = det
+			src = "detected from the server"
+		End If
+	End If
+End Function
+
+Function BR_ServerOS(server As String) As String
+	Dim src As String
+	BR_ServerOS = BR_ServerOSEx(server, src)
+End Function
+
+' Detects Windows/Unix from the path separator the server returns for its databases (cached per run).
+' "" = undecided (no database in a sub folder found in the first 500 databases, or no access).
+Function BR_DetectOS(server As String) As String
+	Dim k As String, dbdir As NotesDbDirectory, d As NotesDatabase, fp As String, n As Integer, res As String
+	k = LCase$(BR_SrvAbbr(server))
+	If IsElement(gOSCache(k)) Then
+		BR_DetectOS = gOSCache(k)
+		Exit Function
+	End If
+	On Error GoTo ErrH
+	Set dbdir = gSession.GetDbDirectory(server)
+	Set d = dbdir.GetFirstDatabase(DATABASE)
+	Do While Not (d Is Nothing)
+		fp = CStr(d.FilePath)
+		If InStr(fp, "/") > 0 Then
+			res = "LINUX"
+			Exit Do
+		End If
+		If InStr(fp, "\") > 0 Then
+			res = "WINDOWS"
+			Exit Do
+		End If
+		n = n + 1
+		If n >= 500 Then Exit Do
+		Set d = dbdir.GetNextDatabase()
+	Loop
+	gOSCache(k) = res
+	BR_DetectOS = res
+	Exit Function
+ErrH:
+	gOSCache(k) = ""
+	BR_DetectOS = ""
+	Exit Function
+End Function
+
+' Mail file path in the form the given server understands (relative to its data directory)
+Function BR_SrvPathFor(server As String, p As String) As String
+	If BR_ServerOS(server) = "WINDOWS" Then
+		BR_SrvPathFor = Replace(p, "/", "\")
+	Else
+		BR_SrvPathFor = Replace(p, "\", "/")
+	End If
+End Function
+
+' Same with the default platform (ServerOS) - for text where no single server applies
+Function BR_SrvPath(p As String) As String
+	BR_SrvPath = BR_SrvPathFor("", p)
 End Function
 
 '=====================================================================
@@ -764,7 +848,7 @@ Function BR_RequestReplicas(u As BRUser) As String
 		If dest <> "" Then
 			nAll = nAll + 1
 			On Error Resume Next
-			rid = gAdminP.CreateReplica(BR_SrvCanon(u.HomeServer), BR_SrvPath(u.MailFile), BR_SrvCanon(dest), BR_SrvPath(u.MailFile), True, CfgB("MailCreateFTIndex", False))
+			rid = gAdminP.CreateReplica(BR_SrvCanon(u.HomeServer), BR_SrvPathFor(u.HomeServer, u.MailFile), BR_SrvCanon(dest), BR_SrvPathFor(dest, u.MailFile), True, CfgB("MailCreateFTIndex", False))
 			If Err <> 0 Then
 				fails = fails & dest & ": " & Error$ & "; "
 				BR_Log LVL_ERROR, "Replica request FAILED " & u.MailFile & " -> " & dest & " : " & Error$
@@ -795,7 +879,7 @@ Function BR_CheckReplicas(home As String, path As String, replicas As String) As
 		Exit Function
 	End If
 	On Error GoTo ErrH
-	Set src = gSession.GetDatabase(home, BR_SrvPath(path), False)
+	Set src = gSession.GetDatabase(home, BR_SrvPathFor(home, path), False)
 	If Not src.IsOpen Then Call src.Open("", "")
 	If Not src.IsOpen Then
 		BR_CheckReplicas = "CHECK_ERROR(mail file not found on home server)"
@@ -1112,6 +1196,7 @@ Function BR_CheckMailFolderConfig() As String
 	End If
 	If InStr(CfgS("InternetDomain", ""), "<") > 0 Then e = e & "InternetDomain still contains a <placeholder>. Use e.g. InternetDomain=demo.com (or leave it empty to disable address construction)." & Chr$(10)
 	If UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "LINUX" And UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "WINDOWS" Then e = e & "ServerOS must be LINUX or WINDOWS." & Chr$(10)
+	If InStr(CfgS("ServerOSMap", ""), "<") > 0 Then e = e & "ServerOSMap still contains a <placeholder>. Use e.g. ServerOSMap=DominoADMail/Demo:LINUX,DominoADMail2/Demo:WINDOWS or leave it empty." & Chr$(10)
 	If InStr(CfgS("MailExistingFolders", "mail"), ":") > 0 Then e = e & "MailExistingFolders must be folder names relative to the data directory, e.g. mail" & Chr$(10)
 	BR_CheckMailFolderConfig = e
 End Function
@@ -1252,7 +1337,7 @@ End Function
 Function BR_MailFileExists(server As String, path As String) As Boolean
 	Dim db As NotesDatabase
 	On Error GoTo ErrH
-	Set db = gSession.GetDatabase(server, BR_SrvPath(path), False)
+	Set db = gSession.GetDatabase(server, BR_SrvPathFor(server, path), False)
 	If db Is Nothing Then Exit Function
 	If Not db.IsOpen Then Call db.Open("", "")
 	BR_MailFileExists = db.IsOpen
@@ -1424,7 +1509,7 @@ End Function
 Function BR_MailTitleFix(server As String, path As String, title As String, doSet As Boolean, overwrite As Boolean) As String
 	On Error GoTo ErrH
 	Dim db As NotesDatabase
-	Set db = gSession.GetDatabase(server, BR_SrvPath(path), False)
+	Set db = gSession.GetDatabase(server, BR_SrvPathFor(server, path), False)
 	If Not db.IsOpen Then Call db.Open("", "")
 	If Not db.IsOpen Then
 		BR_MailTitleFix = "TITLE_ERROR(mail file not found)"
@@ -1495,7 +1580,7 @@ Function BR_MailAclFix(server As String, path As String, owner As String, doSet 
 	On Error GoTo ErrH
 	Dim db As NotesDatabase, acl As NotesACL, e As NotesACLEntry, lst As Variant, i As Integer
 	Dim nm As String, changed As String, missing As String, nn As NotesName, curLevel As Integer, canDel As Boolean
-	Set db = gSession.GetDatabase(server, BR_SrvPath(path), False)
+	Set db = gSession.GetDatabase(server, BR_SrvPathFor(server, path), False)
 	If Not db.IsOpen Then Call db.Open("", "")
 	If Not db.IsOpen Then
 		BR_MailAclFix = "ACL_ERROR(mail file not found)"
@@ -1738,7 +1823,7 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FullNameAfter) & "," & _
 	Q(u.InternetAddress) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & _
 	Q(u.MapRule) & "," & Q(u.MailSystemBefore) & "," & Q(u.MailSystemAfter) & "," & Q(u.VaultStatus) & "," & _
-	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(BR_SrvPath(u.MailFile)) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote) & "," & Q(u.ClusterReplicas) & "," & Q(u.ReplicaStatus)
+	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(BR_SrvPathFor(u.HomeServer, u.MailFile)) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote) & "," & Q(u.ClusterReplicas) & "," & Q(u.ReplicaStatus)
 	Call BR_AppendLine(gAuditFile, r)
 	If gResultsFile <> "" Then Call BR_AppendLine(gResultsFile, r)
 	' same row as a structured Audit document in the central log database

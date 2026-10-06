@@ -39,6 +39,7 @@ Either add the settings below to your existing `C:\BulkReg\config\bulkreg.ini` a
 ```ini
 ServerOS=LINUX
 ServerDataDir=/local/notesdata
+ServerOSMap=
 HomeServers=<DominoADMail/Demo>,<DominoADMail2/Demo>
 HomeServerMaxUsers=2500
 HomeServerAssignment=BALANCED
@@ -47,6 +48,8 @@ MailFilesPerFolder=1000
 MailFolderMax=3
 MailClusterServers=
 ```
+
+Each server's platform is detected automatically (`ServerOSDetect=1`); Preflight logs it per server (`Server X: WINDOWS (detected from the server)`) and warns if `ServerOS` disagrees. `ServerOS` is only the fallback. For Windows servers use `ServerOS=WINDOWS`; for a mix list the exceptions, e.g. `ServerOSMap=DominoADMail/Demo:LINUX,DominoADMail2/Demo:WINDOWS`. Preflight logs the form used. A wrong value is a likely cause of registration/mail-file path errors.
 
 Keep `MailClusterServers` empty unless the two servers form a mail cluster. In a cluster, set `MailFolderMax=5` instead (guide B12.7).
 
