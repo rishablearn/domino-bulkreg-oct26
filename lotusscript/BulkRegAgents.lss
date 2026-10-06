@@ -63,7 +63,7 @@ Sub BR_RunPreflight()
 	' batch segregation: Preflight plans ALL candidates but checks ONE batch in detail
 	Dim batchSize As Long, chkBatch As Long, scopeAll As Boolean, srvFilter As String, openIds List As String
 	Dim nElig As Long, nChecked As Long, nInOpen As Long, nOtherSrv As Long, nBatches As Long, bNo As Long, nNoCap As Long, nBuilt As Long
-	Dim planBatch List Long, loadBefore List Long, planFile As String, homeIssue As String, planLine As String
+	Dim planBatch List As Long, loadBefore List As Long, planFile As String, homeIssue As String, planLine As String
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String
 
 	If Not BR_Init("Preflight") Then Exit Sub

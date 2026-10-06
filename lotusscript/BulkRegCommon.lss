@@ -96,7 +96,7 @@ Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
 Public gBatchID As String        ' batch being built / registered (BATCH-yyyymmdd-hhnnss)
 Public gResultsFile As String    ' <BatchDir>\<BatchID>_results.csv (LIVE) or _dryrun.csv
 Public gAdminP As NotesAdministrationProcess   ' AdminP requests (cluster replicas), created on first use
-Public gSrvLoad List Long        ' users per home server: already registered into the new mail folders + open batches + assigned in this run
+Public gSrvLoad List As Long        ' users per home server: already registered into the new mail folders + open batches + assigned in this run
 
 Public Const gSep = "\"                         ' Windows path separator
 Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
@@ -599,7 +599,7 @@ End Function
 ' ShortName is a TEXT LIST in the Domino Directory: every value of the list is examined and the
 ' first one that is a real short name wins (no blank, / or =, and not the "First Last" common name).
 Function BR_PickShortName(doc As NotesDocument) As String
-	Dim lst As Variant, vals As Variant, i As Integer, j As Integer, v As String, cn As String, first As String
+	Dim lst As Variant, vals As Variant, i As Integer, j As Integer, v As String, cn As String, firstVal As String
 	cn = LCase$(Trim$(BR_Clean(BR_Item(doc, "FirstName")) & " " & BR_Clean(BR_Item(doc, "LastName"))))
 	lst = Split(CfgS("ShortNameFields", "ShortName"), ",")
 	For i = 0 To UBound(lst)
@@ -609,7 +609,7 @@ Function BR_PickShortName(doc As NotesDocument) As String
 				For j = 0 To UBound(vals)
 					v = BR_Clean(CStr(vals(j)))
 					If v <> "" Then
-						If first = "" Then first = v          ' remembered: Validate reports it if no value is usable
+						If firstVal = "" Then firstVal = v          ' remembered: Validate reports it if no value is usable
 						If InStr(v, " ") = 0 And InStr(v, "/") = 0 And InStr(v, "=") = 0 And LCase$(v) <> cn Then
 							BR_PickShortName = v
 							Exit Function
@@ -619,7 +619,7 @@ Function BR_PickShortName(doc As NotesDocument) As String
 			End If
 		End If
 	Next
-	BR_PickShortName = first
+	BR_PickShortName = firstVal
 End Function
 
 ' Full name = Person item named in FullNameField (default DisplayName, a text list, normally
