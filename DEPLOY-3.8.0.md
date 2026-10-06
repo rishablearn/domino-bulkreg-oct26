@@ -1,6 +1,8 @@
-# BulkReg 3.7.0 – Deployment steps
+# BulkReg 3.8.0 – Deployment steps
 
-Upgrade from 3.6.6. Libraries `BulkRegCommon` and `BulkRegAgents` change, plus two config files. The six agents are unchanged (only the version comment in their header).
+Upgrade from 3.6.6 or 3.7.0. Libraries `BulkRegCommon` and `BulkRegAgents` change, plus two config files. The six agents are unchanged (only the version comment in their header).
+
+**3.8.0 additions** (if you already run 3.7.0): detected server platform (check the `Server X: ...` lines in Preflight), `FullNameField=DisplayName`, `ServerOSDetect`, `ServerOSMap`, `RegisterCreateMailDb`. Add them from `config/bulkreg.ini` to your own ini.
 
 **Status:** the code was reviewed and checked for block balance and consistency, but **not compiled or run against Domino**. Treat the pilot in step 6 as the acceptance test.
 
@@ -98,4 +100,4 @@ Run **01 - Preflight Check**, DryRun setting irrelevant. Open the run folder und
 
 ## 8. Rollback
 
-Restore the backed-up `bulkreg.nsf` (or paste the 3.6.6 libraries from commit `265e39d`) and the old `.ini` / `.csv`. Batches built with 3.7.0 have an extra `InetSource` column and an AUTO-assigned `HomeServer`; 3.6.6 reads them correctly. Users already registered stay registered.
+Restore the backed-up `bulkreg.nsf` (or paste the 3.6.6 libraries from commit `265e39d`) and the old `.ini` / `.csv`. Batches built with 3.8.0 have an extra `InetSource` column and an AUTO-assigned `HomeServer`; 3.6.6 reads them correctly. Users already registered stay registered.
