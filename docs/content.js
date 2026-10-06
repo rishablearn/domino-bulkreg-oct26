@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.7.0", "**Release 3.7.0.** **Batch segregation in Preflight** (plans all candidates, checks one batch; PreflightScope / PreflightBatchNo; new `_batchplan.txt`). **Automatic distribution over two or more home servers** (HomeServers, HomeServerMaxUsers=2500, HomeServerAssignment; mapping column 3 `AUTO`). **Short name** read from the AD samaccountname item (ShortNameFields), never from the FullName; full-name-like values are an ERROR. **Internet address constructed** as `<shortname>@<InternetDomain>` when AD has none. **Domino on Linux**: ServerOS, ServerDataDir (/local/notesdata), mail paths sent as `mail1/smith.nsf`; MailFolderMax now per server. Re-paste both libraries and replace bulkreg.ini and server_mapping.csv (see DEPLOY-3.7.0.md)."],
   ["3.6.6", "**Release 3.6.6.** Compile fix in BulkRegCommon (BR_MailAclFix: Type mismatch on CanDeleteDocuments). Re-paste BulkRegCommon."],
   ["3.6.5", "**Release 3.6.5.** **Mail file owner = Editor + Delete documents** (new MailOwnerAccess=EDITOR) instead of Domino's default Manager; set at registration, corrected right after it, checked and correctable by Verify together with the managers. Re-paste both libraries."],
   ["3.6.4", "**Release 3.6.4.** **Mail file managers:** the admin ID running BulkReg (or the names in MailACLManager, comma separated) is added with Manager access to every new mail file after registration and before the replicas; Verify reports missing entries and can add them. Re-paste both libraries."],
@@ -507,7 +508,12 @@ tbl(["Key", "Enter", "From"], [
   ["CertifierName", "With UseCA=1: the CA certifier, e.g. `/Demo` (users become **Neha Arora/Demo**) or `/Sales/Demo`. `Demo` and `O=Demo` are accepted and converted to `/Demo`.", "Worksheet 6"],
   ["DefaultOrgUnit", "**Empty** for Neha Arora/Demo. Only for an extra OU level: ONE plain name, e.g. `Sales` → Neha Arora/Sales/Demo. Never `O=Demo`, `OU=Sales` or `Sales/Demo`.", "Worksheet 10"],
   ["CertifierIDFile", "With UseCA=0: `C:\\BulkReg\\cert\\<file>.id`. With UseCA=1: leave the placeholder or clear it.", "B5 Option 2"],
-  ["DefaultHomeServer", "Home server for users that match no specific rule: `DominoADMail/Demo` or `CN=DominoADMail/O=Demo`", "Worksheet 3"],
+  ["HomeServers / HomeServerMaxUsers / HomeServerAssignment", "The mail servers that receive the users, e.g. `DominoADMail/Demo,DominoADMail2/Demo`; max users per server (`2500`); `BALANCED` (fewest users first, default) or `FILL`. A mapping rule with `AUTO` as home server uses this pool.", "Worksheet 3"],
+  ["ServerOS / ServerDataDir / ServerFileOwner", "`LINUX` (path separator `/`), `/local/notesdata`, and the Linux user:group of Domino for the chown line in the Preflight report", "–"],
+  ["ShortNameFields", "Person item(s) with the AD samaccountname, first non-empty wins (default `ShortName`). The FullName/cn is never used.", "–"],
+  ["ConstructInternetAddress / InternetDomain", "`1` and e.g. `demo.com`: users without an Internet address in AD get `<shortname>@demo.com`", "–"],
+  ["PreflightScope / PreflightBatchNo", "`BATCH` (default) checks one batch in detail, `ALL` checks everybody; `1` = the next batch to be built", "–"],
+  ["DefaultHomeServer", "Home server when `HomeServers` is empty (everybody on ONE server): `DominoADMail/Demo` or `CN=DominoADMail/O=Demo`", "Worksheet 3"],
   ["DefaultPolicy", "Explicit policy **exactly** as listed, e.g. `*/DirSync-Vault`. **Empty** with an organizational policy.", "Worksheet 9"],
   ["OrgPolicyAssignsVault", "`1` if an organizational policy (`*/Demo`, `*/Sales/Demo`) assigns the vault, otherwise `0`", "B8"],
   ["VaultServer", "The vault server, e.g. `DominoVault/Demo` (as shown in the vault document)", "Worksheet 7"],

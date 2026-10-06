@@ -1,6 +1,6 @@
 '=====================================================================
 ' Agent name : BulkReg\05 - Export to Registration Text File
-' Version    : 3.6.6  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.6.6)
+' Version    : 3.7.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.7.0)
 ' Code       : ALL logic is in the script library BulkRegAgents (BR_RunExport).
 '              This agent only calls it, so it never changes between releases.
 '

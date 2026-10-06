@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.6.6
+' Script Library : BulkRegAgents            Version 3.7.0
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -60,8 +60,19 @@ Sub BR_RunPreflight()
 	Dim t0 As Double, srvCount List As Long, hk As String, srvText As String
 	Dim ruleCount List As Long, mapFile As String, ri As Integer, rk As String
 	Dim rl As Variant, rj As Integer, repCount List As Long
+	' batch segregation: Preflight plans ALL candidates but checks ONE batch in detail
+	Dim batchSize As Long, chkBatch As Long, scopeAll As Boolean, srvFilter As String, openIds List As String
+	Dim nElig As Long, nChecked As Long, nInOpen As Long, nOtherSrv As Long, nBatches As Long, bNo As Long, nNoCap As Long, nBuilt As Long
+	Dim planBatch List Long, loadBefore List Long, planFile As String, homeIssue As String, planLine As String
+	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String
 
 	If Not BR_Init("Preflight") Then Exit Sub
+	batchSize = CfgL("BatchSize", 1000)
+	If batchSize < 1 Then batchSize = 1000
+	scopeAll = (UCase$(Trim$(CfgS("PreflightScope", "BATCH"))) = "ALL")
+	chkBatch = CfgL("PreflightBatchNo", 1)
+	If chkBatch < 1 Then chkBatch = 1
+	srvFilter = Trim$(CfgS("BatchServerFilter", ""))
 
 	' ---------- 1. Environment checks ----------
 	BR_Log LVL_INFO, "--- Environment checks ---"
@@ -100,6 +111,23 @@ Sub BR_RunPreflight()
 		BR_Log LVL_INFO, "Mail file owner access: " & BR_LevelText(BR_OwnerLevel()) & " + Delete documents (MailOwnerAccess)"
 	Else
 		BR_Log LVL_INFO, "MailClusterServers empty - no mail cluster: mail files get no replicas unless a mapping rule lists ClusterReplicas"
+	End If
+	' home server pool: users are spread over these servers (AUTO in server_mapping.csv)
+	If BR_HomePool() <> "" Then
+		BR_Log LVL_INFO, "Home server pool: " & BR_HomePool() & " | max users per server " & CfgL("HomeServerMaxUsers", 0) & " | assignment " & UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED")))
+		rl = Split(BR_HomePool(), ",")
+		For rj = 0 To UBound(rl)
+			envErr = envErr + BR_Check(BR_ServerReachable(CStr(rl(rj))), "Home server reachable: " & rl(rj))
+		Next
+	Else
+		BR_Log LVL_INFO, "HomeServers not set - every user without a named server in the mapping goes to DefaultHomeServer " & CfgS("DefaultHomeServer", "") & " (all users on ONE server)"
+		envWarn = envWarn + 1
+	End If
+	BR_Log LVL_INFO, "Domino server platform " & UCase$(Trim$(CfgS("ServerOS", "LINUX"))) & " | data directory " & CfgS("ServerDataDir", "/local/notesdata") & " | mail file paths sent to the server as e.g. " & BR_SrvPath("mail1\smith.nsf")
+	BR_Log LVL_INFO, "Short name read from Person field(s): " & CfgS("ShortNameFields", "ShortName") & " | Internet address constructed as <shortname>@" & CfgS("InternetDomain", "(InternetDomain not set - addresses are NOT constructed)")
+	If CfgB("ConstructInternetAddress", True) And Trim$(CfgS("InternetDomain", "")) = "" Then
+		BR_Log LVL_WARN, "InternetDomain is empty - users without an Internet address in AD cannot get one constructed and will be " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped", "registered without address")
+		envWarn = envWarn + 1
 	End If
 	' tool database bulkreg.nsf: meant to be LOCAL on the admin workstation (guide B13)
 	Dim toolDb As NotesDatabase
@@ -148,13 +176,53 @@ Sub BR_RunPreflight()
 	Set usersView = db.GetView("($Users)")
 
 	' ---------- 2. Candidate checks ----------
+	' Every candidate is PLANNED (home server, batch number, mail folders), but only ONE batch is
+	' checked in detail (reachability, duplicates, mail files): the batch Build Batch will create
+	' next (PreflightBatchNo=1), or any other batch number, or ALL (PreflightScope=ALL).
 	BR_Log LVL_INFO, "--- Candidate checks (objectGUID present, not yet registered) ---"
+	BR_Log LVL_INFO, "BatchSize=" & batchSize & " | detailed check: " & BR_IIfStr(scopeAll, "ALL candidates (PreflightScope=ALL)", "batch no. " & chkBatch & " (users " & ((chkBatch - 1) * batchSize + 1) & " - " & (chkBatch * batchSize) & " of the candidate list)") & BR_IIfStr(srvFilter <> "", " | BatchServerFilter=" & srvFilter, "")
+	Call BR_OpenBatchNoteIDs(openIds, mfNames, mfCounts)     ' users in OPEN batches are not candidates; they count towards server capacity
+	Call BR_ScanDirectoryMail(db, mfNames)                   ' users already registered into the new mail folders count towards capacity
+	ForAll ld In gSrvLoad
+		loadBefore(ListTag(ld)) = ld
+	End ForAll
 	Set col = BR_GetCandidates(db, True)
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
 		t0 = Timer
 		Call BR_ReadUser(doc, u)
-		issues = BR_Validate(u)
+		' ---- batch segregation (same order as 02 - Build Batch) ----
+		If IsElement(openIds(u.NoteID)) Then
+			nInOpen = nInOpen + 1                                 ' already in a pending batch
+			GoTo NextCand
+		End If
+		If u.InternetAddress = "" And CfgB("SkipNoInternetAddress", True) Then
+			nNoInet = nNoInet + 1                                 ' skipped by Build Batch: does not use a batch slot
+			If scopeAll Or chkBatch = 1 Then Call BR_Audit(u, "PREFLIGHT", "CHECK", BR_RESULT_NO_INET, BR_Elapsed(t0), BR_SKIP_NO_INET)
+			GoTo NextCand
+		End If
+		If u.InetSource = "CONSTRUCTED" Then nBuilt = nBuilt + 1
+		homeIssue = BR_AssignHome(u)                              ' AUTO -> server of the pool (balanced, max HomeServerMaxUsers)
+		If srvFilter <> "" And homeIssue = "" Then
+			If Not BR_SameServer(u.HomeServer, srvFilter) Then
+				nOtherSrv = nOtherSrv + 1                         ' belongs to another server wave
+				GoTo NextCand
+			End If
+		End If
+		nElig = nElig + 1
+		If u.InternetAddress = "" Then nNoInet = nNoInet + 1      ' only when SkipNoInternetAddress=0 (registered without address)
+		bNo = Int((nElig - 1) / batchSize) + 1                    ' batch number of this user
+		hk = BR_IIfStr(u.HomeServer = "", "(none)", u.HomeServer)
+		If IsElement(planBatch(CStr(bNo) & "|" & hk)) Then planBatch(CStr(bNo) & "|" & hk) = planBatch(CStr(bNo) & "|" & hk) + 1 Else planBatch(CStr(bNo) & "|" & hk) = 1
+		If IsElement(srvCount(hk)) Then srvCount(hk) = srvCount(hk) + 1 Else srvCount(hk) = 1
+		If IsElement(ruleCount(u.MapRule)) Then ruleCount(u.MapRule) = ruleCount(u.MapRule) + 1 Else ruleCount(u.MapRule) = 1
+		If homeIssue <> "" Then nNoCap = nNoCap + 1
+		hk = BR_IIf(u.HomeServer = "", "(none)", u.HomeServer) & " -> replicas: " & BR_IIf(u.ClusterReplicas = "", "none", u.ClusterReplicas)
+		If IsElement(repCount(hk)) Then repCount(hk) = repCount(hk) + 1 Else repCount(hk) = 1
+		If Not scopeAll And bNo <> chkBatch Then GoTo NextCand    ' planned only - no detailed check
+		nChecked = nChecked + 1
+
+		issues = homeIssue & BR_Validate(u)
 
 		' duplicates inside this batch
 		If u.ShortName <> "" Then
@@ -188,15 +256,6 @@ Sub BR_RunPreflight()
 				If servers(LCase$(CStr(rl(rj)))) <> "OK" Then issues = issues & "WARN:Replica server " & rl(rj) & " unreachable; "
 			Next
 		End If
-		hk = BR_IIf(u.HomeServer = "", "(none)", u.HomeServer) & " -> replicas: " & BR_IIf(u.ClusterReplicas = "", "none", u.ClusterReplicas)
-		If IsElement(repCount(hk)) Then repCount(hk) = repCount(hk) + 1 Else repCount(hk) = 1
-
-		' how many users each mapping rule catches (mapping test, written to _mapping.txt)
-		If IsElement(ruleCount(u.MapRule)) Then ruleCount(u.MapRule) = ruleCount(u.MapRule) + 1 Else ruleCount(u.MapRule) = 1
-		hk = u.HomeServer
-		If hk = "" Then hk = "(none)"
-		If IsElement(srvCount(hk)) Then srvCount(hk) = srvCount(hk) + 1 Else srvCount(hk) = 1
-		If u.InternetAddress = "" Then nNoInet = nNoInet + 1
 		If InStr(issues, "SKIP:") > 0 Then
 			res = BR_RESULT_NO_INET              ' will be skipped by Build Batch (flagged, not an error)
 		ElseIf InStr(issues, "ERROR:") > 0 Then
@@ -208,6 +267,7 @@ Sub BR_RunPreflight()
 		End If
 		BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " -> " & u.HomeServer & " / OU=" & u.OrgUnit & " / " & u.Policy & " | " & issues
 		Call BR_Audit(u, "PREFLIGHT", "CHECK", res, BR_Elapsed(t0), issues)
+NextCand:
 		Set doc = col.GetNextDocument(doc)
 	Loop
 
@@ -236,11 +296,40 @@ Sub BR_RunPreflight()
 		Call BR_AppendLine(mapFile, "  " & ListTag(rc) & " : " & rc & " users")
 	End ForAll
 
+	' ---------- batch plan: how the candidates split into batches and home servers ----------
+	nBatches = Int((nElig + batchSize - 1) / batchSize)
+	planFile = gRunDir & "BulkReg_Preflight_" & gRunID & "_batchplan.txt"
+	Call BR_AppendLine(planFile, "BulkReg " & BR_VERSION & " - batch plan (simulation: nothing has been built or registered)")
+	Call BR_AppendLine(planFile, "Candidates (objectGUID, no Certificate)   : " & col.Count)
+	Call BR_AppendLine(planFile, "  already in an OPEN batch (excluded)      : " & nInOpen)
+	Call BR_AppendLine(planFile, "  no Internet address, skipped + flagged   : " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), CStr(nNoInet), "0 (SkipNoInternetAddress=0)"))
+	Call BR_AppendLine(planFile, "  other home server (BatchServerFilter)    : " & nOtherSrv)
+	Call BR_AppendLine(planFile, "Users to register                         : " & nElig & "  ->  " & nBatches & " batch(es) of max " & batchSize)
+	Call BR_AppendLine(planFile, "Internet address constructed (<shortname>@" & CfgS("InternetDomain", "?") & ") : " & nBuilt)
+	Call BR_AppendLine(planFile, "Users without a free home server           : " & nNoCap & BR_IIfStr(nNoCap > 0, "   <-- raise HomeServerMaxUsers or add a server to HomeServers", ""))
+	Call BR_AppendLine(planFile, "")
+	Call BR_AppendLine(planFile, "Home servers (assignment " & UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) & ", max " & CfgL("HomeServerMaxUsers", 0) & " users per server):")
+	ForAll ps In srvCount
+		If IsElement(loadBefore(LCase$(ListTag(ps)))) Then planLine = CStr(loadBefore(LCase$(ListTag(ps)))) Else planLine = "0"
+		Call BR_AppendLine(planFile, "  " & ListTag(ps) & " : already " & planLine & " (registered into new mail folders + open batches)  + planned " & ps & "  = " & (CLng(planLine) + ps))
+	End ForAll
+	Call BR_AppendLine(planFile, "")
+	Call BR_AppendLine(planFile, "Batches (Build Batch takes them in this order; users per home server):")
+	For bNo = 1 To nBatches
+		planLine = ""
+		ForAll pb In srvCount
+			If IsElement(planBatch(CStr(bNo) & "|" & ListTag(pb))) Then planLine = planLine & "   " & ListTag(pb) & " = " & planBatch(CStr(bNo) & "|" & ListTag(pb))
+		End ForAll
+		Call BR_AppendLine(planFile, "  Batch " & bNo & BR_IIfStr(Not scopeAll And bNo = chkBatch, " (checked in detail)", "") & " :" & planLine)
+	Next
+	Call BR_AppendLine(planFile, "")
+	Call BR_AppendLine(planFile, "The split is a plan: the real batches are built by 02 - Build Batch from the then current directory.")
+	BR_Log LVL_INFO, "Batch plan: " & nElig & " users in " & nBatches & " batch(es) of " & batchSize & " - detailed check of " & nChecked & " users - " & planFile
+
 	' ---------- mail folders to pre-create (prerequisite B4) ----------
 	' Members of the mail cluster share ONE set of folders (every member holds every
 	' mail file: the primary on the home server, replicas on the others), so the
 	' users of all home servers in the cluster are added up.
-	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String
 	Dim need As Integer, fldFile As String, prefix As String, fmax As Long
 	Dim keyUsers List As Long, keyRep List As String, keyHomes List As String, mk As String, onSrv As String
 	prefix = LCase$(CfgS("MailFolderPrefix", "mail"))
@@ -267,8 +356,11 @@ Sub BR_RunPreflight()
 			If mk = "mail cluster" Then onSrv = BR_SrvList(CfgS("MailClusterServers", ""), "") Else onSrv = keyRep(mk)
 			Call BR_AppendLine(fldFile, BR_IIf(mk = "mail cluster", "MAIL CLUSTER", "SERVER " & keyRep(mk)) & " : " & ku & " new users (home servers: " & keyHomes(mk) & ")")
 			Call BR_AppendLine(fldFile, "  folders " & prefix & "1 .. " & prefix & need & "   on: " & onSrv)
-			Call BR_AppendLine(fldFile, "  Windows server (PowerShell):  1.." & need & " | % { New-Item -ItemType Directory -Force ""<DataDir>\" & prefix & "$_"" }")
-			Call BR_AppendLine(fldFile, "  Linux server (as root):       for i in $(seq 1 " & need & "); do mkdir -p <DataDir>/" & prefix & "$i; done; chown <notes>:<notes> <DataDir>/" & prefix & "*")
+			If UCase$(Trim$(CfgS("ServerOS", "LINUX"))) = "WINDOWS" Then
+				Call BR_AppendLine(fldFile, "  Windows server (PowerShell):  1.." & need & " | % { New-Item -ItemType Directory -Force """ & CfgS("ServerDataDir", "<DataDir>") & "\" & prefix & "$_"" }")
+			Else
+				Call BR_AppendLine(fldFile, "  Linux server (as root):       for i in $(seq 1 " & need & "); do mkdir -p " & CfgS("ServerDataDir", "/local/notesdata") & "/" & prefix & "$i; done; chown -R " & CfgS("ServerFileOwner", "<domino-user>:<domino-group>") & " " & CfgS("ServerDataDir", "/local/notesdata") & "/" & prefix & "*")
+			End If
 			Call BR_AppendLine(fldFile, "")
 			srvText = srvText & "   " & prefix & "1.." & prefix & need & " on " & onSrv & Chr$(10)
 			BR_Log LVL_INFO, "Mail folders needed: " & prefix & "1.." & prefix & need & " on " & onSrv & " (" & ku & " users)"
@@ -281,11 +373,12 @@ Sub BR_RunPreflight()
 	End If
 	Dim summary As String
 	summary = "Environment errors=" & envErr & " warnings=" & envWarn & _
-	" | Candidates=" & col.Count & " OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr & _
-	" | without InternetAddress=" & nNoInet & BR_IIfStr(CfgB("SkipNoInternetAddress", True), " (SKIPPED - not registered until the address exists)", " (WARN - registered without address)")
+	" | Candidates=" & col.Count & " (to register " & nElig & " in " & nBatches & " batch(es) of " & batchSize & ", detailed check of " & nChecked & ") OK=" & nOK & " WARN=" & nWarn & " ERROR=" & nErr & _
+	" | without InternetAddress=" & nNoInet & BR_IIfStr(CfgB("SkipNoInternetAddress", True), " (SKIPPED - not registered until the address exists)", " (WARN - registered without address)") & _
+	" | address constructed=" & nBuilt & " | no free home server=" & nNoCap
 	BR_Close summary
-	BR_Msg summary & Chr$(10) & Chr$(10) & "Candidates per home server:" & Chr$(10) & srvText & Chr$(10) & "Mapping test: " & mapFile & Chr$(10) & BR_IIf(UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED", "Mail folders to create: " & fldFile & Chr$(10), "") & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
-	CInt(BR_IIf(envErr + nErr > 0, 48, 64))
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Planned users per home server:" & Chr$(10) & srvText & Chr$(10) & "Batch plan: " & planFile & Chr$(10) & "Mapping test: " & mapFile & Chr$(10) & BR_IIf(UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED", "Mail folders to create: " & fldFile & Chr$(10), "") & "Audit: " & gAuditFile & Chr$(10) & "Log: " & gDebugFile, _
+	CInt(BR_IIf(envErr + nErr + nNoCap > 0, 48, 64))
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Preflight aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
@@ -353,6 +446,7 @@ Sub BR_RunBuildBatch()
 	Dim nInOpen As Long, nOtherSrv As Long, nLeft As Long, r As String, hk As String, pk As String
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String, newInFolder List As Long, aIssue As String, fkey As String
 	Dim repByHome List As String, rl As Variant, ri As Integer, foundOn As String
+	Dim homeIssue As String, bOther As Boolean, nBuilt As Long
 
 	If Not BR_Init("BuildBatch") Then Exit Sub
 	batchMax = CfgL("BatchSize", 1000)
@@ -388,13 +482,20 @@ Sub BR_RunBuildBatch()
 			If nNoInet = 1 Then Call BR_AppendLine(skipFile, Uchr$(&HFEFF) & "BatchID,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,HomeServer,Result,Reason")
 			Call BR_AppendLine(skipFile, Q(gBatchID) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(BR_RESULT_NO_INET) & "," & Q(BR_SKIP_NO_INET))
 			Call BR_Audit(u, "BUILD", "SELECT", BR_RESULT_NO_INET, BR_Elapsed(t0), BR_SKIP_NO_INET)
-		ElseIf srvFilter <> "" And Not BR_SameServer(u.HomeServer, srvFilter) Then
-			nOtherSrv = nOtherSrv + 1                               ' belongs to another server wave
-		ElseIf nRows >= batchMax Then
-			nLeft = nLeft + 1                                       ' for the next batch
 		Else
+			' home server of the pool (AUTO): balanced over HomeServers, max HomeServerMaxUsers each
+			homeIssue = BR_AssignHome(u)
+			If srvFilter <> "" And homeIssue = "" Then
+				If Not BR_SameServer(u.HomeServer, srvFilter) Then bOther = True
+			End If
+			If bOther Then
+				nOtherSrv = nOtherSrv + 1                           ' belongs to another server wave
+				bOther = False
+			ElseIf nRows >= batchMax Then
+				nLeft = nLeft + 1                                   ' for the next batch
+			Else
 			nRows = nRows + 1
-			issues = BR_Validate(u)
+			issues = homeIssue & BR_Validate(u)
 			If u.ShortName <> "" Then
 				If IsElement(seenShort(LCase$(u.ShortName))) Then issues = issues & "ERROR:Duplicate ShortName in batch; " Else seenShort(LCase$(u.ShortName)) = u.NoteID
 			End If
@@ -429,6 +530,7 @@ Sub BR_RunBuildBatch()
 			End If
 
 			If u.InternetAddress = "" Then nNoInet = nNoInet + 1     ' only when SkipNoInternetAddress=0 (WARN)
+			If u.InetSource = "CONSTRUCTED" Then nBuilt = nBuilt + 1
 			If InStr(issues, "ERROR:") > 0 Then
 				chk = "ERROR": inc = "N": nErr = nErr + 1
 			ElseIf InStr(issues, "WARN:") > 0 Then
@@ -451,9 +553,10 @@ Sub BR_RunBuildBatch()
 
 			r = Q(inc) & "," & Q(gBatchID) & "," & Q(CStr(nRows)) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & _
 			Q(u.FullNameBefore) & "," & Q(BR_ExpectedName(u)) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
-			Q(u.HomeServer) & "," & Q(u.MailFile) & "," & Q(u.MailFileNote) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.ClusterReplicas) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues)
+			Q(u.HomeServer) & "," & Q(BR_SrvPath(u.MailFile)) & "," & Q(u.MailFileNote) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.ClusterReplicas) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues) & "," & Q(u.InetSource)
 			Call BR_AppendLine(bfile, r)
 			Call BR_Audit(u, "BUILD", "SELECT", chk, BR_Elapsed(t0), "Include=" & inc & " " & issues)
+			End If
 		End If
 		Set doc = col.GetNextDocument(doc)
 	Loop
@@ -466,6 +569,13 @@ Sub BR_RunBuildBatch()
 	Call BR_AppendLine(sumFile, "Selection       : " & BR_SelectionFormula(True))
 	Call BR_AppendLine(sumFile, "Server filter   : " & BR_IIfStr(srvFilter = "", "(none - all home servers)", srvFilter))
 	Call BR_AppendLine(sumFile, "Batch size limit: " & batchMax)
+	If BR_HomePool() <> "" Then
+		Call BR_AppendLine(sumFile, "Home servers    : " & BR_HomePool() & "  (" & UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) & ", max " & CfgL("HomeServerMaxUsers", 0) & " users per server)")
+		ForAll ld In gSrvLoad
+			Call BR_AppendLine(sumFile, "                  " & ListTag(ld) & " : " & ld & " users counted (registered in new mail folders + open batches + assigned in this run)")
+		End ForAll
+	End If
+	Call BR_AppendLine(sumFile, "Internet address: " & nBuilt & " constructed as <shortname>@" & CfgS("InternetDomain", "(InternetDomain not set)") & " (not present in AD)")
 	Call BR_AppendLine(sumFile, "")
 	Call BR_AppendLine(sumFile, "Rows in batch   : " & nRows & "   Include=Y: " & nInc & "   (WARN: " & nWarn & ")   Include=N (ERROR): " & nErr)
 	If skipNoInet Then
@@ -815,13 +925,17 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		Exit Function
 	End If
 	' reviewed values from the batch file are authoritative
-	If bHome <> u.HomeServer Or bOU <> u.OrgUnit Or bPolicy <> u.Policy Or bGroups <> u.Groups Then
+	If (u.AutoHome = "" And bHome <> u.HomeServer) Or bOU <> u.OrgUnit Or bPolicy <> u.Policy Or bGroups <> u.Groups Then
 		BR_Log LVL_INFO, "Batch override for " & u.FullNameBefore & ": home=" & bHome & " ou=" & bOU & " policy=" & bPolicy & " groups=" & bGroups
 	End If
-	u.HomeServer = bHome: u.OrgUnit = bOU: u.Policy = bPolicy: u.Groups = bGroups: u.VaultServer = bVault
+	u.HomeServer = bHome: u.AutoHome = "": u.OrgUnit = bOU: u.Policy = bPolicy: u.Groups = bGroups: u.VaultServer = bVault   ' the reviewed home server of the batch file is final
 	If bMailFile <> "" Then u.MailFile = BR_Path(bMailFile)
 	u.MailFileNote = bMailNote
-	If bReplicas <> "*auto" Then u.ClusterReplicas = bReplicas     ' reviewed list from the batch file
+	If bReplicas <> "*auto" Then
+		u.ClusterReplicas = bReplicas                              ' reviewed list from the batch file
+	Else
+		u.ClusterReplicas = BR_ReplicaServers(u.HomeServer, u.ReplicaSpec)
+	End If
 	u.MapRule = "batch " & gBatchID
 
 	' no Internet address: SKIPPED and flagged (SkipNoInternetAddress=1), never registered by mistake
@@ -923,7 +1037,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		u.IDFile = Left$(u.IDFile, Len(u.IDFile) - 3) & "_" & gRunID & ".id"
 	End If
 
-	mailFile = u.MailFile                ' relative to the data directory, e.g. mail\jsmith.nsf
+	mailFile = BR_SrvPath(u.MailFile)    ' relative to the data directory (/local/notesdata on Linux), e.g. mail1/jsmith.nsf
 	userPwd = BR_GenPassword(CInt(CfgL("InitialPasswordLength", 16)))
 
 	' RegisterNewUser expects the CANONICAL server name (CN=DominoADMail/O=Demo)
@@ -1290,7 +1404,7 @@ Sub BR_RunExport()
 	Do While Not (doc Is Nothing)
 		t0 = Timer
 		Call BR_ReadUser(doc, u)
-		issues = BR_Validate(u)
+		issues = BR_AssignHome(u) & BR_Validate(u)      ' AUTO home server from the HomeServers pool
 		If InStr(issues, "ERROR:") > 0 Or InStr(issues, "SKIP:") > 0 Then
 			nSkip = nSkip + 1
 			BR_Log LVL_WARN, "SKIP " & u.FullNameBefore & " : " & issues

@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.6.6
+' Script Library : BulkRegCommon            Version 3.7.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.6.6"
+Public Const BR_VERSION = "3.7.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -70,6 +70,9 @@ Public Type BRUser
 	ClusterReplicas As String   ' servers that get a cluster replica of the mail file (comma separated)
 	ReplicaStatus As String     ' WOULD_REQUEST / REQUESTED n/m / REPLICAS_OK n/n / REPLICAS_MISSING ...
 	Issues As String
+	ReplicaSpec As String       ' the mapping rule's ClusterReplicas column (kept until the home server is assigned)
+	AutoHome As String          ' "1" = home server still to be assigned from the HomeServers pool (BR_AssignHome)
+	InetSource As String        ' AD = InternetAddress from the Person document, CONSTRUCTED = ShortName@InternetDomain
 End Type
 
 ' ---------- globals ----------
@@ -93,16 +96,17 @@ Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
 Public gBatchID As String        ' batch being built / registered (BATCH-yyyymmdd-hhnnss)
 Public gResultsFile As String    ' <BatchDir>\<BatchID>_results.csv (LIVE) or _dryrun.csv
 Public gAdminP As NotesAdministrationProcess   ' AdminP requests (cluster replicas), created on first use
+Public gSrvLoad List Long        ' users per home server: already registered into the new mail folders + open batches + assigned in this run
 
 Public Const gSep = "\"                         ' Windows path separator
 Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
 Public gBase As String
 Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes.ini
 ' columns of a batch file (BATCH-<id>.csv) written by Agent 02, read by Agents 03/04
-Public Const BR_SKIP_NO_INET = "SKIP:InternetAddress missing - user skipped and flagged (add the address in AD; after DirSync the next Build Batch picks the user up); "
+Public Const BR_SKIP_NO_INET = "SKIP:InternetAddress missing and cannot be constructed (needs ShortName + InternetDomain in bulkreg.ini) - user skipped and flagged (add the address in AD; after DirSync the next Build Batch picks the user up); "
 Public Const BR_RESULT_NO_INET = "SKIPPED_NO_INET"
-Public Const BR_WARN_NO_INET = "WARN:InternetAddress missing - registered without an Internet address (add it in AD, DirSync syncs it); "
-Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,NotesName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues"
+Public Const BR_WARN_NO_INET = "WARN:InternetAddress missing and cannot be constructed - registered without an Internet address (add it in AD, DirSync syncs it); "
+Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,NotesName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues,InetSource"
 
 '#####################################################################
 ' --- part 3: Subs and Functions (Designer gives each its own entry) ---
@@ -138,6 +142,7 @@ Function BR_Init(toolName As String) As Boolean
 	Set gRunDoc = Nothing
 	gRunTitle = ""
 	gLogWriteErr = 0
+	Erase gSrvLoad
 	Erase gCfg
 	Randomize
 
@@ -440,13 +445,16 @@ End Function
 
 ' Applies defaults, then the first matching mapping rule
 Sub BR_ResolveMapping(doc As NotesDocument, u As BRUser)
-	Dim i As Integer, fv As String
-	u.HomeServer = CfgS("DefaultHomeServer", "")
+	Dim i As Integer, fv As String, ruleHome As String
+	u.HomeServer = ""
+	u.AutoHome = ""
+	ruleHome = ""                     ' home server named by the matching rule (column 3): a name, AUTO or empty
 	u.OrgUnit = CfgS("DefaultOrgUnit", "")
 	u.Policy = CfgS("DefaultPolicy", "")
 	u.Groups = CfgS("DefaultGroups", "")
 	u.VaultServer = CfgS("VaultServer", "")
 	u.ClusterReplicas = ""            ' "" = automatic from MailClusterServers
+	u.ReplicaSpec = ""
 	u.MapRule = "defaults"
 	For i = 0 To gMapCount - 1
 		If gMap(i).MatchField = "*" Then
@@ -455,7 +463,7 @@ Sub BR_ResolveMapping(doc As NotesDocument, u As BRUser)
 			fv = LCase$(BR_Item(doc, gMap(i).MatchField))
 		End If
 		If gMap(i).MatchField = "*" Or fv Like gMap(i).MatchPattern Then
-			If gMap(i).HomeServer <> "" Then u.HomeServer = gMap(i).HomeServer
+			ruleHome = gMap(i).HomeServer
 			' empty = keep the default;  "-" = explicitly none (e.g. rely on an organizational policy)
 			If gMap(i).OrgUnit <> "" Then u.OrgUnit = gMap(i).OrgUnit
 			If gMap(i).Policy <> "" Then u.Policy = gMap(i).Policy
@@ -464,15 +472,206 @@ Sub BR_ResolveMapping(doc As NotesDocument, u As BRUser)
 			If u.Policy = "-" Then u.Policy = ""
 			If u.Groups = "-" Then u.Groups = ""
 			If gMap(i).VaultServer <> "" Then u.VaultServer = gMap(i).VaultServer
-			If gMap(i).ClusterReplicas <> "" Then u.ClusterReplicas = gMap(i).ClusterReplicas
+			If gMap(i).ClusterReplicas <> "" Then u.ReplicaSpec = gMap(i).ClusterReplicas
 			u.MapRule = "rule#" & (i + 1) & " " & gMap(i).MatchField & "=" & gMap(i).MatchPattern
 			Exit For
 		End If
 	Next
-	' accept CN=DominoADMail/O=Demo or DominoADMail/Demo - store the abbreviated form
-	u.HomeServer = BR_SrvAbbr(u.HomeServer)
-	' cluster replicas of the mail file: every OTHER member of the mail cluster (or the rule's list)
-	u.ClusterReplicas = BR_ReplicaServers(u.HomeServer, u.ClusterReplicas)
+	' Home server: a server named by the rule wins. AUTO (or an empty rule column) takes the next
+	' server of the HomeServers pool - decided later by BR_AssignHome, ONLY for users that really
+	' enter a batch (so skipped users never use up capacity). Without a pool: DefaultHomeServer.
+	If UCase$(ruleHome) = "AUTO" Or ruleHome = "" Then
+		If BR_HomePool() <> "" Then
+			u.AutoHome = "1"
+		Else
+			u.HomeServer = CfgS("DefaultHomeServer", "")
+		End If
+	Else
+		u.HomeServer = ruleHome
+	End If
+	If u.AutoHome = "" Then
+		' accept CN=DominoADMail/O=Demo or DominoADMail/Demo - store the abbreviated form
+		u.HomeServer = BR_SrvAbbr(u.HomeServer)
+		' cluster replicas of the mail file: every OTHER member of the mail cluster (or the rule's list)
+		u.ClusterReplicas = BR_ReplicaServers(u.HomeServer, u.ReplicaSpec)
+	End If
+End Sub
+
+'=====================================================================
+' HOME SERVER POOL  (HomeServers / HomeServerMaxUsers / HomeServerAssignment)
+'   HomeServers=DominoADMail/Demo,DominoADMail2/Demo   HomeServerMaxUsers=2500
+'   A user whose mapping rule says AUTO (or leaves the home server empty) gets one
+'   server of the pool:
+'     BALANCED (default) the server with the FEWEST users - both servers fill evenly
+'     FILL               the first server until HomeServerMaxUsers, then the next one
+'   "Users on a server" = users already registered into the NEW mail folders of that
+'   server (Person documents) + users in OPEN batches + users assigned in this run.
+'   A server with HomeServerMaxUsers users is skipped; when all are full the user gets
+'   ERROR and Include=N.
+'=====================================================================
+' Normalised pool (abbreviated, de-duplicated), comma separated, "" = no pool
+Function BR_HomePool() As String
+	BR_HomePool = BR_SrvList(CfgS("HomeServers", ""), "")
+End Function
+
+' Assigns the home server (and the replica servers) to a user whose AutoHome = "1".
+' Returns "" or an "ERROR:..." issue text. No-op for users with a fixed home server.
+Function BR_AssignHome(u As BRUser) As String
+	Dim pool As Variant, i As Integer, best As String, bestLoad As Long, ld As Long, cap As Long, k As String, mode As String
+	If u.AutoHome = "" Then Exit Function
+	pool = Split(BR_HomePool(), ",")
+	cap = CfgL("HomeServerMaxUsers", 0)
+	mode = UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED")))
+	For i = 0 To UBound(pool)
+		k = LCase$(Trim$(CStr(pool(i))))
+		ld = 0
+		If IsElement(gSrvLoad(k)) Then ld = gSrvLoad(k)
+		If cap <= 0 Or ld < cap Then
+			If mode = "FILL" Then
+				best = Trim$(CStr(pool(i)))
+				Exit For
+			End If
+			If best = "" Or ld < bestLoad Then
+				best = Trim$(CStr(pool(i)))
+				bestLoad = ld
+			End If
+		End If
+	Next
+	If best = "" Then
+		BR_AssignHome = "ERROR:All home servers are full (HomeServerMaxUsers=" & cap & " per server) - raise HomeServerMaxUsers or add a server to HomeServers; "
+		Exit Function
+	End If
+	k = LCase$(best)
+	If IsElement(gSrvLoad(k)) Then gSrvLoad(k) = gSrvLoad(k) + 1 Else gSrvLoad(k) = 1
+	u.HomeServer = best
+	u.AutoHome = ""
+	u.ClusterReplicas = BR_ReplicaServers(u.HomeServer, u.ReplicaSpec)
+End Function
+
+' Adds one user to the load of a server (existing users, open batches)
+Sub BR_AddLoad(server As String)
+	Dim k As String
+	If Trim$(server) = "" Then Exit Sub
+	k = LCase$(BR_SrvAbbr(server))
+	If IsElement(gSrvLoad(k)) Then gSrvLoad(k) = gSrvLoad(k) + 1 Else gSrvLoad(k) = 1
+End Sub
+
+' True for a folder that holds NEW mail files created by BulkReg: mail1, mail2 ... (NUMBERED)
+' or MailFileDir (SINGLE). The old "mail" folder of existing users does not count.
+Function BR_IsNewMailFolder(folder As String) As Boolean
+	Dim f As String, p As String, rest As String
+	f = LCase$(Trim$(folder))
+	If f = "" Then Exit Function
+	If UCase$(CfgS("MailFolderMode", "NUMBERED")) = "NUMBERED" Then
+		p = LCase$(Trim$(CfgS("MailFolderPrefix", "mail")))
+		If Left$(f, Len(p)) = p Then
+			rest = Mid$(f, Len(p) + 1)
+			If rest <> "" And InStr(rest, "\") = 0 Then BR_IsNewMailFolder = IsNumeric(rest)
+		End If
+	Else
+		BR_IsNewMailFolder = (f = BR_MailSingleDir())
+	End If
+End Function
+
+'=====================================================================
+' SERVER PATHS  - Domino on LINUX (data directory /local/notesdata)
+'   Mail file paths are RELATIVE to the data directory of the server
+'   (mail1/smith.nsf = /local/notesdata/mail1/smith.nsf). Inside BulkReg they are
+'   kept with "\"; every call to the Domino server (registration, database open,
+'   AdminP replica requests) goes through BR_SrvPath, which uses the separator of
+'   the server platform (ServerOS=LINUX -> /, ServerOS=WINDOWS -> \).
+'=====================================================================
+Function BR_SrvPath(p As String) As String
+	If UCase$(Trim$(CfgS("ServerOS", "LINUX"))) = "WINDOWS" Then
+		BR_SrvPath = Replace(p, "/", "\")
+	Else
+		BR_SrvPath = Replace(p, "\", "/")
+	End If
+End Function
+
+'=====================================================================
+' SHORT NAME + INTERNET ADDRESS
+'   Active Directory example: cn=102939ops givenname=Abc sn=xyz samaccountname=102939ops
+'   -> Notes name  Abc xyz/Demo   short name  102939ops   Internet address 102939ops@<InternetDomain>
+'=====================================================================
+' Short name from the Person document items listed in ShortNameFields (first non-empty wins).
+' The FullName (the AD cn) is NEVER used as a fallback.
+' ShortName is a TEXT LIST in the Domino Directory: every value of the list is examined and the
+' first one that is a real short name wins (no blank, / or =, and not the "First Last" common name).
+Function BR_PickShortName(doc As NotesDocument) As String
+	Dim lst As Variant, vals As Variant, i As Integer, j As Integer, v As String, cn As String, first As String
+	cn = LCase$(Trim$(BR_Clean(BR_Item(doc, "FirstName")) & " " & BR_Clean(BR_Item(doc, "LastName"))))
+	lst = Split(CfgS("ShortNameFields", "ShortName"), ",")
+	For i = 0 To UBound(lst)
+		If Trim$(CStr(lst(i))) <> "" Then
+			If doc.HasItem(Trim$(CStr(lst(i)))) Then
+				vals = doc.GetItemValue(Trim$(CStr(lst(i))))
+				For j = 0 To UBound(vals)
+					v = BR_Clean(CStr(vals(j)))
+					If v <> "" Then
+						If first = "" Then first = v          ' remembered: Validate reports it if no value is usable
+						If InStr(v, " ") = 0 And InStr(v, "/") = 0 And InStr(v, "=") = 0 And LCase$(v) <> cn Then
+							BR_PickShortName = v
+							Exit Function
+						End If
+					End If
+				Next
+			End If
+		End If
+	Next
+	BR_PickShortName = first
+End Function
+
+' Full name = Person item named in FullNameField (default DisplayName, a text list, normally
+' "First Last"). The first non-empty value is split at its LAST blank: everything before it is the
+' first name, the last word the last name ("Mary Ann Smith" -> first "Mary Ann", last "Smith"),
+' so the Notes common name equals the DisplayName. One word = last name only (WARN).
+' Empty FullNameField, or an empty DisplayName: FirstName / LastName of the Person document.
+Sub BR_ApplyDisplayName(doc As NotesDocument, u As BRUser)
+	Dim fld As String, vals As Variant, j As Integer, v As String
+	fld = Trim$(CfgS("FullNameField", "DisplayName"))
+	If fld = "" Then Exit Sub
+	If Not doc.HasItem(fld) Then Exit Sub
+	vals = doc.GetItemValue(fld)
+	For j = 0 To UBound(vals)
+		v = Trim$(BR_Clean(CStr(vals(j))))
+		Do While InStr(v, "  ") > 0
+			v = Replace(v, "  ", " ")
+		Loop
+		If v <> "" Then
+			If InStr(v, " ") > 0 Then
+				u.FirstName = Trim$(StrLeftBack(v, " "))       ' everything before the last blank
+				u.LastName = Trim$(StrRightBack(v, " "))       ' the last word
+			Else
+				u.FirstName = ""
+				u.LastName = v
+			End If
+			u.MiddleInitial = ""
+			Exit Sub
+		End If
+	Next
+End Sub
+
+' Keeps the Internet address of the Person document; when it is empty builds
+' <shortname>@<InternetDomain> (ConstructInternetAddress=1, default). u.InetSource tells which.
+Sub BR_ApplyInternetAddress(u As BRUser)
+	Dim dom As String, i As Integer
+	u.InetSource = ""
+	If u.InternetAddress <> "" Then
+		u.InetSource = "AD"
+		Exit Sub
+	End If
+	If Not CfgB("ConstructInternetAddress", True) Then Exit Sub
+	dom = Trim$(CfgS("InternetDomain", ""))
+	Do While Left$(dom, 1) = "@"
+		dom = Mid$(dom, 2)
+	Loop
+	If dom = "" Or u.ShortName = "" Then Exit Sub
+	For i = 1 To Len(u.ShortName)
+		If Not (Mid$(u.ShortName, i, 1) Like "[A-Za-z0-9._-]") Then Exit Sub    ' not usable in an address
+	Next
+	u.InternetAddress = LCase$(u.ShortName) & "@" & LCase$(dom)
+	u.InetSource = "CONSTRUCTED"
 End Sub
 
 '=====================================================================
@@ -565,7 +764,7 @@ Function BR_RequestReplicas(u As BRUser) As String
 		If dest <> "" Then
 			nAll = nAll + 1
 			On Error Resume Next
-			rid = gAdminP.CreateReplica(BR_SrvCanon(u.HomeServer), u.MailFile, BR_SrvCanon(dest), u.MailFile, True, CfgB("MailCreateFTIndex", False))
+			rid = gAdminP.CreateReplica(BR_SrvCanon(u.HomeServer), BR_SrvPath(u.MailFile), BR_SrvCanon(dest), BR_SrvPath(u.MailFile), True, CfgB("MailCreateFTIndex", False))
 			If Err <> 0 Then
 				fails = fails & dest & ": " & Error$ & "; "
 				BR_Log LVL_ERROR, "Replica request FAILED " & u.MailFile & " -> " & dest & " : " & Error$
@@ -596,7 +795,7 @@ Function BR_CheckReplicas(home As String, path As String, replicas As String) As
 		Exit Function
 	End If
 	On Error GoTo ErrH
-	Set src = gSession.GetDatabase(home, path, False)
+	Set src = gSession.GetDatabase(home, BR_SrvPath(path), False)
 	If Not src.IsOpen Then Call src.Open("", "")
 	If Not src.IsOpen Then
 		BR_CheckReplicas = "CHECK_ERROR(mail file not found on home server)"
@@ -724,6 +923,7 @@ Sub BR_ClearUser(u As BRUser)
 	u.MailFileStatus = "": u.MailFileNote = "": u.HomeServer = "": u.OrgUnit = "": u.Policy = ""
 	u.Groups = "": u.MapRule = "": u.IDFile = "": u.VaultStatus = "": u.VaultServer = ""
 	u.ClusterReplicas = "": u.ReplicaStatus = "": u.Issues = ""
+	u.ReplicaSpec = "": u.AutoHome = "": u.InetSource = ""
 End Sub
 
 ' Reads a Person document into a BRUser and applies mapping
@@ -736,11 +936,13 @@ Sub BR_ReadUser(doc As NotesDocument, u As BRUser)
 	u.FirstName = BR_Clean(BR_Item(doc, "FirstName"))
 	u.LastName = BR_Clean(BR_Item(doc, "LastName"))
 	u.MiddleInitial = BR_Clean(BR_Item(doc, "MiddleInitial"))
-	u.ShortName = BR_Clean(BR_Item(doc, "ShortName"))
+	Call BR_ApplyDisplayName(doc, u)               ' Notes name from DisplayName (First Last), not from the AD cn
+	u.ShortName = BR_PickShortName(doc)            ' AD samaccountname (ShortNameFields) - never the FullName / cn
 	u.InternetAddress = BR_Clean(BR_Item(doc, "InternetAddress"))
+	Call BR_ApplyInternetAddress(u)                ' empty address -> <shortname>@<InternetDomain>
 	u.MailSystemBefore = BR_Item(doc, "MailSystem")
 	u.MailFileBefore = BR_Item(doc, "MailFile")
-	Call BR_ResolveMapping(doc, u)
+	Call BR_ResolveMapping(doc, u)                 ' AutoHome users get their server from BR_AssignHome
 	u.IDFile = BR_CfgDir("IDFileDir", "ids") & BR_SafeFile(u) & ".id"
 	u.MailFile = BR_MailFilePath(u)
 End Sub
@@ -902,6 +1104,14 @@ Function BR_CheckMailFolderConfig() As String
 		If nCl > 6 Then e = e & "MailClusterServers lists " & nCl & " servers - a Domino cluster has at most 6 members." & Chr$(10)
 	End If
 	If InStr(CfgS("MailClusterServers", ""), "<") > 0 Then e = e & "MailClusterServers still contains a <placeholder>." & Chr$(10)
+	' home server pool (automatic distribution) and platform / address settings
+	If InStr(CfgS("HomeServers", ""), "<") > 0 Then e = e & "HomeServers still contains a <placeholder>. List the real mail servers, e.g. HomeServers=DominoADMail/Demo,DominoADMail2/Demo" & Chr$(10)
+	If Trim$(CfgS("HomeServers", "")) <> "" Then
+		If CfgL("HomeServerMaxUsers", 0) < 0 Then e = e & "HomeServerMaxUsers must be 0 (no limit) or a positive number, e.g. 2500." & Chr$(10)
+		If UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "BALANCED" And UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "FILL" Then e = e & "HomeServerAssignment must be BALANCED or FILL." & Chr$(10)
+	End If
+	If InStr(CfgS("InternetDomain", ""), "<") > 0 Then e = e & "InternetDomain still contains a <placeholder>. Use e.g. InternetDomain=demo.com (or leave it empty to disable address construction)." & Chr$(10)
+	If UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "LINUX" And UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "WINDOWS" Then e = e & "ServerOS must be LINUX or WINDOWS." & Chr$(10)
 	If InStr(CfgS("MailExistingFolders", "mail"), ":") > 0 Then e = e & "MailExistingFolders must be folder names relative to the data directory, e.g. mail" & Chr$(10)
 	BR_CheckMailFolderConfig = e
 End Function
@@ -969,6 +1179,10 @@ Sub BR_ScanDirectoryMail(db As NotesDatabase, names List As String)
 		If Right$(fbase, 4) = ".nsf" Then fbase = Left$(fbase, Len(fbase) - 4)
 		If sk <> "" And fbase <> "" Then
 			If Not IsElement(names(sk & "!!" & fbase)) Then names(sk & "!!" & fbase) = "Person doc " & BR_Item(doc, "FullName")
+		End If
+		' load of the home server pool: users already living in the NEW mail folders (mail1, mail2 ...)
+		If BR_Item(doc, "MailServer") <> "" And InStr(fp, "\") > 0 Then
+			If BR_IsNewMailFolder(StrLeftBack(fp, "\")) Then Call BR_AddLoad(BR_Item(doc, "MailServer"))
 		End If
 		Set doc = col.GetNextDocument(doc)
 	Loop
@@ -1038,7 +1252,7 @@ End Function
 Function BR_MailFileExists(server As String, path As String) As Boolean
 	Dim db As NotesDatabase
 	On Error GoTo ErrH
-	Set db = gSession.GetDatabase(server, path, False)
+	Set db = gSession.GetDatabase(server, BR_SrvPath(path), False)
 	If db Is Nothing Then Exit Function
 	If Not db.IsOpen Then Call db.Open("", "")
 	BR_MailFileExists = db.IsOpen
@@ -1052,22 +1266,31 @@ End Function
 Function BR_Validate(u As BRUser) As String
 	Dim s As String
 	If u.LastName = "" Then s = s & "ERROR:LastName missing; "
-	If u.FirstName = "" Then s = s & "WARN:FirstName missing; "
+	If u.FirstName = "" Then s = s & "WARN:FirstName missing (DisplayName has one word or is empty); "
 	' Missing Internet address is never an ERROR:
 	'   SkipNoInternetAddress=1 (default) -> SKIP: the user is left out of batches and flagged
 	'     (SKIPPED_NO_INET) until the address exists in AD and DirSync has written it;
 	'   SkipNoInternetAddress=0           -> WARN: the user is registered without an address.
 	If u.InternetAddress = "" Then
 		If CfgB("SkipNoInternetAddress", True) Then s = s & BR_SKIP_NO_INET Else s = s & BR_WARN_NO_INET
+	ElseIf u.InetSource = "CONSTRUCTED" Then
+		s = s & "NOTE:InternetAddress not in AD - constructed " & u.InternetAddress & "; "
 	End If
-	If u.HomeServer = "" Then s = s & "ERROR:No HomeServer (mapping/default); "
+	' The short name is the AD samaccountname (e.g. 102939ops). A value with blanks or / = looks like a
+	' full name (First Last, CN=...) - the wrong Person field is being read (ShortNameFields).
+	If u.ShortName <> "" Then
+		If InStr(u.ShortName, " ") > 0 Or InStr(u.ShortName, "/") > 0 Or InStr(u.ShortName, "=") > 0 Or LCase$(u.ShortName) = LCase$(BR_CommonName(u)) Then
+			s = s & "ERROR:ShortName '" & u.ShortName & "' looks like a full name, not a short name - check ShortNameFields in bulkreg.ini; "
+		End If
+	End If
+	If u.HomeServer = "" Then s = s & "ERROR:No HomeServer (mapping/default/HomeServers pool); "
 	' OrgUnit is ONE plain OU name (Sales). O=Demo, OU=Sales or Sales/Demo would create a wrong
 	' Notes name such as Neha Arora/O=Demo/Demo.
 	If InStr(u.OrgUnit, "=") > 0 Or InStr(u.OrgUnit, "/") > 0 Or InStr(u.OrgUnit, "\") > 0 Then s = s & "ERROR:OrgUnit '" & u.OrgUnit & "' must be one plain OU name such as Sales (no O=, OU= or /); "
 	If u.MailFile = "" Then
 		s = s & "ERROR:No MailFile; "
 	ElseIf LCase$(Right$(u.MailFile, 4)) <> ".nsf" Or InStr(u.MailFile, ":") > 0 Or Left$(u.MailFile, 1) = "\" Then
-		s = s & "ERROR:MailFile must be a relative .nsf path such as mail\jsmith.nsf; "
+		s = s & "ERROR:MailFile must be a path relative to the data directory such as mail1/jsmith.nsf; "
 	End If
 	' Policy: EXPLICIT policy name (stored as */Name) or empty when an
 	' ORGANIZATIONAL policy (*/Demo, */Sales/Demo) assigns the vault automatically.
@@ -1201,7 +1424,7 @@ End Function
 Function BR_MailTitleFix(server As String, path As String, title As String, doSet As Boolean, overwrite As Boolean) As String
 	On Error GoTo ErrH
 	Dim db As NotesDatabase
-	Set db = gSession.GetDatabase(server, path, False)
+	Set db = gSession.GetDatabase(server, BR_SrvPath(path), False)
 	If Not db.IsOpen Then Call db.Open("", "")
 	If Not db.IsOpen Then
 		BR_MailTitleFix = "TITLE_ERROR(mail file not found)"
@@ -1272,7 +1495,7 @@ Function BR_MailAclFix(server As String, path As String, owner As String, doSet 
 	On Error GoTo ErrH
 	Dim db As NotesDatabase, acl As NotesACL, e As NotesACLEntry, lst As Variant, i As Integer
 	Dim nm As String, changed As String, missing As String, nn As NotesName, curLevel As Integer, canDel As Boolean
-	Set db = gSession.GetDatabase(server, path, False)
+	Set db = gSession.GetDatabase(server, BR_SrvPath(path), False)
 	If Not db.IsOpen Then Call db.Open("", "")
 	If Not db.IsOpen Then
 		BR_MailAclFix = "ACL_ERROR(mail file not found)"
@@ -1515,7 +1738,7 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FullNameAfter) & "," & _
 	Q(u.InternetAddress) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & _
 	Q(u.MapRule) & "," & Q(u.MailSystemBefore) & "," & Q(u.MailSystemAfter) & "," & Q(u.VaultStatus) & "," & _
-	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(u.MailFile) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote) & "," & Q(u.ClusterReplicas) & "," & Q(u.ReplicaStatus)
+	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(BR_SrvPath(u.MailFile)) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote) & "," & Q(u.ClusterReplicas) & "," & Q(u.ReplicaStatus)
 	Call BR_AppendLine(gAuditFile, r)
 	If gResultsFile <> "" Then Call BR_AppendLine(gResultsFile, r)
 	' same row as a structured Audit document in the central log database
@@ -1754,6 +1977,7 @@ Sub BR_OpenBatchNoteIDs(ids List As String, names List As String, counts List As
 					parts = BR_CsvSplit(txt, delim)
 					If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
 						ids(BR_CsvGet(parts, cols, "NoteID")) = CStr(bf)
+						Call BR_AddLoad(BR_CsvGet(parts, cols, "HomeServer"))      ' counts against HomeServerMaxUsers
 						' reserve this open batch's mail file name and folder slot
 						sk = ""
 						If BR_CsvGet(parts, cols, "HomeServer") <> "" Then sk = BR_MailKey(BR_CsvGet(parts, cols, "HomeServer"))

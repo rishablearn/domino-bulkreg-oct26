@@ -1,6 +1,6 @@
 MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer;ClusterReplicas
 # =====================================================================================
-# BulkReg 3.6.6 - server_mapping.csv : WHICH USER GOES TO WHICH HOME SERVER
+# BulkReg 3.7.0 - server_mapping.csv : WHICH USER GOES TO WHICH HOME SERVER
 # Full instructions with examples: Admin Guide, procedure B12.
 # =====================================================================================
 # WHAT IT DOES
@@ -27,7 +27,9 @@ MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer;ClusterRepl
 #                     * = any text, ? = one character, [a-l] = one character from a range,
 #                     # = one digit. To match these characters literally put them in [ ]: [#]
 #   3 HomeServer      Home mail server: DominoADMail2/Demo or CN=DominoADMail2/O=Demo
-#                     empty = DefaultHomeServer
+#                     AUTO (or empty) = the next server of the HomeServers pool in bulkreg.ini,
+#                     balanced so that each server gets about the same number of users, at most
+#                     HomeServerMaxUsers (2500) each.  Without a pool: DefaultHomeServer.
 #   4 OrgUnit         OU in the Notes name: EMEA -> John Smith/EMEA/Demo
 #                     empty = DefaultOrgUnit,  - = no OU
 #   5 Policy          EXPLICIT policy exactly as in the Policies view: */DirSync-Vault-EMEA
@@ -51,24 +53,24 @@ MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer;ClusterRepl
 #     users each rule matched and which replica servers they get.
 #
 # =====================================================================================
-# YOUR SET-UP: one mail cluster of 4 servers (2 in DC, 2 in DR), 2 home servers in DC,
-#              2500 users on each home server, replicas on the 3 other members.
+# YOUR SET-UP: 5000 users on 2 Domino mail servers (Linux, /local/notesdata), ~2500 each.
 #
 #   bulkreg.ini:
-#     MailClusterServers=DominoADMail/Demo,DominoADMail2/Demo,DominoADMailDR1/Demo,DominoADMailDR2/Demo
-#     CreateClusterReplicas=1      BatchSize=1000      MailFolderMax=5
+#     HomeServers=DominoADMail/Demo,DominoADMail2/Demo
+#     HomeServerMaxUsers=2500      HomeServerAssignment=BALANCED
+#     BatchSize=1000               MailFolderMax=3     (mail1..mail3 on EACH server)
 #
-#   WAVE 1 - users 1 to 2500 -> home DominoADMail (DC):   active rule
-#       *;*;DominoADMail/Demo;;;;;
-#     Run 02 -> review -> 03 three times (batches of 1000 + 1000 + 500).
-#     Replicas are requested automatically on DominoADMail2, DominoADMailDR1, DominoADMailDR2.
+#   ONE catch-all rule is enough:
+#       *;*;AUTO;;;;;
+#   Each batch of 1000 then holds about 500 users per server; after 5 batches both servers
+#   have about 2500. Run 02 -> review -> 03 for each batch; 01 - Preflight shows the plan
+#   (BulkReg_Preflight_<run>_batchplan.txt). No waves, no editing of this file between batches.
 #
-#   WAVE 2 - users 2501 to 5000 -> home DominoADMail2 (DC): change the active rule to
-#       *;*;DominoADMail2/Demo;;;;;
-#     Run 02 -> review -> 03 three more times. Users registered in wave 1 are not picked
-#     again (they now have a Notes certificate). Replicas go to DominoADMail, DR1, DR2.
+#   A rule that NAMES a server wins over AUTO, e.g. all of one department on server 2:
+#       Department;Finance*;DominoADMail2/Demo;;;;;
+#       *;*;AUTO;;;;;
 #
-#   Alternative without waves (split by a Person document field, NOT exactly 2500 each):
+#   Alternative without the pool (split by a Person field, NOT exactly 2500 each):
 #       LastName;[a-l]*;DominoADMail/Demo;;;;;
 #       *;*;DominoADMail2/Demo;;;;;
 #
@@ -88,5 +90,5 @@ MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer;ClusterRepl
 # Department;IT-Test;DominoADMail/Demo;;;;;-
 #
 # ACTIVE RULES - edit below this line --------------------------------------------------
-# WAVE 1 (replace the server name). For WAVE 2 change it to your second home server.
-*;*;<DominoADMail/Demo>;;;;;
+# Spread all users over the HomeServers pool of bulkreg.ini (AUTO).
+*;*;AUTO;;;;;
