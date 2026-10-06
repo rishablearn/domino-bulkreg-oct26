@@ -137,6 +137,12 @@ Sub BR_RunPreflight()
 			End If
 		Next
 	End If
+	' the mail template must exist on every home server (a wrong name stops the registration)
+	If Trim$(CfgS("MailTemplate", "")) <> "" And osAll <> "" Then
+		For oj = 0 To UBound(osSrv)
+			envErr = envErr + BR_Check(BR_MailFileExists(CStr(osSrv(oj)), CfgS("MailTemplate", "")), "Mail template " & CfgS("MailTemplate", "") & " exists on " & osSrv(oj))
+		Next
+	End If
 	BR_Log LVL_INFO, "Fallback platform ServerOS=" & UCase$(Trim$(CfgS("ServerOS", "LINUX"))) & " | ServerOSDetect=" & CfgS("ServerOSDetect", "1") & " | data directory " & CfgS("ServerDataDir", "/local/notesdata")
 	BR_Log LVL_INFO, "Short name read from Person field(s): " & CfgS("ShortNameFields", "ShortName") & " | Internet address constructed as <shortname>@" & CfgS("InternetDomain", "(InternetDomain not set - addresses are NOT constructed)")
 	If CfgB("ConstructInternetAddress", True) And Trim$(CfgS("InternetDomain", "")) = "" Then

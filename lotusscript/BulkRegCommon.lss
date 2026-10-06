@@ -1194,6 +1194,9 @@ Function BR_CheckMailFolderConfig() As String
 		If CfgL("HomeServerMaxUsers", 0) < 0 Then e = e & "HomeServerMaxUsers must be 0 (no limit) or a positive number, e.g. 2500." & Chr$(10)
 		If UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "BALANCED" And UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "FILL" Then e = e & "HomeServerAssignment must be BALANCED or FILL." & Chr$(10)
 	End If
+	If Trim$(CfgS("MailTemplate", "")) <> "" Then
+		If LCase$(Right$(Trim$(CfgS("MailTemplate", "")), 4)) <> ".ntf" Then e = e & "MailTemplate='" & CfgS("MailTemplate", "") & "' must be a template file ending in .ntf (e.g. mail145.ntf), not .nsf." & Chr$(10)
+	End If
 	If InStr(CfgS("InternetDomain", ""), "<") > 0 Then e = e & "InternetDomain still contains a <placeholder>. Use e.g. InternetDomain=demo.com (or leave it empty to disable address construction)." & Chr$(10)
 	If UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "LINUX" And UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "WINDOWS" Then e = e & "ServerOS must be LINUX or WINDOWS." & Chr$(10)
 	If InStr(CfgS("ServerOSMap", ""), "<") > 0 Then e = e & "ServerOSMap still contains a <placeholder>. Use e.g. ServerOSMap=DominoADMail/Demo:LINUX,DominoADMail2/Demo:WINDOWS or leave it empty." & Chr$(10)
