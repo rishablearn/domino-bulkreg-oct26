@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.9.8
+' Script Library : BulkRegAgents            Version 3.9.9
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -1890,9 +1890,10 @@ Function BR_RtCard(bg As String, ttl As String, ttlCol As String, txt As String)
 End Function
 
 ' One box (full width): title + lines, coloured background
-Function BR_RtBox(bg As String, ttl As String, ttlCol As String, lines As Variant) As String
-	Dim s As String, i As Integer, bu As String
+Function BR_RtBox(bg As String, ttl As String, ttlCol As String, linesText As String) As String
+	Dim s As String, i As Integer, bu As String, lines As Variant
 	bu = Uchr$(8226) & " "
+	lines = Split(linesText, "~")                       ' items separated by ~
 	s = BR_RtP(ttl, "12pt", "bold", ttlCol)
 	For i = 0 To UBound(lines)
 		s = s & BR_RtP(bu & CStr(lines(i)), "10pt", "normal", "#14142B")
@@ -1942,11 +1943,11 @@ Function BR_WelcomeRich() As String
 	BR_RtCard("#ECF3F8", "3  Register", "#17707F", "Dry run first, then live on the same file. You type the batch ID to confirm.") & _
 	BR_RtCard("#ECF3F8", "4  Verify", "#17707F", "Checks registration, vault, mail file and replicas for the batch.")))
 
-	h = h & BR_RtBox("#F7F7FC", "Before the first batch (one time)", "#17707F", Array( _
-	"bulkreg.ini and server_mapping.csv are filled in: no <placeholder> left, DryRun=1.", _
-	"The numbered mail folders (mail1, mail2 ...) exist on every home server and mail cluster member.", _
-	"The log database bulkreg_log.nsf exists and its owner has run " & a & "00 - Set Up Log Database once.", _
-	"Start with a pilot batch of 2 users (BatchSize=2) and go through all steps below before the real batches."))
+	h = h & BR_RtBox("#F7F7FC", "Before the first batch (one time)", "#17707F",  _
+	"bulkreg.ini and server_mapping.csv are filled in: no <placeholder> left, DryRun=1." & "~" & _
+	"The numbered mail folders (mail1, mail2 ...) exist on every home server and mail cluster member." & "~" & _
+	"The log database bulkreg_log.nsf exists and its owner has run " & a & "00 - Set Up Log Database once." & "~" & _
+	"Start with a pilot batch of 2 users (BatchSize=2) and go through all steps below before the real batches.")
 
 	h = h & BR_RtH("Procedure for every batch")
 	h = h & BR_RtP("Always in this order. Repeat from step 1 or 2 for the next batch.", "10pt", "normal", "#14142B")
@@ -1974,12 +1975,12 @@ Function BR_WelcomeRich() As String
 	"No secrets are left in C:\BulkReg\secure.")
 	h = h & BR_RtTable("8,92", rw)
 
-	h = h & BR_RtBox("#FFF8E6", "Safety rules", "#14142B", Array( _
-	"DryRun=1 is the safe state. Only agent 03 uses it. Switch to 0 just for the live run, then back to 1.", _
-	"03 cannot run without a batch file from 02, and it registers only the rows with Include=Y.", _
-	"Agent 05 - Export to Registration Text File is not part of this procedure.", _
-	"Batch files, ID files, passwords and audit logs contain personal data or secrets. Keep them in C:\BulkReg, never commit or e-mail them.", _
-	"If an agent reports an error or a run stops, do not repeat it blindly: read the run folder and the log database first."))
+	h = h & BR_RtBox("#FFF8E6", "Safety rules", "#14142B",  _
+	"DryRun=1 is the safe state. Only agent 03 uses it. Switch to 0 just for the live run, then back to 1." & "~" & _
+	"03 cannot run without a batch file from 02, and it registers only the rows with Include=Y." & "~" & _
+	"Agent 05 - Export to Registration Text File is not part of this procedure." & "~" & _
+	"Batch files, ID files, passwords and audit logs contain personal data or secrets. Keep them in C:\BulkReg, never commit or e-mail them." & "~" & _
+	"If an agent reports an error or a run stops, do not repeat it blindly: read the run folder and the log database first.")
 
 	h = h & BR_RtTable("33,34,33", BR_RtRow( _
 	BR_RtCard("#ECF3F8", "Settings", "#17707F", "C:\BulkReg\config\bulkreg.ini and C:\BulkReg\config\server_mapping.csv") & _
@@ -2022,15 +2023,15 @@ Function BR_LogWelcomeRich() As String
 	rw = rw & BR_LogViewRow("8", "Full log - by run", "Every log line of every run, for detailed troubleshooting.")
 	h = h & BR_RtTable("8,92", rw)
 
-	h = h & BR_RtBox("#F7F7FC", "Tips", "#17707F", Array( _
-	"View > Expand All / Collapse All (Ctrl + / Ctrl -) opens or closes all groups.", _
-	"Newest dates and batches are at the top. A run in mode DRYRUN never changed Domino; LIVE-PRODUCTION did.", _
-	"For a user question open view 3 and expand the user. For a batch question open view 2.", _
-	"After a release that changes the views, the owner runs Actions > BulkReg > 00 - Set Up Log Database again."))
+	h = h & BR_RtBox("#F7F7FC", "Tips", "#17707F",  _
+	"View > Expand All / Collapse All (Ctrl + / Ctrl -) opens or closes all groups." & "~" & _
+	"Newest dates and batches are at the top. A run in mode DRYRUN never changed Domino; LIVE-PRODUCTION did." & "~" & _
+	"For a user question open view 3 and expand the user. For a batch question open view 2." & "~" & _
+	"After a release that changes the views, the owner runs Actions > BulkReg > 00 - Set Up Log Database again.")
 
-	h = h & BR_RtBox("#FFF8E6", "Handle with care", "#14142B", Array( _
-	"This is an audit record. Do not edit or delete documents. Operators have Author access with Create documents and no Delete; only the database owner manages the design.", _
-	"The documents contain personal data (names, Internet addresses, servers). Share access only with people who need it, and back the database up like any other audit data."))
+	h = h & BR_RtBox("#FFF8E6", "Handle with care", "#14142B",  _
+	"This is an audit record. Do not edit or delete documents. Operators have Author access with Create documents and no Delete; only the database owner manages the design." & "~" & _
+	"The documents contain personal data (names, Internet addresses, servers). Share access only with people who need it, and back the database up like any other audit data.")
 	h = h & BR_RtP("HCL Software" & dot & "BulkReg " & BR_VERSION & dot & "Central log database. Written by BulkReg agents 01 - 05; design set up by agent 00.", "8pt", "normal", "#6B7280")
 	BR_LogWelcomeRich = h
 End Function

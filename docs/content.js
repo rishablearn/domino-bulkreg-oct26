@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.9.9", "**Release 3.9.9.** **Compile fix:** *Variable not declared: ARRAY* in the welcome-screen code of BulkRegAgents (LotusScript has no Array function). Re-paste BulkRegAgents."],
   ["3.9.8", "**Release 3.9.8.** **Fix:** Build Batch aborted with *List item does not exist (err 120)* when no row of a batch was an ERROR (summary line). Re-paste BulkRegCommon and BulkRegAgents. Delete the batch files of an aborted run before rebuilding."],
   ["3.9.7", "**Release 3.9.7.** **Welcome screens are native rich text** (tables, fonts, colours) instead of pass-through HTML, which the Notes client shows as source text. Re-paste BulkRegAgents and run agent 06 and agent 00 again; they replace the About document."],
   ["3.9.6", "**Release 3.9.6.** **Welcome screens for the Notes client.** The welcome screen is now the *About This Database* document (agent 06 for bulkreg.nsf, agent 00 for bulkreg_log.nsf) with the launch option *Show About Application document*; B18a and B20a rewritten. Re-paste BulkRegAgents and run agent 06 / 00 again."],
