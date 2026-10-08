@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.9.6", "**Release 3.9.6.** **Welcome screens for the Notes client.** The welcome screen is now the *About This Database* document (agent 06 for bulkreg.nsf, agent 00 for bulkreg_log.nsf) with the launch option *Show About Application document*; B18a and B20a rewritten. Re-paste BulkRegAgents and run agent 06 / 00 again."],
   ["3.9.5", "**Release 3.9.5.** **Welcome page for the log database.** Agent 00 also creates the page *BulkReg Log Welcome* in bulkreg_log.nsf; set it as launch page once (B20a step 6). Re-paste BulkRegAgents and run agent 00 again."],
   ["3.9.4", "**Release 3.9.4.** **Welcome page.** New optional agent `BulkReg\\06 - Install Welcome Page` creates a branded start page in bulkreg.nsf (what BulkReg does, prerequisites, the 7-step procedure per batch, safety rules); set it as the database launch page (new B18a). No change to the registration logic."],
   ["3.9.3", "**Release 3.9.3.** `HomeServerAssignment=FILL` (also accepted: `FILLED`) is the shipped setting: 2500 users on the first mail server, then 2500 on the second. New `OverrideADInternetAddress` (default 0): 1 = always build `<shortname>@<InternetDomain>`, even when AD has an address; Preflight warns about an unknown HomeServerAssignment value."],
@@ -837,17 +838,17 @@ olc(
 );
 note("The agent files contain only these lines plus a description in comments. **(Declarations)** of an agent stays empty. You can also type the 3 + 3 lines by hand instead of pasting.");
 done("All six agents are listed under Code > Agents with the exact names, trigger 'Action menu selection', target 'None', each contains `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, and they save without errors.");
-h2("B18a Welcome page (start page of bulkreg.nsf)");
-meta("Domino administrator", "Domino Designer + Notes client", "adds 1 page, 1 agent to bulkreg.nsf");
-p("Without this step bulkreg.nsf opens on an empty view. The welcome page shows what BulkReg does, the one-time prerequisites, the seven steps of every batch and the safety rules.");
+h2("B18a Welcome screen (About This Database document of bulkreg.nsf)");
+meta("Domino administrator", "Domino Designer + Notes client", "adds 1 agent; creates the About This Database document");
+p("Without this step bulkreg.nsf opens on an empty view. The welcome screen shows what BulkReg does, the one-time prerequisites, the seven steps of every batch and the safety rules. In the Notes client it is the **About This Database** document; the option *Open designated Page* is for the web only.");
 ol(
-  "Create a seventh agent exactly as in B18, named `BulkReg\\06 - Install Welcome Page`, with the content of **Agent06_InstallWelcomePage.lss** (it contains `Call BR_RunInstallWelcome()`). Save it; it must compile.",
-  "Re-sign the database (B19) if the ECL asks for it, then in the Notes client open bulkreg.nsf and run **Actions > BulkReg > 06 - Install Welcome Page**. *Result:* a message says the page *BulkReg Welcome* was created. Designer access to bulkreg.nsf is required.",
-  "In Designer open **Database Properties** (File > Application > Properties), tab **Launch**. Set **On Database Open** to **Open designated Page** and choose **BulkReg Welcome**. Close the properties box.",
-  "Close bulkreg.nsf and open it again. *Result:* the welcome page appears."
+  "Create a seventh agent exactly as in B18, named `BulkReg\\06 - Install Welcome Page`, with the content of **Agent06_InstallWelcomePage.lss** (it contains `Call BR_RunInstallWelcome()`). Save it; it must compile. Re-sign the database (B19).",
+  "In the Notes client open bulkreg.nsf and run **Actions > BulkReg > 06 - Install Welcome Page** (Designer access required). *Result:* a message with two lines: *About document: OK (1 design note(s) imported)* and *Launch option: OK*.",
+  "Close bulkreg.nsf and open it again. *Result:* the welcome screen opens first. Close it with Esc; **Help > About This Application** shows it again at any time.",
+  "If a line says **ERROR**, copy the message (it contains the importer log) and send it before changing anything. If only the launch option failed, open Designer > **Database Properties** > **Launch** tab and set **Show 'About Application' document** to **Always open first** (or *If modified*)."
 );
-note("After a release that changes the page, paste the new BulkRegAgents library (B17a) and run agent 06 again; it replaces the page. If the page shows raw HTML text, open **Code > Pages > BulkReg Welcome** in Designer, select all text and choose **Text > Pass-Thru HTML**.");
-done("bulkreg.nsf opens on the BulkReg welcome page, and the Actions menu still lists the agents.");
+note("After a release that changes the screen, paste the new BulkRegAgents library (B17a) and run agent 06 again; it replaces the document.");
+done("bulkreg.nsf opens on the BulkReg welcome screen, and the Actions menu still lists the agents.");
 pb();
 
 // ---------- B19
@@ -875,14 +876,14 @@ done("Preflight starts without a security block and accepts the config path.");
 
 // ---------- B20a
 h2("B20a Set up the log database views (database owner, once)");
-meta("Owner of the log database (Designer or Manager access to bulkreg_log.nsf)", "bulkreg.nsf", "creates a form, a welcome page and 8 views in bulkreg_log.nsf; no documents are changed");
+meta("Owner of the log database (Designer or Manager access to bulkreg_log.nsf)", "bulkreg.nsf", "creates a form, a welcome screen and 8 views in bulkreg_log.nsf; no documents are changed");
 p("The views are design elements, so they are created by the **owner** of the log database, not by the operators (Author). The owner needs bulkreg.nsf too (a copy with the same libraries and agents is enough) and a bulkreg.ini with the same LogServer / LogDb.");
 ol(
   "Open bulkreg.nsf and click **Actions > BulkReg > 00 - Set Up Log Database**. Confirm the config path.",
   "Read the question (database name, 8 views) and click **Yes**.",
   "Read the result: one line per view, each **OK**. *Result:* the form BRLogEntry and the views exist.",
   "Open bulkreg_log.nsf. In the navigator, expand **BulkReg**: the views 1–8 are listed (D4a).",
-  "Agent 00 also created the page **BulkReg Log Welcome**. In Designer open bulkreg_log.nsf > **Database Properties > Launch**, set **On Database Open** to **Open designated Page**, choose **BulkReg Log Welcome**, then close and reopen the database. *Result:* the database opens on the welcome page instead of an empty view.",
+  "Agent 00 also creates the **welcome screen** of the log database (its About This Database document) and sets the launch option. The result dialog shows *About document: OK* and *Launch option: OK*. Close bulkreg_log.nsf and open it again. *Result:* the welcome screen opens first; if not, set Database Properties > Launch tab > **Show 'About Application' document** to **Always open first**.",
   "Run 00 again after a release whose notes say that the views changed. It replaces only its own views; your other views are kept."
 );
 note("If the form import reports an error, the views still work; documents then open without the BulkReg form. Send the message from the result dialog.");

@@ -1,15 +1,13 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 3.9.5 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), same version as the kit (3.9.5). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+BulkReg 3.9.6 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), same version as the kit (3.9.6). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
 ## What changed in 3.9.3
-Preflight checks all users (`PreflightScope=ALL`, `_batchplan.txt` shows the split); Build Batch writes all batch files in one run (`BATCH-<run>-01.csv`, `-02.csv` ...); the registration last name is the Person item `JobTitle` as it is (`LastNameField`; no name is constructed); users are filled into the `HomeServers` pool (`HomeServerAssignment=FILL`: first server up to 2500, then the next; mapping rule `AUTO`); the short name comes from the AD samaccountname item (`ShortNameFields`), never the FullName; a missing Internet address is constructed as `<shortname>@<InternetDomain>`; Domino on Linux (`ServerOS=LINUX`, `/local/notesdata`, paths sent as `mail1/smith.nsf`). The audit and batch files carry `FullNameAfter` (the Person name after registration); the Person item `JobTitle` (rank, first, last from AD) is registered as the last name. Details: `CHANGELOG.md`. Upgrade steps: `DEPLOY-3.9.5.md`.
+Preflight checks all users (`PreflightScope=ALL`, `_batchplan.txt` shows the split); Build Batch writes all batch files in one run (`BATCH-<run>-01.csv`, `-02.csv` ...); the registration last name is the Person item `JobTitle` as it is (`LastNameField`; no name is constructed); users are filled into the `HomeServers` pool (`HomeServerAssignment=FILL`: first server up to 2500, then the next; mapping rule `AUTO`); the short name comes from the AD samaccountname item (`ShortNameFields`), never the FullName; a missing Internet address is constructed as `<shortname>@<InternetDomain>`; Domino on Linux (`ServerOS=LINUX`, `/local/notesdata`, paths sent as `mail1/smith.nsf`). The audit and batch files carry `FullNameAfter` (the Person name after registration); the Person item `JobTitle` (rank, first, last from AD) is registered as the last name. Details: `CHANGELOG.md`. Upgrade steps: `DEPLOY-3.9.6.md`.
 
-## Welcome pages (3.9.4 / 3.9.5)
-bulkreg.nsf opens on a branded start page with the short procedure instead of an empty view. One time, after the libraries are installed: create the agent `BulkReg\06 - Install Welcome Page` (`lotusscript/Agent06_InstallWelcomePage.lss`, Shared, Action menu selection, Target None), run it from **Actions > BulkReg**, then in Designer set **Database Properties > Launch > On Database Open: Open designated Page > BulkReg Welcome** (guide B18a). Re-run the agent after a release that changes the page.
-
-**Log database (3.9.5):** `00 - Set Up Log Database` also creates the page `BulkReg Log Welcome` in bulkreg_log.nsf (what is stored, where to look, the 8 views, handling rules). Once, the database owner sets Database Properties > Launch > Open designated Page > BulkReg Log Welcome (guide B20a).
+## Welcome screens (3.9.6)
+bulkreg.nsf and bulkreg_log.nsf open on a branded welcome screen instead of an empty view. In the Notes client this is the **About This Database** document (the "open designated Page" launch option exists for the web only). bulkreg.nsf: create the agent `BulkReg\06 - Install Welcome Page` (`lotusscript/Agent06_InstallWelcomePage.lss`, Shared, Action menu selection, Target None) and run it once from **Actions > BulkReg** (guide B18a). bulkreg_log.nsf: `00 - Set Up Log Database` creates it together with the views (guide B20a). Both also set the launch option *Show About Application document*; if it does not open by itself, set it in Database Properties > Launch tab. The agents report the import result, including an error text if the import fails.
 
 ## Updating to a new release
 A release only changes the two script libraries. In Designer replace the whole content of **BulkRegCommon**, then **BulkRegAgents**: click in the editor, Ctrl+A, paste the whole .lss file (Designer puts Options, Declarations and every Sub/Function in place automatically), Ctrl+S, run **Tools > Recompile All LotusScript** and re-sign the database (guide B17a). The agents stay as they are.
@@ -143,7 +141,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (3.9.5)   ·   CHANGELOG.md   release history
+VERSION      current release (3.9.6)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv                 (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (ALL code - the two script libraries)
              Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile,

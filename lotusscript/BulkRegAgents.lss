@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.9.5
+' Script Library : BulkRegAgents            Version 3.9.6
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -1577,7 +1577,7 @@ End Sub
 '
 ' Creates (or re-creates) in the central log database (LogServer!!LogDb):
 '   - the form "BRLogEntry" (to open any log document), via DXL import
-'   - the Page "BulkReg Log Welcome" (start page, DXL import; launch option set by hand)
+'   - the welcome screen = About This Database document, plus its launch option (DXL import)
 '   - 8 categorized views under "BulkReg\" (runs, batches, users, results,
 '     home servers, problems, skipped users, full log).
 ' Run it ONCE after creating the log database (guide B15) and again after a
@@ -1602,7 +1602,7 @@ Sub BR_RunSetupLog()
 	End If
 	Set ws = New NotesUIWorkspace
 	ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Set up log database", _
-	"Create or replace the BulkReg form, the welcome page and the 8 views ""BulkReg\..."" in" & Chr$(10) & _
+	"Create or replace the BulkReg form, the welcome screen (About document) and the 8 views ""BulkReg\..."" in" & Chr$(10) & _
 	logName & " ?" & Chr$(10) & Chr$(10) & _
 	"Existing log documents are not changed. Other views in the database are not touched.")
 	If ans <> 1 Then
@@ -1615,10 +1615,10 @@ Sub BR_RunSetupLog()
 	BR_Log BR_IIfInt2(res = "OK", LVL_INFO, LVL_ERROR), "Form BRLogEntry: " & res
 	If res <> "OK" Then nBad = nBad + 1
 
-	res = BR_ImportWelcomePage(gLogDb, "BulkReg Log Welcome", BR_LogWelcomeHtml())
-	report = report & "Page BulkReg Log Welcome: " & res & Chr$(10)
-	BR_Log BR_IIfInt2(res = "OK", LVL_INFO, LVL_ERROR), "Page BulkReg Log Welcome: " & res
-	If res <> "OK" Then nBad = nBad + 1
+	res = BR_InstallAbout(gLogDb, BR_LogWelcomeHtml())
+	report = report & "Welcome screen (About document):" & Chr$(10) & res & Chr$(10)
+	BR_Log BR_IIfInt2(InStr(res, "ERROR") = 0, LVL_INFO, LVL_ERROR), "Welcome screen: " & Replace(res, Chr$(10), " / ")
+	If InStr(res, "ERROR") > 0 Then nBad = nBad + 1
 
 	defs = BR_LogViewDefs()
 	For i = 0 To UBound(defs)
@@ -1632,7 +1632,8 @@ Sub BR_RunSetupLog()
 	BR_Close "Log database set up: " & (UBound(defs) + 1) & " views, problems=" & nBad
 	BR_Msg "Log database " & logName & Chr$(10) & Chr$(10) & report & Chr$(10) & _
 	"Open the database and expand the view folder ""BulkReg"" in the navigator." & Chr$(10) & Chr$(10) & _
-	"Once: in Designer set Database Properties > Launch > On Database Open > Open designated Page > BulkReg Log Welcome.", CInt(BR_IIfStr(nBad > 0, "48", "64"))
+	"Close and re-open the database: the welcome screen (About document) opens first." & Chr$(10) & _
+	"If not: Database Properties > Launch tab > Show 'About Application' document > Always open first.", CInt(BR_IIfStr(nBad > 0, "48", "64"))
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Set up log database aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
@@ -1736,48 +1737,80 @@ End Function
 ' BR_RunInstallWelcome  -  runs agent BulkReg\06 - Install Welcome Page
 '   The agent itself only contains:  Call BR_RunInstallWelcome()
 '
-' Creates (or replaces) the Page "BulkReg Welcome" in the CURRENT database
-' (bulkreg.nsf) by DXL import: a branded start page with a short SOP of the
-' agent sequence. The page is pass-through HTML with inline styles only, no
-' scripts, no external files. Changes no documents, no other design element.
-' Run it once after installing the libraries and again after a release that
-' changes the page. Needs Designer (or Manager) access to bulkreg.nsf.
-' After the import set the launch option once (guide B18a):
-'   Database Properties > Launch > On Database Open: "Open designated Page"
-'   > select "BulkReg Welcome".
+' Creates (or replaces) the "About This Database" document of the CURRENT
+' database (bulkreg.nsf): a branded welcome screen with a short SOP of the
+' agent sequence (pass-through HTML, inline styles, no script, no files), and
+' sets the launch option "Show About Application document" so the Notes client
+' opens it first. (A Notes client cannot launch a designated PAGE - that option
+' exists for the web only; the About document is the Notes client mechanism.)
+' Changes no documents and no other design element. Needs Designer access.
 '=====================================================================
 Sub BR_RunInstallWelcome()
 	On Error GoTo ErrH
-	Dim sess As New NotesSession, db As NotesDatabase, dxlImp As NotesDXLImporter, dxl As String
+	Dim sess As New NotesSession, db As NotesDatabase, res As String
 
 	Set db = sess.CurrentDatabase
 	If db Is Nothing Then
-		MessageBox "Open bulkreg.nsf first, then run this agent from its Actions menu.", 48, "BulkReg - Welcome page"
+		MessageBox "Open bulkreg.nsf first, then run this agent from its Actions menu.", 48, "BulkReg - Welcome screen"
 		Exit Sub
 	End If
 	If db.CurrentAccessLevel < ACLLEVEL_DESIGNER Then
-		MessageBox "Installing the page needs Designer or Manager access to " & db.FilePath & ".", 48, "BulkReg - Welcome page"
+		MessageBox "Installing the welcome screen needs Designer or Manager access to " & db.FilePath & ".", 48, "BulkReg - Welcome screen"
 		Exit Sub
 	End If
-	dxl = "<?xml version='1.0' encoding='utf-8'?>" & _
-	"<database xmlns='http://www.lotus.com/dxl'>" & _
-	"<page name='BulkReg Welcome'><body><richtext><par><run html='true'>" & _
-	BR_XmlEsc(BR_WelcomeHtml()) & _
-	"</run></par></richtext></body></page></database>"
-	Set dxlImp = sess.CreateDXLImporter()
-	dxlImp.DesignImportOption = DXLIMPORTOPTION_REPLACE_ELSE_CREATE
-	dxlImp.ReplaceDBProperties = False
-	dxlImp.ReplicaRequiredForReplaceOrUpdate = False
-	Call dxlImp.Import(dxl, db)
-	MessageBox "The page 'BulkReg Welcome' was created in " & db.FilePath & "." & Chr$(10) & Chr$(10) & _
-	"One manual step (once): in Domino Designer open Database Properties > Launch tab," & Chr$(10) & _
-	"set 'On Database Open' to 'Open designated Page' and choose 'BulkReg Welcome'." & Chr$(10) & _
-	"Then close and re-open the database.", 64, "BulkReg - Welcome page"
+	res = BR_InstallAbout(db, BR_WelcomeHtml())
+	MessageBox "Welcome screen for " & db.FilePath & ":" & Chr$(10) & Chr$(10) & res & Chr$(10) & Chr$(10) & _
+	"Close the database and open it again: the About document should open first." & Chr$(10) & _
+	"If it does not: Database Properties > Launch tab > 'Show About Application document' = Always open first (or If modified)." & Chr$(10) & _
+	"To view it any time: Help > About This Application.", 64, "BulkReg - Welcome screen"
 	Exit Sub
 ErrH:
-	MessageBox "Installing the welcome page failed: " & Error$ & " (err " & Err & ", line " & Erl & ")", 16, "BulkReg - Welcome page"
+	MessageBox "Installing the welcome screen failed: " & Error$ & " (err " & Err & ", line " & Erl & ")", 16, "BulkReg - Welcome screen"
 	Exit Sub
 End Sub
+
+' Imports one DXL string into db. Returns "OK ..." or "ERROR ...". expectNotes = True: zero imported
+' design notes is reported as an error (the importer can finish without importing anything).
+Function BR_ImportDxl(db As NotesDatabase, dxl As String, replaceProps As Boolean, expectNotes As Boolean) As String
+	On Error GoTo ErrH
+	Dim sess As New NotesSession, dxlImp As NotesDXLImporter, n As Long, lg As String
+	Set dxlImp = sess.CreateDXLImporter()
+	dxlImp.DesignImportOption = DXLIMPORTOPTION_REPLACE_ELSE_CREATE
+	dxlImp.ReplaceDBProperties = replaceProps
+	dxlImp.ReplicaRequiredForReplaceOrUpdate = False
+	Call dxlImp.Import(dxl, db)
+	n = dxlImp.ImportedNoteCount
+	If expectNotes And n = 0 Then
+		lg = dxlImp.Log
+		BR_ImportDxl = "ERROR nothing was imported. " & Left$(lg, 400)
+	Else
+		BR_ImportDxl = "OK (" & n & " design note(s) imported)"
+	End If
+	Exit Function
+ErrH:
+	lg = Error$ & " (err " & Err & ")"
+	On Error Resume Next
+	lg = lg & " " & Left$(dxlImp.Log, 400)
+	BR_ImportDxl = "ERROR " & lg
+	Exit Function
+End Function
+
+' Creates or replaces the About This Database document with the given HTML and sets the launch option
+' "Show About Application document: if modified / first open" (noteslaunch showaboutdocument).
+Function BR_InstallAbout(db As NotesDatabase, htmlText As String) As String
+	Dim r1 As String, r2 As String, dxl As String
+	dxl = "<?xml version='1.0' encoding='utf-8'?>" & _
+	"<database xmlns='http://www.lotus.com/dxl'>" & _
+	"<helpaboutdocument><body><richtext><par><run html='true'>" & _
+	BR_XmlEsc(htmlText) & _
+	"</run></par></richtext></body></helpaboutdocument></database>"
+	r1 = BR_ImportDxl(db, dxl, False, True)
+	dxl = "<?xml version='1.0' encoding='utf-8'?>" & _
+	"<database xmlns='http://www.lotus.com/dxl'>" & _
+	"<launchsettings><noteslaunch showaboutdocument='firstopenandchanged'/></launchsettings></database>"
+	r2 = BR_ImportDxl(db, dxl, True, False)
+	BR_InstallAbout = "About document: " & r1 & Chr$(10) & "Launch option: " & r2
+End Function
 
 ' Escapes text for use inside an XML element.
 Function BR_XmlEsc(s As String) As String
@@ -1902,31 +1935,11 @@ End Function
 
 '=====================================================================
 ' Welcome page of the central log database (bulkreg_log.nsf)
-'   BR_ImportWelcomePage   imports a Page by DXL (replace else create)
+'   (the import itself: BR_InstallAbout / BR_ImportDxl above)
 '   BR_LogWelcomeHtml      the HTML of the page "BulkReg Log Welcome"
 '   BR_LogViewRow          one row of the view table
-' Called by BR_RunSetupLog (agent 00). Launch option is set by hand once
-' (guide B20a): Database Properties > Launch > Open designated Page.
+' Called by BR_RunSetupLog (agent 00): About This Database document + launch option.
 '=====================================================================
-Function BR_ImportWelcomePage(db As NotesDatabase, pageName As String, htmlText As String) As String
-	On Error GoTo ErrH
-	Dim dxlImp As NotesDXLImporter, dxl As String
-	dxl = "<?xml version='1.0' encoding='utf-8'?>" & _
-	"<database xmlns='http://www.lotus.com/dxl'>" & _
-	"<page name='" & pageName & "'><body><richtext><par><run html='true'>" & _
-	BR_XmlEsc(htmlText) & _
-	"</run></par></richtext></body></page></database>"
-	Set dxlImp = gSession.CreateDXLImporter()
-	dxlImp.DesignImportOption = DXLIMPORTOPTION_REPLACE_ELSE_CREATE
-	dxlImp.ReplaceDBProperties = False
-	dxlImp.ReplicaRequiredForReplaceOrUpdate = False
-	Call dxlImp.Import(dxl, db)
-	BR_ImportWelcomePage = "OK"
-	Exit Function
-ErrH:
-	BR_ImportWelcomePage = "ERROR " & Error$ & " (err " & Err & ") - the views still work"
-	Exit Function
-End Function
 
 Function BR_LogViewRow(num As String, ttl As String, txt As String) As String
 	Dim r As String
