@@ -1,6 +1,6 @@
 '=====================================================================
 ' Agent name : BulkReg\02 - Build Batch
-' Version    : 3.8.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.8.0)
+' Version    : 3.9.4  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.9.4)
 ' Code       : ALL logic is in the script library BulkRegAgents (BR_RunBuildBatch).
 '              This agent only calls it, so it never changes between releases.
 '
@@ -13,12 +13,12 @@
 '
 ' What it does (details: BulkRegAgents > BR_RunBuildBatch):
 '
-' Selects the next batch of unregistered DirSync users (default 1000),
-' resolves each user's home server / mail file / OU / policy / groups from
-' server_mapping.csv, validates them and writes a batch file for review:
+' Selects ALL unregistered DirSync users and splits them into batch files of
+' BatchSize rows (default 1000), then resolves each user's home server / mail file /
+' OU / policy / groups from server_mapping.csv, validates them and writes the files for review:
 '
-'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>.csv          one row per user
-'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>_summary.txt  totals per server / policy / mail folder
+'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>-01.csv, -02.csv ...   one row per user, BatchSize rows per file
+'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>_summary.txt           all batches: totals per server / policy / mail folder
 '
 ' Mail files: name = last name (MailFileNaming), unique per home server across
 ' all mail folders, files on the server, Person documents and open batches;

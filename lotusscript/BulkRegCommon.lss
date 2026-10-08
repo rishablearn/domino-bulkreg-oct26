@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.8.0
+' Script Library : BulkRegCommon            Version 3.9.4
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.8.0"
+Public Const BR_VERSION = "3.9.4"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -107,7 +107,7 @@ Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes
 Public Const BR_SKIP_NO_INET = "SKIP:InternetAddress missing and cannot be constructed (needs ShortName + InternetDomain in bulkreg.ini) - user skipped and flagged (add the address in AD; after DirSync the next Build Batch picks the user up); "
 Public Const BR_RESULT_NO_INET = "SKIPPED_NO_INET"
 Public Const BR_WARN_NO_INET = "WARN:InternetAddress missing and cannot be constructed - registered without an Internet address (add it in AD, DirSync syncs it); "
-Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,NotesName,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues,InetSource"
+Public Const BR_BATCH_COLS = "Include,BatchID,Seq,NoteID,UNID,objectGUID,FullName,NotesName,FullNameAfter,FirstName,LastName,ShortName,InternetAddress,HomeServer,MailFile,MailFileNote,OrgUnit,Policy,Groups,VaultServer,ClusterReplicas,MapRule,Check,Issues,InetSource"
 
 '#####################################################################
 ' --- part 3: Subs and Functions (Designer gives each its own entry) ---
@@ -524,6 +524,7 @@ Function BR_AssignHome(u As BRUser) As String
 	pool = Split(BR_HomePool(), ",")
 	cap = CfgL("HomeServerMaxUsers", 0)
 	mode = UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED")))
+	If mode = "FILLED" Then mode = "FILL"         ' FILL and FILLED are the same: first server up to HomeServerMaxUsers, then the next
 	For i = 0 To UBound(pool)
 		k = LCase$(Trim$(CStr(pool(i))))
 		ld = 0
@@ -706,36 +707,6 @@ Function BR_PickShortName(doc As NotesDocument) As String
 	BR_PickShortName = firstVal
 End Function
 
-' Full name = Person item named in FullNameField (default DisplayName, a text list, normally
-' "First Last"). The first non-empty value is split at its LAST blank: everything before it is the
-' first name, the last word the last name ("Mary Ann Smith" -> first "Mary Ann", last "Smith"),
-' so the Notes common name equals the DisplayName. One word = last name only (WARN).
-' Empty FullNameField, or an empty DisplayName: FirstName / LastName of the Person document.
-Sub BR_ApplyDisplayName(doc As NotesDocument, u As BRUser)
-	Dim fld As String, vals As Variant, j As Integer, v As String
-	fld = Trim$(CfgS("FullNameField", "DisplayName"))
-	If fld = "" Then Exit Sub
-	If Not doc.HasItem(fld) Then Exit Sub
-	vals = doc.GetItemValue(fld)
-	For j = 0 To UBound(vals)
-		v = Trim$(BR_Clean(CStr(vals(j))))
-		Do While InStr(v, "  ") > 0
-			v = Replace(v, "  ", " ")
-		Loop
-		If v <> "" Then
-			If InStr(v, " ") > 0 Then
-				u.FirstName = Trim$(StrLeftBack(v, " "))       ' everything before the last blank
-				u.LastName = Trim$(StrRightBack(v, " "))       ' the last word
-			Else
-				u.FirstName = ""
-				u.LastName = v
-			End If
-			u.MiddleInitial = ""
-			Exit Sub
-		End If
-	Next
-End Sub
-
 ' Keeps the Internet address of the Person document; when it is empty builds
 ' <shortname>@<InternetDomain> (ConstructInternetAddress=1, default). u.InetSource tells which.
 Sub BR_ApplyInternetAddress(u As BRUser)
@@ -743,7 +714,7 @@ Sub BR_ApplyInternetAddress(u As BRUser)
 	u.InetSource = ""
 	If u.InternetAddress <> "" Then
 		u.InetSource = "AD"
-		Exit Sub
+		If Not CfgB("OverrideADInternetAddress", False) Then Exit Sub     ' default: keep the address from AD
 	End If
 	If Not CfgB("ConstructInternetAddress", True) Then Exit Sub
 	dom = Trim$(CfgS("InternetDomain", ""))
@@ -754,6 +725,7 @@ Sub BR_ApplyInternetAddress(u As BRUser)
 	For i = 1 To Len(u.ShortName)
 		If Not (Mid$(u.ShortName, i, 1) Like "[A-Za-z0-9._-]") Then Exit Sub    ' not usable in an address
 	Next
+	If u.InetSource = "AD" And LCase$(u.InternetAddress) = LCase$(u.ShortName) & "@" & LCase$(dom) Then Exit Sub   ' AD already has exactly this address
 	u.InternetAddress = LCase$(u.ShortName) & "@" & LCase$(dom)
 	u.InetSource = "CONSTRUCTED"
 End Sub
@@ -1017,10 +989,14 @@ Sub BR_ReadUser(doc As NotesDocument, u As BRUser)
 	u.UNID = doc.UniversalID
 	u.GUID = BR_Item(doc, "objectGUID")
 	u.FullNameBefore = BR_Item(doc, "FullName")
-	u.FirstName = BR_Clean(BR_Item(doc, "FirstName"))
-	u.LastName = BR_Clean(BR_Item(doc, "LastName"))
-	u.MiddleInitial = BR_Clean(BR_Item(doc, "MiddleInitial"))
-	Call BR_ApplyDisplayName(doc, u)               ' Notes name from DisplayName (First Last), not from the AD cn
+	' Name parts for the registration (no name is constructed, no splitting, no rank handling):
+	'   LastName = the value of the Person item named in LastNameField (shipped: JobTitle, which holds the
+	'              whole name from AD, e.g. "Sgt Naman Kumar") - taken exactly as it is
+	'   FirstName / MiddleInitial = items named in FirstNameField / MiddleNameField (shipped: empty = none)
+	' Domino builds the common name from these values:  <First> [<Middle>] <Last>
+	If Trim$(CfgS("FirstNameField", "")) <> "" Then u.FirstName = BR_Clean(BR_Item(doc, Trim$(CfgS("FirstNameField", ""))))
+	If Trim$(CfgS("MiddleNameField", "")) <> "" Then u.MiddleInitial = BR_Clean(BR_Item(doc, Trim$(CfgS("MiddleNameField", ""))))
+	u.LastName = BR_Clean(BR_Item(doc, Trim$(CfgS("LastNameField", "LastName"))))
 	u.ShortName = BR_PickShortName(doc)            ' AD samaccountname (ShortNameFields) - never the FullName / cn
 	u.InternetAddress = BR_Clean(BR_Item(doc, "InternetAddress"))
 	Call BR_ApplyInternetAddress(u)                ' empty address -> <shortname>@<InternetDomain>
@@ -1353,8 +1329,7 @@ End Function
 ' Basic data-quality validation; returns "" when OK, otherwise issues list
 Function BR_Validate(u As BRUser) As String
 	Dim s As String
-	If u.LastName = "" Then s = s & "ERROR:LastName missing; "
-	If u.FirstName = "" Then s = s & "WARN:FirstName missing (DisplayName has one word or is empty); "
+	If u.LastName = "" Then s = s & "ERROR:LastName missing (Person item " & CfgS("LastNameField", "LastName") & " is empty - Domino needs a last name to register); "
 	' Missing Internet address is never an ERROR:
 	'   SkipNoInternetAddress=1 (default) -> SKIP: the user is left out of batches and flagged
 	'     (SKIPPED_NO_INET) until the address exists in AD and DirSync has written it;
@@ -1748,7 +1723,7 @@ Sub BR_LogAudit(u As BRUser, mode As String, action As String, result As String,
 	Call d.ReplaceItemValue("DurationSec", dur)
 	Call d.ReplaceItemValue("FullName", BR_IIfStr(u.FullNameAfter <> "", u.FullNameAfter, u.FullNameBefore))
 	Call d.ReplaceItemValue("FullNameBefore", u.FullNameBefore)
-	Call d.ReplaceItemValue("FullNameAfter", u.FullNameAfter)
+	Call d.ReplaceItemValue("FullNameAfter", BR_AfterName(u))
 	Call d.ReplaceItemValue("InternetAddress", u.InternetAddress)
 	Call d.ReplaceItemValue("ShortName", u.ShortName)
 	Call d.ReplaceItemValue("NoteIDPerson", u.NoteID)
@@ -1812,6 +1787,16 @@ End Function
 '=====================================================================
 ' AUDIT CSV  (one row per user per action - never contains passwords)
 '=====================================================================
+' Person name after registration: the real name when known, otherwise the name the user will get
+' (First [MI] Last/OU/Org built from the name fields) - so FullNameAfter is never empty in audit rows.
+Function BR_AfterName(u As BRUser) As String
+	If u.FullNameAfter <> "" Then
+		BR_AfterName = u.FullNameAfter
+	ElseIf u.LastName <> "" Then
+		BR_AfterName = BR_ExpectedName(u)
+	End If
+End Function
+
 Function BR_AuditHeader() As String
 	BR_AuditHeader = "RunID,Timestamp,Tool,Operator,Mode,Action,Result,DurationSec,NoteID,UNID,objectGUID," & _
 	"FullNameBefore,FullNameAfter,InternetAddress,ShortName,HomeServer,OrgUnit,Policy,MapRule," & _
@@ -1823,7 +1808,7 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Dim r As String
 	r = Q(gRunID) & "," & Q(Format$(Now, "yyyy-mm-dd hh:nn:ss")) & "," & Q(gTool) & "," & Q(gOperator) & "," & _
 	Q(mode) & "," & Q(action) & "," & Q(result) & "," & Q(Format$(dur, "0.00")) & "," & _
-	Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FullNameAfter) & "," & _
+	Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(BR_AfterName(u)) & "," & _
 	Q(u.InternetAddress) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & _
 	Q(u.MapRule) & "," & Q(u.MailSystemBefore) & "," & Q(u.MailSystemAfter) & "," & Q(u.VaultStatus) & "," & _
 	Q(u.IDFile) & "," & Q(msg) & "," & Q(gBatchID) & "," & Q(BR_SrvPathFor(u.HomeServer, u.MailFile)) & "," & Q(u.MailFileStatus) & "," & Q(u.MailFileNote) & "," & Q(u.ClusterReplicas) & "," & Q(u.ReplicaStatus)
@@ -2106,7 +2091,7 @@ Function BR_NewestOpenBatch() As String
 	Loop
 	ForAll bf In files
 		If Dir$(d & Left$(bf, Len(bf) - 4) & "_results.csv") = "" Then
-			If bf > best Then best = bf
+			If best = "" Or bf < best Then best = bf     ' OLDEST open batch first: -01 before -02
 		End If
 	End ForAll
 	If best <> "" Then BR_NewestOpenBatch = d & best

@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.8.0
+' Script Library : BulkRegAgents            Version 3.9.4
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -8,6 +8,7 @@
 '                    BulkReg\03 - Register Batch                 -> BR_RunRegisterBatch
 '                    BulkReg\04 - Verify Registration and Vault  -> BR_RunVerify
 '                    BulkReg\05 - Export to Registration Text File -> BR_RunExport
+'                    BulkReg\06 - Install Welcome Page           -> BR_RunInstallWelcome (one time, design)
 '                  So a new release only replaces the two libraries; the agents
 '                  never have to be pasted again.
 ' Uses           : BulkRegCommon (create and save that library FIRST)
@@ -69,7 +70,7 @@ Sub BR_RunPreflight()
 	If Not BR_Init("Preflight") Then Exit Sub
 	batchSize = CfgL("BatchSize", 1000)
 	If batchSize < 1 Then batchSize = 1000
-	scopeAll = (UCase$(Trim$(CfgS("PreflightScope", "BATCH"))) = "ALL")
+	scopeAll = (UCase$(Trim$(CfgS("PreflightScope", "ALL"))) = "ALL")
 	chkBatch = CfgL("PreflightBatchNo", 1)
 	If chkBatch < 1 Then chkBatch = 1
 	srvFilter = Trim$(CfgS("BatchServerFilter", ""))
@@ -144,6 +145,11 @@ Sub BR_RunPreflight()
 		Next
 	End If
 	BR_Log LVL_INFO, "Fallback platform ServerOS=" & UCase$(Trim$(CfgS("ServerOS", "LINUX"))) & " | ServerOSDetect=" & CfgS("ServerOSDetect", "1") & " | data directory " & CfgS("ServerDataDir", "/local/notesdata")
+	BR_Log LVL_INFO, "Registration name: LastName = Person item " & CfgS("LastNameField", "LastName") & " (taken as it is) | FirstNameField=" & BR_IIfStr(Trim$(CfgS("FirstNameField", "")) = "", "(none)", CfgS("FirstNameField", "")) & " | MiddleNameField=" & BR_IIfStr(Trim$(CfgS("MiddleNameField", "")) = "", "(none)", CfgS("MiddleNameField", ""))
+	If UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "BALANCED" And UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "FILL" And UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "FILLED" Then
+		BR_Log LVL_WARN, "HomeServerAssignment=" & CfgS("HomeServerAssignment", "") & " is not BALANCED or FILL - BALANCED is used"
+		envWarn = envWarn + 1
+	End If
 	BR_Log LVL_INFO, "Short name read from Person field(s): " & CfgS("ShortNameFields", "ShortName") & " | Internet address constructed as <shortname>@" & CfgS("InternetDomain", "(InternetDomain not set - addresses are NOT constructed)")
 	If CfgB("ConstructInternetAddress", True) And Trim$(CfgS("InternetDomain", "")) = "" Then
 		BR_Log LVL_WARN, "InternetDomain is empty - users without an Internet address in AD cannot get one constructed and will be " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped", "registered without address")
@@ -218,6 +224,7 @@ Sub BR_RunPreflight()
 		End If
 		If u.InternetAddress = "" And CfgB("SkipNoInternetAddress", True) Then
 			nNoInet = nNoInet + 1                                 ' skipped by Build Batch: does not use a batch slot
+			u.FullNameAfter = BR_ExpectedName(u)                      ' the Notes name the user will get (First Last/OU/Org)
 			If scopeAll Or chkBatch = 1 Then Call BR_Audit(u, "PREFLIGHT", "CHECK", BR_RESULT_NO_INET, BR_Elapsed(t0), BR_SKIP_NO_INET)
 			GoTo NextCand
 		End If
@@ -243,6 +250,7 @@ Sub BR_RunPreflight()
 		nChecked = nChecked + 1
 
 		issues = homeIssue & BR_Validate(u)
+		u.FullNameAfter = BR_ExpectedName(u)                          ' expected Notes name, e.g. Naman Kumar/Demo (CN built from the name fields in bulkreg.ini)
 
 		' duplicates inside this batch
 		If u.ShortName <> "" Then
@@ -285,7 +293,7 @@ Sub BR_RunPreflight()
 		Else
 			res = "OK": nOK = nOK + 1
 		End If
-		BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " -> " & u.HomeServer & " / OU=" & u.OrgUnit & " / " & u.Policy & " | " & issues
+		BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " => " & u.FullNameAfter & " -> " & u.HomeServer & " / OU=" & u.OrgUnit & " / " & u.Policy & " | " & issues
 		Call BR_Audit(u, "PREFLIGHT", "CHECK", res, BR_Elapsed(t0), issues)
 NextCand:
 		Set doc = col.GetNextDocument(doc)
@@ -429,12 +437,13 @@ End Function
 ' BR_RunBuildBatch  -  runs agent BulkReg\02 - Build Batch
 '   The agent itself only contains:  Call BR_RunBuildBatch()
 '
-' Selects the next batch of unregistered DirSync users (default 1000),
-' resolves each user's home server / mail file / OU / policy / groups from
+' Selects ALL unregistered DirSync users and splits them into batch files of
+' BatchSize rows (default 1000): BATCH-<run>-01.csv, -02.csv ... (BuildMaxBatches=n
+' limits one run to n files, 0 = all). Resolves each user's home server / mail file / OU / policy / groups from
 ' server_mapping.csv, validates them and writes a batch file for review:
 '
-'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>.csv          one row per user
-'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>_summary.txt  totals per server / policy / mail folder
+'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>-NN.csv       one row per user, one file per BatchSize users
+'   <BatchDir>\BATCH-<yyyymmdd-hhnnss>_summary.txt  all batches: totals per server / policy / mail folder
 '
 ' Mail files: name = last name (MailFileNaming), unique per home server across
 ' all mail folders, files on the server, Person documents and open batches;
@@ -471,8 +480,11 @@ Sub BR_RunBuildBatch()
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String, newInFolder List As Long, aIssue As String, fkey As String
 	Dim repByHome List As String, rl As Variant, ri As Integer, foundOn As String
 	Dim homeIssue As String, bOther As Boolean, nBuilt As Long
+	Dim baseID As String, batchNo As Long, rowsIn As Long, maxBatches As Long, bi As Long, bl As String
+	Dim batchFiles List As String, bRows List As Long, bInc List As Long, bErr List As Long, bSrv List As Long, bk As String
 
 	If Not BR_Init("BuildBatch") Then Exit Sub
+	maxBatches = CfgL("BuildMaxBatches", 0)                         ' 0 = build ALL batches in this run
 	batchMax = CfgL("BatchSize", 1000)
 	If batchMax < 1 Then batchMax = 1000
 	srvFilter = Trim$(CfgS("BatchServerFilter", ""))
@@ -480,10 +492,12 @@ Sub BR_RunBuildBatch()
 
 	bdir = BR_BatchDir()
 	If Not BR_DirWritable(bdir) Then Error 5001, "BatchDir missing or not writable: " & bdir
-	gBatchID = "BATCH-" & gRunID
-	bfile = bdir & gBatchID & ".csv"
-	sumFile = bdir & gBatchID & "_summary.txt"
-	skipFile = bdir & gBatchID & "_skipped_no_internet_address.csv"
+	' One run builds ALL batches: BATCH-<run>-01.csv, BATCH-<run>-02.csv ... (BatchSize rows each).
+	' The files are created as they fill up; run-level reports use the base id BATCH-<run>.
+	baseID = "BATCH-" & gRunID
+	gBatchID = baseID
+	sumFile = bdir & baseID & "_summary.txt"
+	skipFile = bdir & baseID & "_skipped_no_internet_address.csv"
 	skipNoInet = CfgB("SkipNoInternetAddress", True)
 
 	Set db = BR_OpenDirectory()
@@ -493,7 +507,6 @@ Sub BR_RunBuildBatch()
 	Set usersView = db.GetView("($Users)")
 	Set col = BR_GetCandidates(db, True)
 
-	Call BR_AppendLine(bfile, Uchr$(&HFEFF) & BR_BATCH_COLS)
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
 		t0 = Timer
@@ -503,8 +516,8 @@ Sub BR_RunBuildBatch()
 		ElseIf skipNoInet And u.InternetAddress = "" Then
 			' no Internet address: SKIPPED and flagged - not in the batch, offered again once DirSync has the address
 			nNoInet = nNoInet + 1
-			If nNoInet = 1 Then Call BR_AppendLine(skipFile, Uchr$(&HFEFF) & "BatchID,NoteID,UNID,objectGUID,FullName,FirstName,LastName,ShortName,HomeServer,Result,Reason")
-			Call BR_AppendLine(skipFile, Q(gBatchID) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(BR_RESULT_NO_INET) & "," & Q(BR_SKIP_NO_INET))
+			If nNoInet = 1 Then Call BR_AppendLine(skipFile, Uchr$(&HFEFF) & "BatchID,NoteID,UNID,objectGUID,FullName,FullNameAfter,FirstName,LastName,ShortName,HomeServer,Result,Reason")
+			Call BR_AppendLine(skipFile, Q(gBatchID) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & Q(u.FullNameBefore) & "," & Q(BR_ExpectedName(u)) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.HomeServer) & "," & Q(BR_RESULT_NO_INET) & "," & Q(BR_SKIP_NO_INET))
 			Call BR_Audit(u, "BUILD", "SELECT", BR_RESULT_NO_INET, BR_Elapsed(t0), BR_SKIP_NO_INET)
 		Else
 			' home server of the pool (AUTO): balanced over HomeServers, max HomeServerMaxUsers each
@@ -515,10 +528,20 @@ Sub BR_RunBuildBatch()
 			If bOther Then
 				nOtherSrv = nOtherSrv + 1                           ' belongs to another server wave
 				bOther = False
-			ElseIf nRows >= batchMax Then
-				nLeft = nLeft + 1                                   ' for the next batch
+			ElseIf rowsIn >= batchMax And maxBatches > 0 And batchNo >= maxBatches Then
+				nLeft = nLeft + 1                                   ' BuildMaxBatches reached - left for the next run
 			Else
+			If batchNo = 0 Or rowsIn >= batchMax Then               ' start the next batch file
+				batchNo = batchNo + 1
+				rowsIn = 0
+				gBatchID = baseID & "-" & Format$(batchNo, "00")
+				bfile = bdir & gBatchID & ".csv"
+				batchFiles(CStr(batchNo)) = bfile
+				Call BR_AppendLine(bfile, Uchr$(&HFEFF) & BR_BATCH_COLS)
+				BR_Log LVL_INFO, "Batch " & batchNo & ": " & bfile
+			End If
 			nRows = nRows + 1
+			rowsIn = rowsIn + 1
 			issues = homeIssue & BR_Validate(u)
 			If u.ShortName <> "" Then
 				If IsElement(seenShort(LCase$(u.ShortName))) Then issues = issues & "ERROR:Duplicate ShortName in batch; " Else seenShort(LCase$(u.ShortName)) = u.NoteID
@@ -564,6 +587,14 @@ Sub BR_RunBuildBatch()
 			End If
 			hk = BR_IIfStr(u.HomeServer = "", "(none)", u.HomeServer)
 			pk = BR_IIfStr(u.Policy = "", "(none)", u.Policy)
+			bk = CStr(batchNo)
+			bRows(bk) = rowsIn
+			If inc = "Y" Then
+				If IsElement(bInc(bk)) Then bInc(bk) = bInc(bk) + 1 Else bInc(bk) = 1
+				If IsElement(bSrv(bk & "|" & hk)) Then bSrv(bk & "|" & hk) = bSrv(bk & "|" & hk) + 1 Else bSrv(bk & "|" & hk) = 1
+			Else
+				If IsElement(bErr(bk)) Then bErr(bk) = bErr(bk) + 1 Else bErr(bk) = 1
+			End If
 			If inc = "Y" Then
 				nInc = nInc + 1
 				If IsElement(srvInc(hk)) Then srvInc(hk) = srvInc(hk) + 1 Else srvInc(hk) = 1
@@ -575,10 +606,11 @@ Sub BR_RunBuildBatch()
 				If IsElement(srvExcl(hk)) Then srvExcl(hk) = srvExcl(hk) + 1 Else srvExcl(hk) = 1
 			End If
 
-			r = Q(inc) & "," & Q(gBatchID) & "," & Q(CStr(nRows)) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & _
-			Q(u.FullNameBefore) & "," & Q(BR_ExpectedName(u)) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
+			r = Q(inc) & "," & Q(gBatchID) & "," & Q(CStr(rowsIn)) & "," & Q(u.NoteID) & "," & Q(u.UNID) & "," & Q(u.GUID) & "," & _
+			Q(u.FullNameBefore) & "," & Q(BR_ExpectedName(u)) & "," & Q(BR_ExpectedName(u)) & "," & Q(u.FirstName) & "," & Q(u.LastName) & "," & Q(u.ShortName) & "," & Q(u.InternetAddress) & "," & _
 			Q(u.HomeServer) & "," & Q(BR_SrvPathFor(u.HomeServer, u.MailFile)) & "," & Q(u.MailFileNote) & "," & Q(u.OrgUnit) & "," & Q(u.Policy) & "," & Q(u.Groups) & "," & Q(u.VaultServer) & "," & Q(u.ClusterReplicas) & "," & Q(u.MapRule) & "," & Q(chk) & "," & Q(issues) & "," & Q(u.InetSource)
 			Call BR_AppendLine(bfile, r)
+			u.FullNameAfter = BR_ExpectedName(u)                         ' expected Notes name
 			Call BR_Audit(u, "BUILD", "SELECT", chk, BR_Elapsed(t0), "Include=" & inc & " " & issues)
 			End If
 		End If
@@ -587,9 +619,16 @@ Sub BR_RunBuildBatch()
 
 	' ---------- summary file ----------
 	Call BR_AppendLine(sumFile, "BulkReg " & BR_VERSION & " - batch summary")
-	Call BR_AppendLine(sumFile, "Batch ID        : " & gBatchID)
+	Call BR_AppendLine(sumFile, "Run / base ID   : " & baseID & "   (" & batchNo & " batch file(s), max " & batchMax & " rows each)")
 	Call BR_AppendLine(sumFile, "Built by / at   : " & gOperator & " / " & Format$(Now, "yyyy-mm-dd hh:nn:ss"))
-	Call BR_AppendLine(sumFile, "Batch file      : " & bfile)
+	For bi = 1 To batchNo
+		bk = CStr(bi)
+		bl = ""
+		ForAll bs In srvInc
+			If IsElement(bSrv(bk & "|" & ListTag(bs))) Then bl = bl & "  " & ListTag(bs) & "=" & bSrv(bk & "|" & ListTag(bs))
+		End ForAll
+		Call BR_AppendLine(sumFile, "Batch " & Format$(bi, "00") & "        : " & batchFiles(bk) & "  rows " & bRows(bk) & ", Include=Y " & BR_IIfStr(IsElement(bInc(bk)), CStr(bInc(bk)), "0") & ", ERROR " & BR_IIfStr(IsElement(bErr(bk)), CStr(bErr(bk)), "0") & " |" & bl)
+	Next
 	Call BR_AppendLine(sumFile, "Selection       : " & BR_SelectionFormula(True))
 	Call BR_AppendLine(sumFile, "Server filter   : " & BR_IIfStr(srvFilter = "", "(none - all home servers)", srvFilter))
 	Call BR_AppendLine(sumFile, "Batch size limit: " & batchMax)
@@ -601,14 +640,14 @@ Sub BR_RunBuildBatch()
 	End If
 	Call BR_AppendLine(sumFile, "Internet address: " & nBuilt & " constructed as <shortname>@" & CfgS("InternetDomain", "(InternetDomain not set)") & " (not present in AD)")
 	Call BR_AppendLine(sumFile, "")
-	Call BR_AppendLine(sumFile, "Rows in batch   : " & nRows & "   Include=Y: " & nInc & "   (WARN: " & nWarn & ")   Include=N (ERROR): " & nErr)
+	Call BR_AppendLine(sumFile, "Rows (all batches): " & nRows & "   Include=Y: " & nInc & "   (WARN: " & nWarn & ")   Include=N (ERROR): " & nErr)
 	If skipNoInet Then
 		Call BR_AppendLine(sumFile, "No Internet addr: " & nNoInet & "   SKIPPED and flagged - not in this batch. List: " & BR_IIfStr(nNoInet > 0, skipFile, "(none)"))
 		Call BR_AppendLine(sumFile, "                  Add the address in AD; after DirSync the next Build Batch offers the user again.")
 	Else
 		Call BR_AppendLine(sumFile, "No Internet addr: " & nNoInet & "   (WARN - included and registered without an address; SkipNoInternetAddress=0)")
 	End If
-	Call BR_AppendLine(sumFile, "Not selected    : already in an open batch: " & nInOpen & " | other home server: " & nOtherSrv & " | left for next batch: " & nLeft)
+	Call BR_AppendLine(sumFile, "Not selected    : already in an open batch: " & nInOpen & " | other home server: " & nOtherSrv & " | left for the next run (BuildMaxBatches): " & nLeft)
 	Call BR_AppendLine(sumFile, "")
 	Call BR_AppendLine(sumFile, "Included users per home server:")
 	ForAll fa1 In srvInc
@@ -638,15 +677,15 @@ Sub BR_RunBuildBatch()
 		Call BR_AppendLine(sumFile, "  " & ListTag(fa5) & " : " & fa5)
 	End ForAll
 	Call BR_AppendLine(sumFile, "")
-	Call BR_AppendLine(sumFile, "Next: review " & gBatchID & ".csv (Include / HomeServer / MailFile / ClusterReplicas / Policy),")
-	Call BR_AppendLine(sumFile, "      then run Actions > BulkReg > 03 - Register Batch and choose this file.")
+	Call BR_AppendLine(sumFile, "Next: review each " & baseID & "-NN.csv (Include / HomeServer / MailFile / ClusterReplicas / Policy),")
+	Call BR_AppendLine(sumFile, "      then run Actions > BulkReg > 03 - Register Batch once per batch file, starting with -01.")
 
-	BR_Close "batch=" & gBatchID & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft & " skipped_no_inet=" & BR_IIfStr(skipNoInet, CStr(nNoInet), "0")
-	BR_Msg "Batch " & gBatchID & " created." & Chr$(10) & Chr$(10) & _
+	BR_Close "batches=" & batchNo & " (" & baseID & "-01.." & Format$(batchNo, "00") & ") rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft & " skipped_no_inet=" & BR_IIfStr(skipNoInet, CStr(nNoInet), "0")
+	BR_Msg batchNo & " batch file(s) created: " & baseID & "-01 .. -" & Format$(batchNo, "00") & Chr$(10) & Chr$(10) & _
 	"Rows: " & nRows & "   Include=Y: " & nInc & "   WARN: " & nWarn & "   ERROR (Include=N): " & nErr & Chr$(10) & _
 	BR_IIfStr(skipNoInet, "Skipped - no InternetAddress: " & nNoInet & BR_IIfStr(nNoInet > 0, "  (list: " & skipFile & ")", ""), "Without InternetAddress (WARN, included): " & nNoInet) & Chr$(10) & _
-	"Not selected - in open batch: " & nInOpen & ", other server: " & nOtherSrv & ", left for next batch: " & nLeft & Chr$(10) & Chr$(10) & _
-	"Review:  " & bfile & Chr$(10) & "Summary: " & sumFile & Chr$(10) & Chr$(10) & _
+	"Not selected - in open batch: " & nInOpen & ", other server: " & nOtherSrv & ", left for the next run: " & nLeft & Chr$(10) & Chr$(10) & _
+	"Review:  " & bdir & baseID & "-NN.csv" & Chr$(10) & "Summary: " & sumFile & Chr$(10) & Chr$(10) & _
 	"Nothing has been registered. Run Actions > BulkReg > 03 - Register Batch after review.", BR_IIfInt(nErr > 0, 48, 64)
 	Exit Sub
 ErrH:
@@ -1684,4 +1723,172 @@ End Function
 
 Function BR_IIfInt2(c As Boolean, a As Integer, b As Integer) As Integer
 	If c Then BR_IIfInt2 = a Else BR_IIfInt2 = b
+End Function
+
+'=====================================================================
+' BR_RunInstallWelcome  -  runs agent BulkReg\06 - Install Welcome Page
+'   The agent itself only contains:  Call BR_RunInstallWelcome()
+'
+' Creates (or replaces) the Page "BulkReg Welcome" in the CURRENT database
+' (bulkreg.nsf) by DXL import: a branded start page with a short SOP of the
+' agent sequence. The page is pass-through HTML with inline styles only, no
+' scripts, no external files. Changes no documents, no other design element.
+' Run it once after installing the libraries and again after a release that
+' changes the page. Needs Designer (or Manager) access to bulkreg.nsf.
+' After the import set the launch option once (guide B18a):
+'   Database Properties > Launch > On Database Open: "Open designated Page"
+'   > select "BulkReg Welcome".
+'=====================================================================
+Sub BR_RunInstallWelcome()
+	On Error GoTo ErrH
+	Dim sess As New NotesSession, db As NotesDatabase, dxlImp As NotesDXLImporter, dxl As String
+
+	Set db = sess.CurrentDatabase
+	If db Is Nothing Then
+		MessageBox "Open bulkreg.nsf first, then run this agent from its Actions menu.", 48, "BulkReg - Welcome page"
+		Exit Sub
+	End If
+	If db.CurrentAccessLevel < ACLLEVEL_DESIGNER Then
+		MessageBox "Installing the page needs Designer or Manager access to " & db.FilePath & ".", 48, "BulkReg - Welcome page"
+		Exit Sub
+	End If
+	dxl = "<?xml version='1.0' encoding='utf-8'?>" & _
+	"<database xmlns='http://www.lotus.com/dxl'>" & _
+	"<page name='BulkReg Welcome'><body><richtext><par><run html='true'>" & _
+	BR_XmlEsc(BR_WelcomeHtml()) & _
+	"</run></par></richtext></body></page></database>"
+	Set dxlImp = sess.CreateDXLImporter()
+	dxlImp.DesignImportOption = DXLIMPORTOPTION_REPLACE_ELSE_CREATE
+	dxlImp.ReplaceDBProperties = False
+	dxlImp.ReplicaRequiredForReplaceOrUpdate = False
+	Call dxlImp.Import(dxl, db)
+	MessageBox "The page 'BulkReg Welcome' was created in " & db.FilePath & "." & Chr$(10) & Chr$(10) & _
+	"One manual step (once): in Domino Designer open Database Properties > Launch tab," & Chr$(10) & _
+	"set 'On Database Open' to 'Open designated Page' and choose 'BulkReg Welcome'." & Chr$(10) & _
+	"Then close and re-open the database.", 64, "BulkReg - Welcome page"
+	Exit Sub
+ErrH:
+	MessageBox "Installing the welcome page failed: " & Error$ & " (err " & Err & ", line " & Erl & ")", 16, "BulkReg - Welcome page"
+	Exit Sub
+End Sub
+
+' Escapes text for use inside an XML element.
+Function BR_XmlEsc(s As String) As String
+	Dim t As String
+	t = Replace(s, "&", "&amp;")
+	t = Replace(t, "<", "&lt;")
+	t = Replace(t, ">", "&gt;")
+	BR_XmlEsc = t
+End Function
+
+' One step row of the SOP table.  num = step number, cmd = agent/action chip text,
+' txt = what to do, res = expected result.
+Function BR_WelcomeStep(num As String, ttl As String, cmd As String, txt As String, res As String) As String
+	Dim r As String
+	r = "<tr>"
+	r = r & "<td valign='top' width='64' style='padding:14px 0 14px 14px;border-bottom:1px solid #DCE6F0;'>"
+	r = r & "<div style='width:38px;height:38px;line-height:38px;border-radius:19px;background-color:#17707F;color:#FFFFFF;font-size:18px;font-weight:bold;text-align:center;'>" & num & "</div></td>"
+	r = r & "<td valign='top' style='padding:14px 18px 14px 6px;border-bottom:1px solid #DCE6F0;'>"
+	r = r & "<div style='font-size:16px;font-weight:bold;color:#14142B;'>" & ttl & "</div>"
+	If cmd <> "" Then r = r & "<div style='margin:6px 0 6px 0;'><span style='background-color:#ECF3F8;border:1px solid #8AC6F8;color:#0F5FDC;font-family:Consolas,Courier New,monospace;font-size:12px;padding:3px 8px;'>" & cmd & "</span></div>"
+	r = r & "<div style='font-size:13px;line-height:19px;color:#14142B;'>" & txt & "</div>"
+	r = r & "<div style='font-size:12px;line-height:18px;color:#17707F;margin-top:6px;'><b>Done when:</b> " & res & "</div>"
+	r = r & "</td></tr>"
+	BR_WelcomeStep = r
+End Function
+
+' The whole page as HTML (inline styles only, tables for layout, no scripts).
+Function BR_WelcomeHtml() As String
+	Dim h As String, a As String
+	a = "Actions &gt; BulkReg &gt; "
+
+	h = "<div style='font-family:Arial,Helvetica,sans-serif;background-color:#F7F7FC;padding:0;margin:0;'>"
+	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0'><tr><td align='center'>"
+	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#FFFFFF;max-width:900px;'>"
+
+	' ---- hero (solid colour first, gradient where the browser supports it)
+	h = h & "<tr><td style='background-color:#17707F;background-image:linear-gradient(135deg,#0B1D3A 0%,#17707F 45%,#2EC0CB 85%,#36D6D9 100%);padding:34px 36px 30px 36px;'>"
+	h = h & "<div style='font-size:12px;letter-spacing:3px;color:#AAFFFF;font-weight:bold;'>HCL SOFTWARE &middot; DOMINO</div>"
+	h = h & "<div style='font-size:36px;font-weight:bold;color:#FFFFFF;margin-top:8px;'>BulkReg</div>"
+	h = h & "<div style='font-size:18px;color:#FFFFFF;margin-top:6px;'>Bulk registration of DirSync users with Notes ID, mail file and ID Vault</div>"
+	h = h & "<div style='font-size:12px;color:#DCE6F0;margin-top:14px;'>Release " & BR_VERSION & " &nbsp;&middot;&nbsp; Run from the HCL Domino Administrator client &nbsp;&middot;&nbsp; All agents: <b>Actions &gt; BulkReg</b></div>"
+	h = h & "</td></tr>"
+
+	' ---- what it does
+	h = h & "<tr><td style='padding:26px 36px 8px 36px;'>"
+	h = h & "<div style='font-size:22px;font-weight:bold;color:#17707F;'>What this tool does</div>"
+	h = h & "<div style='font-size:14px;line-height:21px;color:#14142B;margin-top:8px;'>DirSync creates Person documents for Active Directory users, but those users have no Notes ID and no mail file. "
+	h = h & "BulkReg turns them into full Domino users, in <b>reviewed batches</b>: it creates the Notes ID (deposited in the ID Vault through the policy), creates the mail file on the home server, "
+	h = h & "requests replicas on the other mail cluster members, and writes every action to the audit log.</div>"
+	h = h & "<table width='100%' cellspacing='8' cellpadding='0' border='0' style='margin-top:12px;'><tr>"
+	h = h & "<td width='25%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #17707F;'><b style='color:#17707F;'>1 &middot; Plan</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>Preflight checks everything. Build Batch writes the batch files. Nothing is registered.</div></td>"
+	h = h & "<td width='25%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #2EC0CB;'><b style='color:#17707F;'>2 &middot; Review</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>You check the batch file in Excel and set Include to Y or N per user.</div></td>"
+	h = h & "<td width='25%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #0F5FDC;'><b style='color:#17707F;'>3 &middot; Register</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>Dry run first, then live on the same file. You type the batch ID to confirm.</div></td>"
+	h = h & "<td width='25%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #3C91FF;'><b style='color:#17707F;'>4 &middot; Verify</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>Checks registration, vault, mail file and replicas for the batch.</div></td>"
+	h = h & "</tr></table>"
+	h = h & "</td></tr>"
+
+	' ---- before you start
+	h = h & "<tr><td style='padding:14px 36px 6px 36px;'>"
+	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#F7F7FC;border:1px solid #DCE6F0;border-left:5px solid #2EC0CB;'><tr><td style='padding:14px 18px;'>"
+	h = h & "<div style='font-size:15px;font-weight:bold;color:#17707F;'>Before the first batch (one time)</div>"
+	h = h & "<div style='font-size:13px;line-height:20px;color:#14142B;margin-top:6px;'>"
+	h = h & "&bull; <b>bulkreg.ini</b> and <b>server_mapping.csv</b> are filled in: no &lt;placeholder&gt; left, <b>DryRun=1</b>.<br>"
+	h = h & "&bull; The numbered mail folders (mail1, mail2 ...) exist on every home server and mail cluster member.<br>"
+	h = h & "&bull; The log database <b>bulkreg_log.nsf</b> exists and its owner has run <b>" & a & "00 - Set Up Log Database</b> once.<br>"
+	h = h & "&bull; Start with a <b>pilot batch of 2 users</b> (BatchSize=2) and go through all steps below before the real batches."
+	h = h & "</div></td></tr></table>"
+	h = h & "</td></tr>"
+
+	' ---- the SOP
+	h = h & "<tr><td style='padding:18px 36px 0 36px;'><div style='font-size:22px;font-weight:bold;color:#17707F;'>Procedure for every batch</div>"
+	h = h & "<div style='font-size:13px;color:#14142B;margin-top:4px;'>Always in this order. Repeat from step 1 or 2 for the next batch.</div></td></tr>"
+	h = h & "<tr><td style='padding:8px 36px 8px 36px;'><table width='100%' cellspacing='0' cellpadding='0' border='0' style='border:1px solid #DCE6F0;'>"
+	h = h & BR_WelcomeStep("1", "Preflight Check", a & "01 - Preflight Check", _
+	"Checks the environment, the configuration and every candidate user. It changes nothing in Domino. Fix every ERROR, then create the mail folders listed in <i>_mailfolders.txt</i> in the run folder under C:\BulkReg\audit.", _
+	"0 environment errors; the batch plan (<i>_batchplan.txt</i>) looks right.")
+	h = h & BR_WelcomeStep("2", "Build the batches", a & "02 - Build Batch", _
+	"Writes BATCH-&lt;run&gt;-01.csv, -02.csv ... (1000 users each) and <i>_summary.txt</i> to C:\BulkReg\batches. Nothing is registered.", _
+	"The batch files and the summary exist.")
+	h = h & BR_WelcomeStep("3", "Review the batch file", "Excel &middot; save as CSV UTF-8", _
+	"Open BATCH-&lt;id&gt;.csv. Set <b>Include=N</b> for users to skip and check HomeServer, MailFile and NotesName. Do not change the objectGUID.", _
+	"The file is reviewed and saved.")
+	h = h & BR_WelcomeStep("4", "Dry run", "DryRun=1 &nbsp;&middot;&nbsp; " & a & "03 - Register Batch", _
+	"Simulates the registration of every approved row. Nobody is registered, the batch stays open and can be dry-run again.", _
+	"Every row is <b>WOULD_REGISTER</b> in BATCH-&lt;id&gt;_dryrun_&lt;run&gt;.csv.")
+	h = h & BR_WelcomeStep("5", "Register for real", "DryRun=0 &nbsp;&middot;&nbsp; " & a & "03 - Register Batch", _
+	"Set <b>DryRun=0</b> in bulkreg.ini, run 03 on the same batch and <b>type the batch ID</b> to confirm. Each batch can be registered live only once.", _
+	"BATCH-&lt;id&gt;_results.csv is written and the batch is <b>DONE</b>. Set DryRun=1 again.")
+	h = h & BR_WelcomeStep("6", "Verify", a & "04 - Verify Registration and Vault", _
+	"Choose the batch. Checks the registration, the ID Vault, the mail file and the replicas. Run it again later until all replicas exist.", _
+	"REGISTERED, IN_VAULT, MAILFILE_OK and REPLICAS_OK for every user.")
+	h = h & BR_WelcomeStep("7", "Hand over and clean up", "bulkreg.cmd PurgeSecrets", _
+	"Hand the initial passwords to the users, then delete the password files. Keep the audit folders. Then start the next batch.", _
+	"No secrets are left in C:\BulkReg\secure.")
+	h = h & "</table></td></tr>"
+
+	' ---- rules
+	h = h & "<tr><td style='padding:14px 36px 6px 36px;'>"
+	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#FFF8E6;border:1px solid #F5D78A;border-left:5px solid #F5A623;'><tr><td style='padding:14px 18px;'>"
+	h = h & "<div style='font-size:15px;font-weight:bold;color:#14142B;'>Safety rules</div>"
+	h = h & "<div style='font-size:13px;line-height:20px;color:#14142B;margin-top:6px;'>"
+	h = h & "&bull; <b>DryRun=1 is the safe state.</b> Only agent 03 uses it. Switch to 0 just for the live run, then back to 1.<br>"
+	h = h & "&bull; 03 cannot run without a batch file from 02, and it registers only the rows with <b>Include=Y</b>.<br>"
+	h = h & "&bull; Agent <b>05 - Export to Registration Text File</b> is not part of this procedure.<br>"
+	h = h & "&bull; Batch files, ID files, passwords and audit logs contain personal data or secrets. Keep them in C:\BulkReg, never commit or e-mail them.<br>"
+	h = h & "&bull; If an agent reports an error or a run stops, do not repeat it blindly: read the run folder and the log database first."
+	h = h & "</div></td></tr></table></td></tr>"
+
+	' ---- where to find things + footer
+	h = h & "<tr><td style='padding:14px 36px 24px 36px;'>"
+	h = h & "<table width='100%' cellspacing='8' cellpadding='0' border='0'><tr>"
+	h = h & "<td width='33%' valign='top' style='border:1px solid #DCE6F0;padding:12px;'><b style='color:#17707F;'>Settings</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>C:\BulkReg\config\bulkreg.ini<br>C:\BulkReg\config\server_mapping.csv</div></td>"
+	h = h & "<td width='33%' valign='top' style='border:1px solid #DCE6F0;padding:12px;'><b style='color:#17707F;'>Results and audit</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>Batch files: C:\BulkReg\batches<br>One folder per run: C:\BulkReg\audit<br>Central log: bulkreg_log.nsf</div></td>"
+	h = h & "<td width='33%' valign='top' style='border:1px solid #DCE6F0;padding:12px;'><b style='color:#17707F;'>Full guide</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>BulkReg_Admin_Guide (.docx / .html) in the kit: every click, troubleshooting in chapter D.</div></td>"
+	h = h & "</tr></table>"
+	h = h & "<div style='font-size:11px;color:#6B7280;margin-top:10px;border-top:2px solid #2EC0CB;padding-top:8px;'>HCL Software &middot; BulkReg " & BR_VERSION & " &middot; Internal administration tool. Not for distribution to end users.</div>"
+	h = h & "</td></tr>"
+
+	h = h & "</table></td></tr></table></div>"
+	BR_WelcomeHtml = h
 End Function

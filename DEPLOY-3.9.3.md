@@ -1,8 +1,14 @@
-# BulkReg 3.8.0 – Deployment steps
+# BulkReg 3.9.3 – Deployment steps
 
-Upgrade from 3.6.6 or 3.7.0. Libraries `BulkRegCommon` and `BulkRegAgents` change, plus two config files. The six agents are unchanged (only the version comment in their header).
+Upgrade from 3.6.6, 3.7.0, 3.8.0, 3.9.0, 3.9.1 or 3.9.2. Libraries `BulkRegCommon` and `BulkRegAgents` change, plus two config files. The six agents are unchanged (only the version comment in their header).
 
-**3.8.0 additions** (if you already run 3.7.0): detected server platform (check the `Server X: ...` lines in Preflight), `FullNameField=DisplayName`, `ServerOSDetect`, `ServerOSMap`, `RegisterCreateMailDb`. Add them from `config/bulkreg.ini` to your own ini.
+**3.9.3 change:** `HomeServerAssignment=FILL` (first server 2500, then the second); new `OverrideADInternetAddress=0` in `bulkreg.ini`.
+
+**3.9.2 change:** the registration last name is the Person item `JobTitle` (`LastNameField=JobTitle`), used exactly as it is; no name is constructed, split or stripped. `FullNameField`, `RankHandling`, `RankPrefixes` and `IncludeMiddleInitial` no longer exist: remove them from your ini and add `LastNameField=JobTitle`, `FirstNameField=`, `MiddleNameField=` from `config/bulkreg.ini`.
+
+**3.9.0 additions** (if you already run 3.8.0): `PreflightScope=ALL` (default), `BuildMaxBatches`. Build Batch now writes `BATCH-<run>-01.csv`, `-02.csv` ...; batch files and audit rows have `FullNameAfter`. Add the new settings from `config/bulkreg.ini` to your own ini; open batches built with 3.8.0 still register.
+
+**3.8.0 additions** (if you already run 3.7.0): detected server platform (check the `Server X: ...` lines in Preflight), `ServerOSDetect`, `ServerOSMap`, `RegisterCreateMailDb`. Add them from `config/bulkreg.ini` to your own ini.
 
 **Status:** the code was reviewed and checked for block balance and consistency, but **not compiled or run against Domino**. Treat the pilot in step 6 as the acceptance test.
 
@@ -64,7 +70,7 @@ InternetDomain=<demo.com>
 
 **c. Short name.** The AD samaccountname maps to the Person item `ShortName` (a text list), so the default `ShortNameFields=ShortName` is correct. BulkReg looks at every value of the list and takes the first one without blanks, `/` or `=` that is not "First Last". If no value qualifies, the user gets an ERROR (`ShortName ... looks like a full name`).
 
-**c2. Full name.** `FullNameField=DisplayName` (default). The first value of DisplayName is split at its last blank: "Mary Ann Smith" becomes first name "Mary Ann", last name "Smith", Notes name `Mary Ann Smith/Demo`. A one-word DisplayName gives a last name only and a WARN. Check the `NotesName` column of the batch file in the pilot.
+**c2. Registration name.** `LastNameField=JobTitle` (shipped). The JobTitle value, e.g. "Sgt Naman Kumar", is registered as the last name exactly as it is (no first name), so the Notes name is `Sgt Naman Kumar/Demo`. A user with an empty JobTitle gets an ERROR (Domino needs a last name). Check the `FullNameAfter` column of the Preflight audit CSV in the pilot.
 
 **d. Mapping file.** The only active line must be:
 
@@ -100,4 +106,4 @@ Run **01 - Preflight Check**, DryRun setting irrelevant. Open the run folder und
 
 ## 8. Rollback
 
-Restore the backed-up `bulkreg.nsf` (or paste the 3.6.6 libraries from commit `265e39d`) and the old `.ini` / `.csv`. Batches built with 3.8.0 have an extra `InetSource` column and an AUTO-assigned `HomeServer`; 3.6.6 reads them correctly. Users already registered stay registered.
+Restore the backed-up `bulkreg.nsf` (or paste the 3.6.6 libraries from commit `265e39d`) and the old `.ini` / `.csv`. Batches built with 3.8.0 or later have an extra `InetSource` column and an AUTO-assigned `HomeServer`; 3.6.6 reads them correctly. Users already registered stay registered.

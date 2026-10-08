@@ -51,6 +51,11 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.9.4", "**Release 3.9.4.** **Welcome page.** New optional agent `BulkReg\\06 - Install Welcome Page` creates a branded start page in bulkreg.nsf (what BulkReg does, prerequisites, the 7-step procedure per batch, safety rules); set it as the database launch page (new B18a). No change to the registration logic."],
+  ["3.9.3", "**Release 3.9.3.** `HomeServerAssignment=FILL` (also accepted: `FILLED`) is the shipped setting: 2500 users on the first mail server, then 2500 on the second. New `OverrideADInternetAddress` (default 0): 1 = always build `<shortname>@<InternetDomain>`, even when AD has an address; Preflight warns about an unknown HomeServerAssignment value."],
+  ["3.9.2", "**Release 3.9.2.** Simplified name handling: the Person item **JobTitle** (`LastNameField=JobTitle`) is registered as the Domino last name exactly as it is. No name is constructed or split, rank handling and `FullNameField` / `RankHandling` / `RankPrefixes` / `IncludeMiddleInitial` are removed; `FirstNameField` and `MiddleNameField` are empty by default."],
+  ["3.9.1", "**Release 3.9.1.** The registration name is taken from the Person item **JobTitle** (`FullNameField=JobTitle`; it holds rank, first and last name from AD): whatever value JobTitle has is used, the rank is removed (`RankHandling`), the rest is split at the last blank into first and last name. Empty JobTitle falls back to `FirstNameField` / `LastNameField`. Preflight logs the name source."],
+  ["3.9.0", "**Release 3.9.0.** Preflight checks ALL candidates (`PreflightScope=ALL` default); Build Batch writes all batches in one run (`BATCH-<run>-01.csv`, `-02.csv` ..., `BuildMaxBatches`); `FullNameAfter` filled in every audit row and a new `FullNameAfter` column in the batch files; configurable common-name source (`FirstNameField`, `LastNameField`, `MiddleNameField`, `IncludeMiddleInitial`, `FullNameField` as a comma list, e.g. `LastName`); rank prefix handling (`RankHandling`, `RankPrefixes`); Register offers the oldest open batch first. The step-by-step procedures (B11, C3) still describe one batch per Build Batch run."],
   ["3.8.0", "**Release 3.8.0.** Fixes and features from the first 3.7.0 live pilot: compile fix (`List As Long`); full name from DisplayName, short name from the ShortName list; **server platform detected per server** (Linux, Windows or mixed; ServerOSDetect, ServerOSMap, ServerOS fallback) with the matching path form for registration and mail files; registration parameters in the debug log; dry run also checks the ID file folder and MailTemplate; new `RegisterCreateMailDb=0` (BulkReg creates the mail file itself); MailTemplate must end in .ntf and is checked on every home server. Re-paste both libraries and update bulkreg.ini (see DEPLOY-3.8.0.md)."],
   ["3.7.0", "**Release 3.7.0.** **Batch segregation in Preflight** (plans all candidates, checks one batch; PreflightScope / PreflightBatchNo; new `_batchplan.txt`). **Automatic distribution over two or more home servers** (HomeServers, HomeServerMaxUsers=2500, HomeServerAssignment; mapping column 3 `AUTO`). **Short name** read from the AD samaccountname item (ShortNameFields), never from the FullName; full-name-like values are an ERROR. **Internet address constructed** as `<shortname>@<InternetDomain>` when AD has none. **Domino on Linux**: ServerOS, ServerDataDir (/local/notesdata), mail paths sent as `mail1/smith.nsf`; MailFolderMax now per server. Re-paste both libraries and replace bulkreg.ini and server_mapping.csv (see DEPLOY-3.8.0.md)."],
   ["3.6.6", "**Release 3.6.6.** Compile fix in BulkRegCommon (BR_MailAclFix: Type mismatch on CanDeleteDocuments). Re-paste BulkRegCommon."],
@@ -509,11 +514,12 @@ tbl(["Key", "Enter", "From"], [
   ["CertifierName", "With UseCA=1: the CA certifier, e.g. `/Demo` (users become **Neha Arora/Demo**) or `/Sales/Demo`. `Demo` and `O=Demo` are accepted and converted to `/Demo`.", "Worksheet 6"],
   ["DefaultOrgUnit", "**Empty** for Neha Arora/Demo. Only for an extra OU level: ONE plain name, e.g. `Sales` → Neha Arora/Sales/Demo. Never `O=Demo`, `OU=Sales` or `Sales/Demo`.", "Worksheet 10"],
   ["CertifierIDFile", "With UseCA=0: `C:\\BulkReg\\cert\\<file>.id`. With UseCA=1: leave the placeholder or clear it.", "B5 Option 2"],
-  ["HomeServers / HomeServerMaxUsers / HomeServerAssignment", "The mail servers that receive the users, e.g. `DominoADMail/Demo,DominoADMail2/Demo`; max users per server (`2500`); `BALANCED` (fewest users first, default) or `FILL`. A mapping rule with `AUTO` as home server uses this pool.", "Worksheet 3"],
+  ["HomeServers / HomeServerMaxUsers / HomeServerAssignment", "The mail servers that receive the users, e.g. `DominoADMail/Demo,DominoADMail2/Demo`; max users per server (`2500`); `FILL` (shipped: first server up to the max, then the next: 2500 + 2500; `FILLED` also accepted) or `BALANCED` (fewest users first). A mapping rule with `AUTO` as home server uses this pool.", "Worksheet 3"],
   ["ServerOS / ServerDataDir / ServerFileOwner", "`LINUX` (path separator `/`), `/local/notesdata`, and the Linux user:group of Domino for the chown line in the Preflight report", "–"],
+  ["LastNameField / FirstNameField / MiddleNameField", "Person items registered as last, first and middle name. Shipped: `LastNameField=JobTitle` (JobTitle holds the AD name with rank, e.g. `Sgt Naman Kumar`), used exactly as it is: Notes name **Sgt Naman Kumar/Demo**. `FirstNameField` and `MiddleNameField` are empty (no first name). A user whose LastNameField item is empty gets an ERROR.", "–"],
   ["ShortNameFields", "Person item(s) with the AD samaccountname, first non-empty wins (default `ShortName`). The FullName/cn is never used.", "–"],
-  ["ConstructInternetAddress / InternetDomain", "`1` and e.g. `demo.com`: users without an Internet address in AD get `<shortname>@demo.com`", "–"],
-  ["PreflightScope / PreflightBatchNo", "`BATCH` (default) checks one batch in detail, `ALL` checks everybody; `1` = the next batch to be built", "–"],
+  ["ConstructInternetAddress / InternetDomain / OverrideADInternetAddress", "`1` and e.g. `demo.com`: users without an Internet address in AD get `<shortname>@demo.com` (lower case). `OverrideADInternetAddress=1` builds it for every user, even when AD has an address (default 0).", "–"],
+  ["PreflightScope / PreflightBatchNo", "`ALL` (default) checks everybody; `BATCH` checks only batch number `PreflightBatchNo` in detail", "–"],
   ["DefaultHomeServer", "Home server when `HomeServers` is empty (everybody on ONE server): `DominoADMail/Demo` or `CN=DominoADMail/O=Demo`", "Worksheet 3"],
   ["DefaultPolicy", "Explicit policy **exactly** as listed, e.g. `*/DirSync-Vault`. **Empty** with an organizational policy.", "Worksheet 9"],
   ["OrgPolicyAssignsVault", "`1` if an organizational policy (`*/Demo`, `*/Sales/Demo`) assigns the vault, otherwise `0`", "B8"],
@@ -830,6 +836,17 @@ olc(
 );
 note("The agent files contain only these lines plus a description in comments. **(Declarations)** of an agent stays empty. You can also type the 3 + 3 lines by hand instead of pasting.");
 done("All six agents are listed under Code > Agents with the exact names, trigger 'Action menu selection', target 'None', each contains `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, and they save without errors.");
+h2("B18a Welcome page (start page of bulkreg.nsf)");
+meta("Domino administrator", "Domino Designer + Notes client", "adds 1 page, 1 agent to bulkreg.nsf");
+p("Without this step bulkreg.nsf opens on an empty view. The welcome page shows what BulkReg does, the one-time prerequisites, the seven steps of every batch and the safety rules.");
+ol(
+  "Create a seventh agent exactly as in B18, named `BulkReg\\06 - Install Welcome Page`, with the content of **Agent06_InstallWelcomePage.lss** (it contains `Call BR_RunInstallWelcome()`). Save it; it must compile.",
+  "Re-sign the database (B19) if the ECL asks for it, then in the Notes client open bulkreg.nsf and run **Actions > BulkReg > 06 - Install Welcome Page**. *Result:* a message says the page *BulkReg Welcome* was created. Designer access to bulkreg.nsf is required.",
+  "In Designer open **Database Properties** (File > Application > Properties), tab **Launch**. Set **On Database Open** to **Open designated Page** and choose **BulkReg Welcome**. Close the properties box.",
+  "Close bulkreg.nsf and open it again. *Result:* the welcome page appears."
+);
+note("After a release that changes the page, paste the new BulkRegAgents library (B17a) and run agent 06 again; it replaces the page. If the page shows raw HTML text, open **Code > Pages > BulkReg Welcome** in Designer, select all text and choose **Text > Pass-Thru HTML**.");
+done("bulkreg.nsf opens on the BulkReg welcome page, and the Actions menu still lists the agents.");
 pb();
 
 // ---------- B19

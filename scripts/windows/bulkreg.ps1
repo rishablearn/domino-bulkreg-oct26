@@ -1,6 +1,6 @@
 <#
 =====================================================================
- bulkreg.ps1  -  BulkReg 3.8.0 OPTIONAL helper for the Windows admin workstation
+ bulkreg.ps1  -  BulkReg 3.9.4 OPTIONAL helper for the Windows admin workstation
                  (the machine running the HCL Domino Administrator client)
 
  Registration runs entirely inside the Domino Administrator client
@@ -33,7 +33,7 @@ param(
 )
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$Version = '3.8.0'
+$Version = '3.9.4'
 if (-not $Config) { $Config = if ($env:BULKREG_CONFIG) { $env:BULKREG_CONFIG } else { Join-Path $Base 'config\bulkreg.ini' } }
 $KitConfig = Join-Path $PSScriptRoot '..\..\config'
 $script:Fails = 0; $script:Warns = 0
@@ -177,6 +177,7 @@ function Test-Versions {
         @{ File = 'lotusscript\Agent03_RegisterBatch.lss';     Pattern = 'Version\s*:\s*([0-9.]+)' },
         @{ File = 'lotusscript\Agent04_VerifyVaultStatus.lss'; Pattern = 'Version\s*:\s*([0-9.]+)' },
         @{ File = 'lotusscript\Agent05_ExportToBatchRegFile.lss'; Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'lotusscript\Agent06_InstallWelcomePage.lss'; Pattern = 'Version\s*:\s*([0-9.]+)' },
         @{ File = 'config\bulkreg.ini';                         Pattern = 'BulkReg ([0-9.]+)' },
         @{ File = 'config\server_mapping.csv';                  Pattern = 'BulkReg ([0-9.]+)' },
         @{ File = 'scripts\windows\bulkreg.cmd';                Pattern = 'BulkReg ([0-9.]+)' },

@@ -1,0 +1,30 @@
+'=====================================================================
+' Agent name : BulkReg\06 - Install Welcome Page
+' Version    : 3.9.4  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.9.4)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunInstallWelcome).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: open the agent, click in the editor, Ctrl+A, Delete, paste this
+'              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunInstallWelcome):
+'   Creates or replaces the Page "BulkReg Welcome" in bulkreg.nsf (start page with
+'   the short procedure). Run once after installing the libraries, and again after
+'   a release that changes the page. Then set Database Properties > Launch >
+'   "Open designated Page" > BulkReg Welcome (guide B18a). Needs Designer access.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunInstallWelcome()
+End Sub
