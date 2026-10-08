@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.9.4
+' Script Library : BulkRegAgents            Version 3.9.5
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -1577,6 +1577,7 @@ End Sub
 '
 ' Creates (or re-creates) in the central log database (LogServer!!LogDb):
 '   - the form "BRLogEntry" (to open any log document), via DXL import
+'   - the Page "BulkReg Log Welcome" (start page, DXL import; launch option set by hand)
 '   - 8 categorized views under "BulkReg\" (runs, batches, users, results,
 '     home servers, problems, skipped users, full log).
 ' Run it ONCE after creating the log database (guide B15) and again after a
@@ -1601,7 +1602,7 @@ Sub BR_RunSetupLog()
 	End If
 	Set ws = New NotesUIWorkspace
 	ans = ws.Prompt(PROMPT_YESNO, "BulkReg - Set up log database", _
-	"Create or replace the BulkReg form and the 8 views ""BulkReg\..."" in" & Chr$(10) & _
+	"Create or replace the BulkReg form, the welcome page and the 8 views ""BulkReg\..."" in" & Chr$(10) & _
 	logName & " ?" & Chr$(10) & Chr$(10) & _
 	"Existing log documents are not changed. Other views in the database are not touched.")
 	If ans <> 1 Then
@@ -1612,6 +1613,11 @@ Sub BR_RunSetupLog()
 	res = BR_LogImportForm(gLogDb)
 	report = "Form BRLogEntry: " & res & Chr$(10)
 	BR_Log BR_IIfInt2(res = "OK", LVL_INFO, LVL_ERROR), "Form BRLogEntry: " & res
+	If res <> "OK" Then nBad = nBad + 1
+
+	res = BR_ImportWelcomePage(gLogDb, "BulkReg Log Welcome", BR_LogWelcomeHtml())
+	report = report & "Page BulkReg Log Welcome: " & res & Chr$(10)
+	BR_Log BR_IIfInt2(res = "OK", LVL_INFO, LVL_ERROR), "Page BulkReg Log Welcome: " & res
 	If res <> "OK" Then nBad = nBad + 1
 
 	defs = BR_LogViewDefs()
@@ -1625,7 +1631,8 @@ Sub BR_RunSetupLog()
 
 	BR_Close "Log database set up: " & (UBound(defs) + 1) & " views, problems=" & nBad
 	BR_Msg "Log database " & logName & Chr$(10) & Chr$(10) & report & Chr$(10) & _
-	"Open the database and expand the view folder ""BulkReg"" in the navigator.", CInt(BR_IIfStr(nBad > 0, "48", "64"))
+	"Open the database and expand the view folder ""BulkReg"" in the navigator." & Chr$(10) & Chr$(10) & _
+	"Once: in Designer set Database Properties > Launch > On Database Open > Open designated Page > BulkReg Log Welcome.", CInt(BR_IIfStr(nBad > 0, "48", "64"))
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Set up log database aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
@@ -1891,4 +1898,104 @@ Function BR_WelcomeHtml() As String
 
 	h = h & "</table></td></tr></table></div>"
 	BR_WelcomeHtml = h
+End Function
+
+'=====================================================================
+' Welcome page of the central log database (bulkreg_log.nsf)
+'   BR_ImportWelcomePage   imports a Page by DXL (replace else create)
+'   BR_LogWelcomeHtml      the HTML of the page "BulkReg Log Welcome"
+'   BR_LogViewRow          one row of the view table
+' Called by BR_RunSetupLog (agent 00). Launch option is set by hand once
+' (guide B20a): Database Properties > Launch > Open designated Page.
+'=====================================================================
+Function BR_ImportWelcomePage(db As NotesDatabase, pageName As String, htmlText As String) As String
+	On Error GoTo ErrH
+	Dim dxlImp As NotesDXLImporter, dxl As String
+	dxl = "<?xml version='1.0' encoding='utf-8'?>" & _
+	"<database xmlns='http://www.lotus.com/dxl'>" & _
+	"<page name='" & pageName & "'><body><richtext><par><run html='true'>" & _
+	BR_XmlEsc(htmlText) & _
+	"</run></par></richtext></body></page></database>"
+	Set dxlImp = gSession.CreateDXLImporter()
+	dxlImp.DesignImportOption = DXLIMPORTOPTION_REPLACE_ELSE_CREATE
+	dxlImp.ReplaceDBProperties = False
+	dxlImp.ReplicaRequiredForReplaceOrUpdate = False
+	Call dxlImp.Import(dxl, db)
+	BR_ImportWelcomePage = "OK"
+	Exit Function
+ErrH:
+	BR_ImportWelcomePage = "ERROR " & Error$ & " (err " & Err & ") - the views still work"
+	Exit Function
+End Function
+
+Function BR_LogViewRow(num As String, ttl As String, txt As String) As String
+	Dim r As String
+	r = "<tr>"
+	r = r & "<td valign='top' width='52' style='padding:10px 0 10px 12px;border-bottom:1px solid #DCE6F0;'>"
+	r = r & "<div style='width:30px;height:30px;line-height:30px;border-radius:15px;background-color:#17707F;color:#FFFFFF;font-size:15px;font-weight:bold;text-align:center;'>" & num & "</div></td>"
+	r = r & "<td valign='top' style='padding:10px 16px 10px 6px;border-bottom:1px solid #DCE6F0;'>"
+	r = r & "<div style='font-size:14px;font-weight:bold;color:#14142B;'>" & ttl & "</div>"
+	r = r & "<div style='font-size:12px;line-height:18px;color:#14142B;margin-top:2px;'>" & txt & "</div></td></tr>"
+	BR_LogViewRow = r
+End Function
+
+Function BR_LogWelcomeHtml() As String
+	Dim h As String
+	h = "<div style='font-family:Arial,Helvetica,sans-serif;background-color:#F7F7FC;padding:0;margin:0;'>"
+	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0'><tr><td align='center'>"
+	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#FFFFFF;max-width:900px;'>"
+
+	h = h & "<tr><td style='background-color:#17707F;background-image:linear-gradient(135deg,#0B1D3A 0%,#17707F 45%,#2EC0CB 85%,#36D6D9 100%);padding:34px 36px 30px 36px;'>"
+	h = h & "<div style='font-size:12px;letter-spacing:3px;color:#AAFFFF;font-weight:bold;'>HCL SOFTWARE &middot; DOMINO</div>"
+	h = h & "<div style='font-size:36px;font-weight:bold;color:#FFFFFF;margin-top:8px;'>BulkReg Audit Log</div>"
+	h = h & "<div style='font-size:18px;color:#FFFFFF;margin-top:6px;'>The shared, permanent record of every BulkReg run</div>"
+	h = h & "<div style='font-size:12px;color:#DCE6F0;margin-top:14px;'>Release " & BR_VERSION & " &nbsp;&middot;&nbsp; Written by the BulkReg agents &nbsp;&middot;&nbsp; Read-only for auditors</div>"
+	h = h & "</td></tr>"
+
+	h = h & "<tr><td style='padding:26px 36px 8px 36px;'>"
+	h = h & "<div style='font-size:22px;font-weight:bold;color:#17707F;'>What is stored here</div>"
+	h = h & "<div style='font-size:14px;line-height:21px;color:#14142B;margin-top:8px;'>Every run of every BulkReg agent writes structured documents to this database. "
+	h = h & "The CSV and log files on the admin PC are local working copies; <b>this database is the record</b> for other administrators and auditors.</div>"
+	h = h & "<table width='100%' cellspacing='8' cellpadding='0' border='0' style='margin-top:12px;'><tr>"
+	h = h & "<td width='33%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #17707F;'><b style='color:#17707F;'>Run</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>One document per agent run: agent, operator, batch, DryRun, start, end, status and summary.</div></td>"
+	h = h & "<td width='33%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #2EC0CB;'><b style='color:#17707F;'>Entry</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>One document per log line of a run (INFO, WARN, ERROR), in order.</div></td>"
+	h = h & "<td width='33%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #0F5FDC;'><b style='color:#17707F;'>Audit</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>One document per user and action: result, home server, mail file, vault, replicas and batch.</div></td>"
+	h = h & "</tr></table></td></tr>"
+
+	h = h & "<tr><td style='padding:18px 36px 0 36px;'><div style='font-size:22px;font-weight:bold;color:#17707F;'>Where to look</div>"
+	h = h & "<div style='font-size:13px;color:#14142B;margin-top:4px;'>Open the view folder <b>BulkReg</b> in the navigator. Click a twistie to open a group.</div></td></tr>"
+	h = h & "<tr><td style='padding:8px 36px 8px 36px;'><table width='100%' cellspacing='0' cellpadding='0' border='0' style='border:1px solid #DCE6F0;'>"
+	h = h & BR_LogViewRow("1", "Runs - by date", "Every agent run, newest first: who ran what, in which mode (DRYRUN or LIVE), status and summary. Start here.")
+	h = h & BR_LogViewRow("2", "Batches - by batch, tool, result", "Everything that happened to one batch, per agent and result.")
+	h = h & BR_LogViewRow("3", "Users - by name", "The history of one user across all agents and batches.")
+	h = h & BR_LogViewRow("4", "Results - by result, batch", "All users grouped by result, for example every REGISTERED or every failure.")
+	h = h & BR_LogViewRow("5", "Home servers - by server, batch", "Which users went to which home server, with mail file, vault and replica status.")
+	h = h & BR_LogViewRow("6", "Problems - errors, failures, skipped", "All ERROR and WARN lines, failed or pending users, missing replicas and runs that did not finish. Check this after every run.")
+	h = h & BR_LogViewRow("7", "Skipped - no Internet address", "Users left out of a batch because they have no Internet address yet. They are offered again once AD and DirSync provide it.")
+	h = h & BR_LogViewRow("8", "Full log - by run", "Every log line of every run, for detailed troubleshooting.")
+	h = h & "</table></td></tr>"
+
+	h = h & "<tr><td style='padding:14px 36px 6px 36px;'>"
+	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#F7F7FC;border:1px solid #DCE6F0;border-left:5px solid #2EC0CB;'><tr><td style='padding:14px 18px;'>"
+	h = h & "<div style='font-size:15px;font-weight:bold;color:#17707F;'>Tips</div>"
+	h = h & "<div style='font-size:13px;line-height:20px;color:#14142B;margin-top:6px;'>"
+	h = h & "&bull; <b>View &gt; Expand All / Collapse All</b> (Ctrl + / Ctrl -) opens or closes all groups.<br>"
+	h = h & "&bull; Newest dates and batches are at the top. A run in mode <b>DRYRUN</b> never changed Domino; <b>LIVE-PRODUCTION</b> did.<br>"
+	h = h & "&bull; For a user question open view 3 and expand the user. For a batch question open view 2.<br>"
+	h = h & "&bull; After a release that changes the views, the owner runs <b>Actions &gt; BulkReg &gt; 00 - Set Up Log Database</b> again."
+	h = h & "</div></td></tr></table></td></tr>"
+
+	h = h & "<tr><td style='padding:8px 36px 6px 36px;'>"
+	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#FFF8E6;border:1px solid #F5D78A;border-left:5px solid #F5A623;'><tr><td style='padding:14px 18px;'>"
+	h = h & "<div style='font-size:15px;font-weight:bold;color:#14142B;'>Handle with care</div>"
+	h = h & "<div style='font-size:13px;line-height:20px;color:#14142B;margin-top:6px;'>"
+	h = h & "&bull; This is an audit record. <b>Do not edit or delete documents.</b> Operators have Author access with Create documents and no Delete; only the database owner manages the design.<br>"
+	h = h & "&bull; The documents contain personal data (names, Internet addresses, servers). Share access only with people who need it, and back the database up like any other audit data."
+	h = h & "</div></td></tr></table></td></tr>"
+
+	h = h & "<tr><td style='padding:14px 36px 24px 36px;'>"
+	h = h & "<div style='font-size:11px;color:#6B7280;border-top:2px solid #2EC0CB;padding-top:8px;'>HCL Software &middot; BulkReg " & BR_VERSION & " &middot; Central log database. Written by BulkReg agents 01 - 05; design set up by agent 00.</div>"
+	h = h & "</td></tr>"
+	h = h & "</table></td></tr></table></div>"
+	BR_LogWelcomeHtml = h
 End Function

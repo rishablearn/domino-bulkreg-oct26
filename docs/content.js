@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.9.5", "**Release 3.9.5.** **Welcome page for the log database.** Agent 00 also creates the page *BulkReg Log Welcome* in bulkreg_log.nsf; set it as launch page once (B20a step 6). Re-paste BulkRegAgents and run agent 00 again."],
   ["3.9.4", "**Release 3.9.4.** **Welcome page.** New optional agent `BulkReg\\06 - Install Welcome Page` creates a branded start page in bulkreg.nsf (what BulkReg does, prerequisites, the 7-step procedure per batch, safety rules); set it as the database launch page (new B18a). No change to the registration logic."],
   ["3.9.3", "**Release 3.9.3.** `HomeServerAssignment=FILL` (also accepted: `FILLED`) is the shipped setting: 2500 users on the first mail server, then 2500 on the second. New `OverrideADInternetAddress` (default 0): 1 = always build `<shortname>@<InternetDomain>`, even when AD has an address; Preflight warns about an unknown HomeServerAssignment value."],
   ["3.9.2", "**Release 3.9.2.** Simplified name handling: the Person item **JobTitle** (`LastNameField=JobTitle`) is registered as the Domino last name exactly as it is. No name is constructed or split, rank handling and `FullNameField` / `RankHandling` / `RankPrefixes` / `IncludeMiddleInitial` are removed; `FirstNameField` and `MiddleNameField` are empty by default."],
@@ -874,13 +875,14 @@ done("Preflight starts without a security block and accepts the config path.");
 
 // ---------- B20a
 h2("B20a Set up the log database views (database owner, once)");
-meta("Owner of the log database (Designer or Manager access to bulkreg_log.nsf)", "bulkreg.nsf", "creates a form and 8 views in bulkreg_log.nsf; no documents are changed");
+meta("Owner of the log database (Designer or Manager access to bulkreg_log.nsf)", "bulkreg.nsf", "creates a form, a welcome page and 8 views in bulkreg_log.nsf; no documents are changed");
 p("The views are design elements, so they are created by the **owner** of the log database, not by the operators (Author). The owner needs bulkreg.nsf too (a copy with the same libraries and agents is enough) and a bulkreg.ini with the same LogServer / LogDb.");
 ol(
   "Open bulkreg.nsf and click **Actions > BulkReg > 00 - Set Up Log Database**. Confirm the config path.",
   "Read the question (database name, 8 views) and click **Yes**.",
   "Read the result: one line per view, each **OK**. *Result:* the form BRLogEntry and the views exist.",
   "Open bulkreg_log.nsf. In the navigator, expand **BulkReg**: the views 1–8 are listed (D4a).",
+  "Agent 00 also created the page **BulkReg Log Welcome**. In Designer open bulkreg_log.nsf > **Database Properties > Launch**, set **On Database Open** to **Open designated Page**, choose **BulkReg Log Welcome**, then close and reopen the database. *Result:* the database opens on the welcome page instead of an empty view.",
   "Run 00 again after a release whose notes say that the views changed. It replaces only its own views; your other views are kept."
 );
 note("If the form import reports an error, the views still work; documents then open without the BulkReg form. Send the message from the result dialog.");
