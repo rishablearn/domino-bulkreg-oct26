@@ -51,6 +51,8 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["3.9.8", "**Release 3.9.8.** **Fix:** Build Batch aborted with *List item does not exist (err 120)* when no row of a batch was an ERROR (summary line). Re-paste BulkRegCommon and BulkRegAgents. Delete the batch files of an aborted run before rebuilding."],
+  ["3.9.7", "**Release 3.9.7.** **Welcome screens are native rich text** (tables, fonts, colours) instead of pass-through HTML, which the Notes client shows as source text. Re-paste BulkRegAgents and run agent 06 and agent 00 again; they replace the About document."],
   ["3.9.6", "**Release 3.9.6.** **Welcome screens for the Notes client.** The welcome screen is now the *About This Database* document (agent 06 for bulkreg.nsf, agent 00 for bulkreg_log.nsf) with the launch option *Show About Application document*; B18a and B20a rewritten. Re-paste BulkRegAgents and run agent 06 / 00 again."],
   ["3.9.5", "**Release 3.9.5.** **Welcome page for the log database.** Agent 00 also creates the page *BulkReg Log Welcome* in bulkreg_log.nsf; set it as launch page once (B20a step 6). Re-paste BulkRegAgents and run agent 00 again."],
   ["3.9.4", "**Release 3.9.4.** **Welcome page.** New optional agent `BulkReg\\06 - Install Welcome Page` creates a branded start page in bulkreg.nsf (what BulkReg does, prerequisites, the 7-step procedure per batch, safety rules); set it as the database launch page (new B18a). No change to the registration logic."],
@@ -845,7 +847,7 @@ ol(
   "Create a seventh agent exactly as in B18, named `BulkReg\\06 - Install Welcome Page`, with the content of **Agent06_InstallWelcomePage.lss** (it contains `Call BR_RunInstallWelcome()`). Save it; it must compile. Re-sign the database (B19).",
   "In the Notes client open bulkreg.nsf and run **Actions > BulkReg > 06 - Install Welcome Page** (Designer access required). *Result:* a message with two lines: *About document: OK (1 design note(s) imported)* and *Launch option: OK*.",
   "Close bulkreg.nsf and open it again. *Result:* the welcome screen opens first. Close it with Esc; **Help > About This Application** shows it again at any time.",
-  "If a line says **ERROR**, copy the message (it contains the importer log) and send it before changing anything. If only the launch option failed, open Designer > **Database Properties** > **Launch** tab and set **Show 'About Application' document** to **Always open first** (or *If modified*)."
+  "If a line says **ERROR**, copy the message (it contains the importer log) and send it before changing anything. If the message says *rich layout rejected … plain layout: OK*, the welcome screen was created without tables; send the message so the layout can be corrected. If only the launch option failed, open Designer > **Database Properties** > **Launch** tab and set **Show 'About Application' document** to **Always open first** (or *If modified*)."
 );
 note("After a release that changes the screen, paste the new BulkRegAgents library (B17a) and run agent 06 again; it replaces the document.");
 done("bulkreg.nsf opens on the BulkReg welcome screen, and the Actions menu still lists the agents.");

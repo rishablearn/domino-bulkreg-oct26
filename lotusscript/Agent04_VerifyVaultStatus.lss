@@ -1,6 +1,6 @@
 '=====================================================================
 ' Agent name : BulkReg\04 - Verify Registration and Vault
-' Version    : 3.9.6  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.9.6)
+' Version    : 3.9.8  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 3.9.8)
 ' Code       : ALL logic is in the script library BulkRegAgents (BR_RunVerify).
 '              This agent only calls it, so it never changes between releases.
 '

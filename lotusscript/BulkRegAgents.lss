@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.9.6
+' Script Library : BulkRegAgents            Version 3.9.8
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -36,6 +36,7 @@ Dim gMode As String
 Dim gSrvOK List As String      ' home-server reachability cache
 Dim gStopRun As String          ' set by BR_RegisterOne when the whole run must stop (e.g. wrong Notes name)
 Dim gVNameBad As Long, gVTitleBad As Long, gVTitles List As String, gVAclBad As Long, gVAcls List As String
+Dim gRtPlain As Boolean         ' welcome screens: True = plain fallback layout without tables
 Dim gVUnreg As Long, gVInV As Long, gVNotV As Long, gVErr As Long, gVGone As Long, gVMailBad As Long, gVRepBad As Long
 
 '#####################################################################
@@ -627,7 +628,7 @@ Sub BR_RunBuildBatch()
 		ForAll bs In srvInc
 			If IsElement(bSrv(bk & "|" & ListTag(bs))) Then bl = bl & "  " & ListTag(bs) & "=" & bSrv(bk & "|" & ListTag(bs))
 		End ForAll
-		Call BR_AppendLine(sumFile, "Batch " & Format$(bi, "00") & "        : " & batchFiles(bk) & "  rows " & bRows(bk) & ", Include=Y " & BR_IIfStr(IsElement(bInc(bk)), CStr(bInc(bk)), "0") & ", ERROR " & BR_IIfStr(IsElement(bErr(bk)), CStr(bErr(bk)), "0") & " |" & bl)
+		Call BR_AppendLine(sumFile, "Batch " & Format$(bi, "00") & "        : " & batchFiles(bk) & "  rows " & bRows(bk) & ", Include=Y " & BR_ListLongText(bInc, bk) & ", ERROR " & BR_ListLongText(bErr, bk) & " |" & bl)
 	Next
 	Call BR_AppendLine(sumFile, "Selection       : " & BR_SelectionFormula(True))
 	Call BR_AppendLine(sumFile, "Server filter   : " & BR_IIfStr(srvFilter = "", "(none - all home servers)", srvFilter))
@@ -1615,7 +1616,7 @@ Sub BR_RunSetupLog()
 	BR_Log BR_IIfInt2(res = "OK", LVL_INFO, LVL_ERROR), "Form BRLogEntry: " & res
 	If res <> "OK" Then nBad = nBad + 1
 
-	res = BR_InstallAbout(gLogDb, BR_LogWelcomeHtml())
+	res = BR_InstallAbout(gLogDb, 2)
 	report = report & "Welcome screen (About document):" & Chr$(10) & res & Chr$(10)
 	BR_Log BR_IIfInt2(InStr(res, "ERROR") = 0, LVL_INFO, LVL_ERROR), "Welcome screen: " & Replace(res, Chr$(10), " / ")
 	If InStr(res, "ERROR") > 0 Then nBad = nBad + 1
@@ -1739,7 +1740,7 @@ End Function
 '
 ' Creates (or replaces) the "About This Database" document of the CURRENT
 ' database (bulkreg.nsf): a branded welcome screen with a short SOP of the
-' agent sequence (pass-through HTML, inline styles, no script, no files), and
+' agent sequence (native Notes rich text: tables, fonts, colours), and
 ' sets the launch option "Show About Application document" so the Notes client
 ' opens it first. (A Notes client cannot launch a designated PAGE - that option
 ' exists for the web only; the About document is the Notes client mechanism.)
@@ -1758,7 +1759,7 @@ Sub BR_RunInstallWelcome()
 		MessageBox "Installing the welcome screen needs Designer or Manager access to " & db.FilePath & ".", 48, "BulkReg - Welcome screen"
 		Exit Sub
 	End If
-	res = BR_InstallAbout(db, BR_WelcomeHtml())
+	res = BR_InstallAbout(db, 1)
 	MessageBox "Welcome screen for " & db.FilePath & ":" & Chr$(10) & Chr$(10) & res & Chr$(10) & Chr$(10) & _
 	"Close the database and open it again: the About document should open first." & Chr$(10) & _
 	"If it does not: Database Properties > Launch tab > 'Show About Application document' = Always open first (or If modified)." & Chr$(10) & _
@@ -1795,21 +1796,34 @@ ErrH:
 	Exit Function
 End Function
 
-' Creates or replaces the About This Database document with the given HTML and sets the launch option
-' "Show About Application document: if modified / first open" (noteslaunch showaboutdocument).
-Function BR_InstallAbout(db As NotesDatabase, htmlText As String) As String
-	Dim r1 As String, r2 As String, dxl As String
-	dxl = "<?xml version='1.0' encoding='utf-8'?>" & _
+' Creates or replaces the About This Database document and sets the launch option
+' "Show About Application document" (noteslaunch showaboutdocument).
+'   which = 1: welcome screen of bulkreg.nsf     which = 2: welcome screen of the log database
+' The content is NATIVE Notes rich text (tables, fonts, colours) - the Notes client does not render
+' pass-through HTML in a document. If the rich layout is rejected on import, a plain layout (the same text
+' without tables) is imported instead and the importer message is reported.
+Function BR_InstallAbout(db As NotesDatabase, which As Integer) As String
+	Dim r1 As String, r2 As String, r3 As String
+	gRtPlain = False
+	r1 = BR_ImportDxl(db, BR_AboutDxl(which), False, True)
+	If Left$(r1, 5) = "ERROR" Then
+		gRtPlain = True
+		r3 = BR_ImportDxl(db, BR_AboutDxl(which), False, True)
+		gRtPlain = False
+		r1 = "rich layout rejected: " & Left$(r1, 350) & Chr$(10) & "plain layout: " & r3
+	End If
+	r2 = BR_ImportDxl(db, "<?xml version='1.0' encoding='utf-8'?>" & _
 	"<database xmlns='http://www.lotus.com/dxl'>" & _
-	"<helpaboutdocument><body><richtext><par><run html='true'>" & _
-	BR_XmlEsc(htmlText) & _
-	"</run></par></richtext></body></helpaboutdocument></database>"
-	r1 = BR_ImportDxl(db, dxl, False, True)
-	dxl = "<?xml version='1.0' encoding='utf-8'?>" & _
-	"<database xmlns='http://www.lotus.com/dxl'>" & _
-	"<launchsettings><noteslaunch showaboutdocument='firstopenandchanged'/></launchsettings></database>"
-	r2 = BR_ImportDxl(db, dxl, True, False)
+	"<launchsettings><noteslaunch showaboutdocument='firstopenandchanged'/></launchsettings></database>", True, False)
 	BR_InstallAbout = "About document: " & r1 & Chr$(10) & "Launch option: " & r2
+End Function
+
+Function BR_AboutDxl(which As Integer) As String
+	Dim body As String
+	If which = 2 Then body = BR_LogWelcomeRich() Else body = BR_WelcomeRich()
+	BR_AboutDxl = "<?xml version='1.0' encoding='utf-8'?>" & _
+	"<database xmlns='http://www.lotus.com/dxl'>" & _
+	"<helpaboutdocument bgcolor='#FFFFFF'><body><richtext><pardef id='1'/>" & body & "</richtext></body></helpaboutdocument></database>"
 End Function
 
 ' Escapes text for use inside an XML element.
@@ -1821,194 +1835,202 @@ Function BR_XmlEsc(s As String) As String
 	BR_XmlEsc = t
 End Function
 
-' One step row of the SOP table.  num = step number, cmd = agent/action chip text,
-' txt = what to do, res = expected result.
-Function BR_WelcomeStep(num As String, ttl As String, cmd As String, txt As String, res As String) As String
-	Dim r As String
-	r = "<tr>"
-	r = r & "<td valign='top' width='64' style='padding:14px 0 14px 14px;border-bottom:1px solid #DCE6F0;'>"
-	r = r & "<div style='width:38px;height:38px;line-height:38px;border-radius:19px;background-color:#17707F;color:#FFFFFF;font-size:18px;font-weight:bold;text-align:center;'>" & num & "</div></td>"
-	r = r & "<td valign='top' style='padding:14px 18px 14px 6px;border-bottom:1px solid #DCE6F0;'>"
-	r = r & "<div style='font-size:16px;font-weight:bold;color:#14142B;'>" & ttl & "</div>"
-	If cmd <> "" Then r = r & "<div style='margin:6px 0 6px 0;'><span style='background-color:#ECF3F8;border:1px solid #8AC6F8;color:#0F5FDC;font-family:Consolas,Courier New,monospace;font-size:12px;padding:3px 8px;'>" & cmd & "</span></div>"
-	r = r & "<div style='font-size:13px;line-height:19px;color:#14142B;'>" & txt & "</div>"
-	r = r & "<div style='font-size:12px;line-height:18px;color:#17707F;margin-top:6px;'><b>Done when:</b> " & res & "</div>"
-	r = r & "</td></tr>"
-	BR_WelcomeStep = r
+'=====================================================================
+' Rich text builders (DXL). gRtPlain = True drops tables and colours of cells (fallback layout).
+'=====================================================================
+Function BR_RtRun(t As String, sz As String, sty As String, col As String) As String
+	BR_RtRun = "<run><font name='Arial' size='" & sz & "' style='" & sty & "' color='" & col & "'/>" & BR_XmlEsc(t) & "</run>"
 End Function
 
-' The whole page as HTML (inline styles only, tables for layout, no scripts).
-Function BR_WelcomeHtml() As String
-	Dim h As String, a As String
-	a = "Actions &gt; BulkReg &gt; "
+Function BR_RtPar(inner As String) As String
+	BR_RtPar = "<par def='1'>" & inner & "</par>"
+End Function
 
-	h = "<div style='font-family:Arial,Helvetica,sans-serif;background-color:#F7F7FC;padding:0;margin:0;'>"
-	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0'><tr><td align='center'>"
-	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#FFFFFF;max-width:900px;'>"
+Function BR_RtP(t As String, sz As String, sty As String, col As String) As String
+	BR_RtP = BR_RtPar(BR_RtRun(t, sz, sty, col))
+End Function
 
-	' ---- hero (solid colour first, gradient where the browser supports it)
-	h = h & "<tr><td style='background-color:#17707F;background-image:linear-gradient(135deg,#0B1D3A 0%,#17707F 45%,#2EC0CB 85%,#36D6D9 100%);padding:34px 36px 30px 36px;'>"
-	h = h & "<div style='font-size:12px;letter-spacing:3px;color:#AAFFFF;font-weight:bold;'>HCL SOFTWARE &middot; DOMINO</div>"
-	h = h & "<div style='font-size:36px;font-weight:bold;color:#FFFFFF;margin-top:8px;'>BulkReg</div>"
-	h = h & "<div style='font-size:18px;color:#FFFFFF;margin-top:6px;'>Bulk registration of DirSync users with Notes ID, mail file and ID Vault</div>"
-	h = h & "<div style='font-size:12px;color:#DCE6F0;margin-top:14px;'>Release " & BR_VERSION & " &nbsp;&middot;&nbsp; Run from the HCL Domino Administrator client &nbsp;&middot;&nbsp; All agents: <b>Actions &gt; BulkReg</b></div>"
-	h = h & "</td></tr>"
+Function BR_RtGap() As String
+	BR_RtGap = BR_RtP(" ", "5pt", "normal", "#FFFFFF")
+End Function
 
-	' ---- what it does
-	h = h & "<tr><td style='padding:26px 36px 8px 36px;'>"
-	h = h & "<div style='font-size:22px;font-weight:bold;color:#17707F;'>What this tool does</div>"
-	h = h & "<div style='font-size:14px;line-height:21px;color:#14142B;margin-top:8px;'>DirSync creates Person documents for Active Directory users, but those users have no Notes ID and no mail file. "
-	h = h & "BulkReg turns them into full Domino users, in <b>reviewed batches</b>: it creates the Notes ID (deposited in the ID Vault through the policy), creates the mail file on the home server, "
-	h = h & "requests replicas on the other mail cluster members, and writes every action to the audit log.</div>"
-	h = h & "<table width='100%' cellspacing='8' cellpadding='0' border='0' style='margin-top:12px;'><tr>"
-	h = h & "<td width='25%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #17707F;'><b style='color:#17707F;'>1 &middot; Plan</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>Preflight checks everything. Build Batch writes the batch files. Nothing is registered.</div></td>"
-	h = h & "<td width='25%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #2EC0CB;'><b style='color:#17707F;'>2 &middot; Review</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>You check the batch file in Excel and set Include to Y or N per user.</div></td>"
-	h = h & "<td width='25%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #0F5FDC;'><b style='color:#17707F;'>3 &middot; Register</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>Dry run first, then live on the same file. You type the batch ID to confirm.</div></td>"
-	h = h & "<td width='25%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #3C91FF;'><b style='color:#17707F;'>4 &middot; Verify</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>Checks registration, vault, mail file and replicas for the batch.</div></td>"
-	h = h & "</tr></table>"
-	h = h & "</td></tr>"
+Function BR_RtCell(bg As String, inner As String) As String
+	If gRtPlain Then
+		BR_RtCell = inner
+	Else
+		BR_RtCell = "<tablecell bgcolor='" & bg & "'>" & inner & "</tablecell>"
+	End If
+End Function
 
-	' ---- before you start
-	h = h & "<tr><td style='padding:14px 36px 6px 36px;'>"
-	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#F7F7FC;border:1px solid #DCE6F0;border-left:5px solid #2EC0CB;'><tr><td style='padding:14px 18px;'>"
-	h = h & "<div style='font-size:15px;font-weight:bold;color:#17707F;'>Before the first batch (one time)</div>"
-	h = h & "<div style='font-size:13px;line-height:20px;color:#14142B;margin-top:6px;'>"
-	h = h & "&bull; <b>bulkreg.ini</b> and <b>server_mapping.csv</b> are filled in: no &lt;placeholder&gt; left, <b>DryRun=1</b>.<br>"
-	h = h & "&bull; The numbered mail folders (mail1, mail2 ...) exist on every home server and mail cluster member.<br>"
-	h = h & "&bull; The log database <b>bulkreg_log.nsf</b> exists and its owner has run <b>" & a & "00 - Set Up Log Database</b> once.<br>"
-	h = h & "&bull; Start with a <b>pilot batch of 2 users</b> (BatchSize=2) and go through all steps below before the real batches."
-	h = h & "</div></td></tr></table>"
-	h = h & "</td></tr>"
+Function BR_RtRow(cells As String) As String
+	If gRtPlain Then
+		BR_RtRow = cells
+	Else
+		BR_RtRow = "<tablerow>" & cells & "</tablerow>"
+	End If
+End Function
 
-	' ---- the SOP
-	h = h & "<tr><td style='padding:18px 36px 0 36px;'><div style='font-size:22px;font-weight:bold;color:#17707F;'>Procedure for every batch</div>"
-	h = h & "<div style='font-size:13px;color:#14142B;margin-top:4px;'>Always in this order. Repeat from step 1 or 2 for the next batch.</div></td></tr>"
-	h = h & "<tr><td style='padding:8px 36px 8px 36px;'><table width='100%' cellspacing='0' cellpadding='0' border='0' style='border:1px solid #DCE6F0;'>"
-	h = h & BR_WelcomeStep("1", "Preflight Check", a & "01 - Preflight Check", _
-	"Checks the environment, the configuration and every candidate user. It changes nothing in Domino. Fix every ERROR, then create the mail folders listed in <i>_mailfolders.txt</i> in the run folder under C:\BulkReg\audit.", _
-	"0 environment errors; the batch plan (<i>_batchplan.txt</i>) looks right.")
-	h = h & BR_WelcomeStep("2", "Build the batches", a & "02 - Build Batch", _
-	"Writes BATCH-&lt;run&gt;-01.csv, -02.csv ... (1000 users each) and <i>_summary.txt</i> to C:\BulkReg\batches. Nothing is registered.", _
+' widths = column widths in percent, comma separated, e.g. "8,92"
+Function BR_RtTable(widths As String, rows As String) As String
+	Dim w As Variant, i As Integer, cols As String
+	If gRtPlain Then
+		BR_RtTable = rows & BR_RtGap()
+		Exit Function
+	End If
+	w = Split(widths, ",")
+	For i = 0 To UBound(w)
+		cols = cols & "<tablecolumn width='" & CStr(w(i)) & "%'/>"
+	Next
+	BR_RtTable = "<table widthtype='fitmargins' leftmargin='0.05in' cellbordercolor='#FFFFFF'>" & cols & rows & "</table>" & BR_RtGap()
+End Function
+
+' One card (one table cell): bold coloured title + text
+Function BR_RtCard(bg As String, ttl As String, ttlCol As String, txt As String) As String
+	BR_RtCard = BR_RtCell(bg, BR_RtP(ttl, "11pt", "bold", ttlCol) & BR_RtP(txt, "9pt", "normal", "#14142B"))
+End Function
+
+' One box (full width): title + lines, coloured background
+Function BR_RtBox(bg As String, ttl As String, ttlCol As String, lines As Variant) As String
+	Dim s As String, i As Integer, bu As String
+	bu = Uchr$(8226) & " "
+	s = BR_RtP(ttl, "12pt", "bold", ttlCol)
+	For i = 0 To UBound(lines)
+		s = s & BR_RtP(bu & CStr(lines(i)), "10pt", "normal", "#14142B")
+	Next
+	BR_RtBox = BR_RtTable("100", BR_RtRow(BR_RtCell(bg, s)))
+End Function
+
+' One row of the procedure table: number | title, command, text, "Done when"
+Function BR_RtStep(num As String, ttl As String, cmd As String, txt As String, res As String) As String
+	Dim c2 As String
+	c2 = BR_RtP(ttl, "12pt", "bold", "#14142B")
+	If cmd <> "" Then c2 = c2 & BR_RtP(cmd, "10pt", "bold", "#0F5FDC")
+	c2 = c2 & BR_RtP(txt, "10pt", "normal", "#14142B")
+	c2 = c2 & BR_RtPar(BR_RtRun("Done when: ", "9pt", "bold", "#17707F") & BR_RtRun(res, "9pt", "normal", "#17707F"))
+	BR_RtStep = BR_RtRow(BR_RtCell("#17707F", BR_RtP(num, "18pt", "bold", "#FFFFFF")) & BR_RtCell("#F7F7FC", c2))
+End Function
+
+Function BR_RtHero(small As String, big As String, sub1 As String, info As String) As String
+	Dim s As String
+	s = BR_RtP(small, "9pt", "bold", "#AAFFFF") & BR_RtP(big, "30pt", "bold", "#FFFFFF") & _
+	BR_RtP(sub1, "14pt", "normal", "#FFFFFF") & BR_RtP(info, "9pt", "normal", "#DCE6F0")
+	BR_RtHero = BR_RtTable("100", BR_RtRow(BR_RtCell("#17707F", s))) & _
+	BR_RtTable("100", BR_RtRow(BR_RtCell("#2EC0CB", BR_RtP(" ", "3pt", "normal", "#2EC0CB"))))
+End Function
+
+Function BR_RtH(t As String) As String
+	BR_RtH = BR_RtP(t, "16pt", "bold", "#17707F")
+End Function
+
+' ---- welcome screen of bulkreg.nsf
+Function BR_WelcomeRich() As String
+	Dim h As String, a As String, dot As String, rw As String
+	a = "Actions > BulkReg > "
+	dot = " " & Uchr$(183) & " "
+	h = BR_RtHero("HCL SOFTWARE" & dot & "DOMINO", "BulkReg", _
+	"Bulk registration of DirSync users with Notes ID, mail file and ID Vault", _
+	"Release " & BR_VERSION & dot & "Run from the HCL Domino Administrator client" & dot & "All agents: Actions > BulkReg")
+
+	h = h & BR_RtH("What this tool does")
+	h = h & BR_RtP("DirSync creates Person documents for Active Directory users, but those users have no Notes ID and no mail file. " & _
+	"BulkReg turns them into full Domino users, in reviewed batches: it creates the Notes ID (deposited in the ID Vault through the policy), " & _
+	"creates the mail file on the home server, requests replicas on the other mail cluster members, and writes every action to the audit log.", "10pt", "normal", "#14142B")
+	h = h & BR_RtGap()
+	h = h & BR_RtTable("25,25,25,25", BR_RtRow( _
+	BR_RtCard("#ECF3F8", "1  Plan", "#17707F", "Preflight checks everything. Build Batch writes the batch files. Nothing is registered.") & _
+	BR_RtCard("#ECF3F8", "2  Review", "#17707F", "You check the batch file in Excel and set Include to Y or N per user.") & _
+	BR_RtCard("#ECF3F8", "3  Register", "#17707F", "Dry run first, then live on the same file. You type the batch ID to confirm.") & _
+	BR_RtCard("#ECF3F8", "4  Verify", "#17707F", "Checks registration, vault, mail file and replicas for the batch.")))
+
+	h = h & BR_RtBox("#F7F7FC", "Before the first batch (one time)", "#17707F", Array( _
+	"bulkreg.ini and server_mapping.csv are filled in: no <placeholder> left, DryRun=1.", _
+	"The numbered mail folders (mail1, mail2 ...) exist on every home server and mail cluster member.", _
+	"The log database bulkreg_log.nsf exists and its owner has run " & a & "00 - Set Up Log Database once.", _
+	"Start with a pilot batch of 2 users (BatchSize=2) and go through all steps below before the real batches."))
+
+	h = h & BR_RtH("Procedure for every batch")
+	h = h & BR_RtP("Always in this order. Repeat from step 1 or 2 for the next batch.", "10pt", "normal", "#14142B")
+	h = h & BR_RtGap()
+	rw = BR_RtStep("1", "Preflight Check", a & "01 - Preflight Check", _
+	"Checks the environment, the configuration and every candidate user. It changes nothing in Domino. Fix every ERROR, then create the mail folders listed in _mailfolders.txt in the run folder under C:\BulkReg\audit.", _
+	"0 environment errors; the batch plan (_batchplan.txt) looks right.")
+	rw = rw & BR_RtStep("2", "Build the batches", a & "02 - Build Batch", _
+	"Writes BATCH-<run>-01.csv, -02.csv ... (1000 users each) and _summary.txt to C:\BulkReg\batches. Nothing is registered.", _
 	"The batch files and the summary exist.")
-	h = h & BR_WelcomeStep("3", "Review the batch file", "Excel &middot; save as CSV UTF-8", _
-	"Open BATCH-&lt;id&gt;.csv. Set <b>Include=N</b> for users to skip and check HomeServer, MailFile and NotesName. Do not change the objectGUID.", _
+	rw = rw & BR_RtStep("3", "Review the batch file", "Excel, save as CSV UTF-8", _
+	"Open BATCH-<id>.csv. Set Include=N for users to skip and check HomeServer, MailFile and NotesName. Do not change the objectGUID.", _
 	"The file is reviewed and saved.")
-	h = h & BR_WelcomeStep("4", "Dry run", "DryRun=1 &nbsp;&middot;&nbsp; " & a & "03 - Register Batch", _
+	rw = rw & BR_RtStep("4", "Dry run", "DryRun=1   " & a & "03 - Register Batch", _
 	"Simulates the registration of every approved row. Nobody is registered, the batch stays open and can be dry-run again.", _
-	"Every row is <b>WOULD_REGISTER</b> in BATCH-&lt;id&gt;_dryrun_&lt;run&gt;.csv.")
-	h = h & BR_WelcomeStep("5", "Register for real", "DryRun=0 &nbsp;&middot;&nbsp; " & a & "03 - Register Batch", _
-	"Set <b>DryRun=0</b> in bulkreg.ini, run 03 on the same batch and <b>type the batch ID</b> to confirm. Each batch can be registered live only once.", _
-	"BATCH-&lt;id&gt;_results.csv is written and the batch is <b>DONE</b>. Set DryRun=1 again.")
-	h = h & BR_WelcomeStep("6", "Verify", a & "04 - Verify Registration and Vault", _
+	"Every row is WOULD_REGISTER in BATCH-<id>_dryrun_<run>.csv.")
+	rw = rw & BR_RtStep("5", "Register for real", "DryRun=0   " & a & "03 - Register Batch", _
+	"Set DryRun=0 in bulkreg.ini, run 03 on the same batch and type the batch ID to confirm. Each batch can be registered live only once.", _
+	"BATCH-<id>_results.csv is written and the batch is DONE. Set DryRun=1 again.")
+	rw = rw & BR_RtStep("6", "Verify", a & "04 - Verify Registration and Vault", _
 	"Choose the batch. Checks the registration, the ID Vault, the mail file and the replicas. Run it again later until all replicas exist.", _
 	"REGISTERED, IN_VAULT, MAILFILE_OK and REPLICAS_OK for every user.")
-	h = h & BR_WelcomeStep("7", "Hand over and clean up", "bulkreg.cmd PurgeSecrets", _
+	rw = rw & BR_RtStep("7", "Hand over and clean up", "bulkreg.cmd PurgeSecrets", _
 	"Hand the initial passwords to the users, then delete the password files. Keep the audit folders. Then start the next batch.", _
 	"No secrets are left in C:\BulkReg\secure.")
-	h = h & "</table></td></tr>"
+	h = h & BR_RtTable("8,92", rw)
 
-	' ---- rules
-	h = h & "<tr><td style='padding:14px 36px 6px 36px;'>"
-	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#FFF8E6;border:1px solid #F5D78A;border-left:5px solid #F5A623;'><tr><td style='padding:14px 18px;'>"
-	h = h & "<div style='font-size:15px;font-weight:bold;color:#14142B;'>Safety rules</div>"
-	h = h & "<div style='font-size:13px;line-height:20px;color:#14142B;margin-top:6px;'>"
-	h = h & "&bull; <b>DryRun=1 is the safe state.</b> Only agent 03 uses it. Switch to 0 just for the live run, then back to 1.<br>"
-	h = h & "&bull; 03 cannot run without a batch file from 02, and it registers only the rows with <b>Include=Y</b>.<br>"
-	h = h & "&bull; Agent <b>05 - Export to Registration Text File</b> is not part of this procedure.<br>"
-	h = h & "&bull; Batch files, ID files, passwords and audit logs contain personal data or secrets. Keep them in C:\BulkReg, never commit or e-mail them.<br>"
-	h = h & "&bull; If an agent reports an error or a run stops, do not repeat it blindly: read the run folder and the log database first."
-	h = h & "</div></td></tr></table></td></tr>"
+	h = h & BR_RtBox("#FFF8E6", "Safety rules", "#14142B", Array( _
+	"DryRun=1 is the safe state. Only agent 03 uses it. Switch to 0 just for the live run, then back to 1.", _
+	"03 cannot run without a batch file from 02, and it registers only the rows with Include=Y.", _
+	"Agent 05 - Export to Registration Text File is not part of this procedure.", _
+	"Batch files, ID files, passwords and audit logs contain personal data or secrets. Keep them in C:\BulkReg, never commit or e-mail them.", _
+	"If an agent reports an error or a run stops, do not repeat it blindly: read the run folder and the log database first."))
 
-	' ---- where to find things + footer
-	h = h & "<tr><td style='padding:14px 36px 24px 36px;'>"
-	h = h & "<table width='100%' cellspacing='8' cellpadding='0' border='0'><tr>"
-	h = h & "<td width='33%' valign='top' style='border:1px solid #DCE6F0;padding:12px;'><b style='color:#17707F;'>Settings</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>C:\BulkReg\config\bulkreg.ini<br>C:\BulkReg\config\server_mapping.csv</div></td>"
-	h = h & "<td width='33%' valign='top' style='border:1px solid #DCE6F0;padding:12px;'><b style='color:#17707F;'>Results and audit</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>Batch files: C:\BulkReg\batches<br>One folder per run: C:\BulkReg\audit<br>Central log: bulkreg_log.nsf</div></td>"
-	h = h & "<td width='33%' valign='top' style='border:1px solid #DCE6F0;padding:12px;'><b style='color:#17707F;'>Full guide</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>BulkReg_Admin_Guide (.docx / .html) in the kit: every click, troubleshooting in chapter D.</div></td>"
-	h = h & "</tr></table>"
-	h = h & "<div style='font-size:11px;color:#6B7280;margin-top:10px;border-top:2px solid #2EC0CB;padding-top:8px;'>HCL Software &middot; BulkReg " & BR_VERSION & " &middot; Internal administration tool. Not for distribution to end users.</div>"
-	h = h & "</td></tr>"
-
-	h = h & "</table></td></tr></table></div>"
-	BR_WelcomeHtml = h
+	h = h & BR_RtTable("33,34,33", BR_RtRow( _
+	BR_RtCard("#ECF3F8", "Settings", "#17707F", "C:\BulkReg\config\bulkreg.ini and C:\BulkReg\config\server_mapping.csv") & _
+	BR_RtCard("#ECF3F8", "Results and audit", "#17707F", "Batch files: C:\BulkReg\batches. One folder per run: C:\BulkReg\audit. Central log: bulkreg_log.nsf") & _
+	BR_RtCard("#ECF3F8", "Full guide", "#17707F", "BulkReg_Admin_Guide (.docx / .html) in the kit: every click, troubleshooting in chapter D.")))
+	h = h & BR_RtP("HCL Software" & dot & "BulkReg " & BR_VERSION & dot & "Internal administration tool. Not for distribution to end users.", "8pt", "normal", "#6B7280")
+	BR_WelcomeRich = h
 End Function
 
-'=====================================================================
-' Welcome page of the central log database (bulkreg_log.nsf)
-'   (the import itself: BR_InstallAbout / BR_ImportDxl above)
-'   BR_LogWelcomeHtml      the HTML of the page "BulkReg Log Welcome"
-'   BR_LogViewRow          one row of the view table
-' Called by BR_RunSetupLog (agent 00): About This Database document + launch option.
-'=====================================================================
-
+' ---- welcome screen of the log database
 Function BR_LogViewRow(num As String, ttl As String, txt As String) As String
-	Dim r As String
-	r = "<tr>"
-	r = r & "<td valign='top' width='52' style='padding:10px 0 10px 12px;border-bottom:1px solid #DCE6F0;'>"
-	r = r & "<div style='width:30px;height:30px;line-height:30px;border-radius:15px;background-color:#17707F;color:#FFFFFF;font-size:15px;font-weight:bold;text-align:center;'>" & num & "</div></td>"
-	r = r & "<td valign='top' style='padding:10px 16px 10px 6px;border-bottom:1px solid #DCE6F0;'>"
-	r = r & "<div style='font-size:14px;font-weight:bold;color:#14142B;'>" & ttl & "</div>"
-	r = r & "<div style='font-size:12px;line-height:18px;color:#14142B;margin-top:2px;'>" & txt & "</div></td></tr>"
-	BR_LogViewRow = r
+	BR_LogViewRow = BR_RtRow(BR_RtCell("#17707F", BR_RtP(num, "14pt", "bold", "#FFFFFF")) & _
+	BR_RtCell("#F7F7FC", BR_RtP(ttl, "11pt", "bold", "#14142B") & BR_RtP(txt, "9pt", "normal", "#14142B")))
 End Function
 
-Function BR_LogWelcomeHtml() As String
-	Dim h As String
-	h = "<div style='font-family:Arial,Helvetica,sans-serif;background-color:#F7F7FC;padding:0;margin:0;'>"
-	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0'><tr><td align='center'>"
-	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#FFFFFF;max-width:900px;'>"
+Function BR_LogWelcomeRich() As String
+	Dim h As String, dot As String, rw As String
+	dot = " " & Uchr$(183) & " "
+	h = BR_RtHero("HCL SOFTWARE" & dot & "DOMINO", "BulkReg Audit Log", "The shared, permanent record of every BulkReg run", _
+	"Release " & BR_VERSION & dot & "Written by the BulkReg agents" & dot & "Read-only for auditors")
 
-	h = h & "<tr><td style='background-color:#17707F;background-image:linear-gradient(135deg,#0B1D3A 0%,#17707F 45%,#2EC0CB 85%,#36D6D9 100%);padding:34px 36px 30px 36px;'>"
-	h = h & "<div style='font-size:12px;letter-spacing:3px;color:#AAFFFF;font-weight:bold;'>HCL SOFTWARE &middot; DOMINO</div>"
-	h = h & "<div style='font-size:36px;font-weight:bold;color:#FFFFFF;margin-top:8px;'>BulkReg Audit Log</div>"
-	h = h & "<div style='font-size:18px;color:#FFFFFF;margin-top:6px;'>The shared, permanent record of every BulkReg run</div>"
-	h = h & "<div style='font-size:12px;color:#DCE6F0;margin-top:14px;'>Release " & BR_VERSION & " &nbsp;&middot;&nbsp; Written by the BulkReg agents &nbsp;&middot;&nbsp; Read-only for auditors</div>"
-	h = h & "</td></tr>"
+	h = h & BR_RtH("What is stored here")
+	h = h & BR_RtP("Every run of every BulkReg agent writes structured documents to this database. The CSV and log files on the admin PC are local working copies; this database is the record for other administrators and auditors.", "10pt", "normal", "#14142B")
+	h = h & BR_RtGap()
+	h = h & BR_RtTable("33,34,33", BR_RtRow( _
+	BR_RtCard("#ECF3F8", "Run", "#17707F", "One document per agent run: agent, operator, batch, DryRun, start, end, status and summary.") & _
+	BR_RtCard("#ECF3F8", "Entry", "#17707F", "One document per log line of a run (INFO, WARN, ERROR), in order.") & _
+	BR_RtCard("#ECF3F8", "Audit", "#17707F", "One document per user and action: result, home server, mail file, vault, replicas and batch.")))
 
-	h = h & "<tr><td style='padding:26px 36px 8px 36px;'>"
-	h = h & "<div style='font-size:22px;font-weight:bold;color:#17707F;'>What is stored here</div>"
-	h = h & "<div style='font-size:14px;line-height:21px;color:#14142B;margin-top:8px;'>Every run of every BulkReg agent writes structured documents to this database. "
-	h = h & "The CSV and log files on the admin PC are local working copies; <b>this database is the record</b> for other administrators and auditors.</div>"
-	h = h & "<table width='100%' cellspacing='8' cellpadding='0' border='0' style='margin-top:12px;'><tr>"
-	h = h & "<td width='33%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #17707F;'><b style='color:#17707F;'>Run</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>One document per agent run: agent, operator, batch, DryRun, start, end, status and summary.</div></td>"
-	h = h & "<td width='33%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #2EC0CB;'><b style='color:#17707F;'>Entry</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>One document per log line of a run (INFO, WARN, ERROR), in order.</div></td>"
-	h = h & "<td width='33%' valign='top' style='background-color:#ECF3F8;padding:12px;border-top:4px solid #0F5FDC;'><b style='color:#17707F;'>Audit</b><div style='font-size:12px;line-height:17px;margin-top:4px;'>One document per user and action: result, home server, mail file, vault, replicas and batch.</div></td>"
-	h = h & "</tr></table></td></tr>"
+	h = h & BR_RtH("Where to look")
+	h = h & BR_RtP("Open the view folder BulkReg in the navigator. Click a twistie to open a group.", "10pt", "normal", "#14142B")
+	h = h & BR_RtGap()
+	rw = BR_LogViewRow("1", "Runs - by date", "Every agent run, newest first: who ran what, in which mode (DRYRUN or LIVE), status and summary. Start here.")
+	rw = rw & BR_LogViewRow("2", "Batches - by batch, tool, result", "Everything that happened to one batch, per agent and result.")
+	rw = rw & BR_LogViewRow("3", "Users - by name", "The history of one user across all agents and batches.")
+	rw = rw & BR_LogViewRow("4", "Results - by result, batch", "All users grouped by result, for example every REGISTERED or every failure.")
+	rw = rw & BR_LogViewRow("5", "Home servers - by server, batch", "Which users went to which home server, with mail file, vault and replica status.")
+	rw = rw & BR_LogViewRow("6", "Problems - errors, failures, skipped", "All ERROR and WARN lines, failed or pending users, missing replicas and runs that did not finish. Check this after every run.")
+	rw = rw & BR_LogViewRow("7", "Skipped - no Internet address", "Users left out of a batch because they have no Internet address yet. They are offered again once AD and DirSync provide it.")
+	rw = rw & BR_LogViewRow("8", "Full log - by run", "Every log line of every run, for detailed troubleshooting.")
+	h = h & BR_RtTable("8,92", rw)
 
-	h = h & "<tr><td style='padding:18px 36px 0 36px;'><div style='font-size:22px;font-weight:bold;color:#17707F;'>Where to look</div>"
-	h = h & "<div style='font-size:13px;color:#14142B;margin-top:4px;'>Open the view folder <b>BulkReg</b> in the navigator. Click a twistie to open a group.</div></td></tr>"
-	h = h & "<tr><td style='padding:8px 36px 8px 36px;'><table width='100%' cellspacing='0' cellpadding='0' border='0' style='border:1px solid #DCE6F0;'>"
-	h = h & BR_LogViewRow("1", "Runs - by date", "Every agent run, newest first: who ran what, in which mode (DRYRUN or LIVE), status and summary. Start here.")
-	h = h & BR_LogViewRow("2", "Batches - by batch, tool, result", "Everything that happened to one batch, per agent and result.")
-	h = h & BR_LogViewRow("3", "Users - by name", "The history of one user across all agents and batches.")
-	h = h & BR_LogViewRow("4", "Results - by result, batch", "All users grouped by result, for example every REGISTERED or every failure.")
-	h = h & BR_LogViewRow("5", "Home servers - by server, batch", "Which users went to which home server, with mail file, vault and replica status.")
-	h = h & BR_LogViewRow("6", "Problems - errors, failures, skipped", "All ERROR and WARN lines, failed or pending users, missing replicas and runs that did not finish. Check this after every run.")
-	h = h & BR_LogViewRow("7", "Skipped - no Internet address", "Users left out of a batch because they have no Internet address yet. They are offered again once AD and DirSync provide it.")
-	h = h & BR_LogViewRow("8", "Full log - by run", "Every log line of every run, for detailed troubleshooting.")
-	h = h & "</table></td></tr>"
+	h = h & BR_RtBox("#F7F7FC", "Tips", "#17707F", Array( _
+	"View > Expand All / Collapse All (Ctrl + / Ctrl -) opens or closes all groups.", _
+	"Newest dates and batches are at the top. A run in mode DRYRUN never changed Domino; LIVE-PRODUCTION did.", _
+	"For a user question open view 3 and expand the user. For a batch question open view 2.", _
+	"After a release that changes the views, the owner runs Actions > BulkReg > 00 - Set Up Log Database again."))
 
-	h = h & "<tr><td style='padding:14px 36px 6px 36px;'>"
-	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#F7F7FC;border:1px solid #DCE6F0;border-left:5px solid #2EC0CB;'><tr><td style='padding:14px 18px;'>"
-	h = h & "<div style='font-size:15px;font-weight:bold;color:#17707F;'>Tips</div>"
-	h = h & "<div style='font-size:13px;line-height:20px;color:#14142B;margin-top:6px;'>"
-	h = h & "&bull; <b>View &gt; Expand All / Collapse All</b> (Ctrl + / Ctrl -) opens or closes all groups.<br>"
-	h = h & "&bull; Newest dates and batches are at the top. A run in mode <b>DRYRUN</b> never changed Domino; <b>LIVE-PRODUCTION</b> did.<br>"
-	h = h & "&bull; For a user question open view 3 and expand the user. For a batch question open view 2.<br>"
-	h = h & "&bull; After a release that changes the views, the owner runs <b>Actions &gt; BulkReg &gt; 00 - Set Up Log Database</b> again."
-	h = h & "</div></td></tr></table></td></tr>"
-
-	h = h & "<tr><td style='padding:8px 36px 6px 36px;'>"
-	h = h & "<table width='100%' cellspacing='0' cellpadding='0' border='0' style='background-color:#FFF8E6;border:1px solid #F5D78A;border-left:5px solid #F5A623;'><tr><td style='padding:14px 18px;'>"
-	h = h & "<div style='font-size:15px;font-weight:bold;color:#14142B;'>Handle with care</div>"
-	h = h & "<div style='font-size:13px;line-height:20px;color:#14142B;margin-top:6px;'>"
-	h = h & "&bull; This is an audit record. <b>Do not edit or delete documents.</b> Operators have Author access with Create documents and no Delete; only the database owner manages the design.<br>"
-	h = h & "&bull; The documents contain personal data (names, Internet addresses, servers). Share access only with people who need it, and back the database up like any other audit data."
-	h = h & "</div></td></tr></table></td></tr>"
-
-	h = h & "<tr><td style='padding:14px 36px 24px 36px;'>"
-	h = h & "<div style='font-size:11px;color:#6B7280;border-top:2px solid #2EC0CB;padding-top:8px;'>HCL Software &middot; BulkReg " & BR_VERSION & " &middot; Central log database. Written by BulkReg agents 01 - 05; design set up by agent 00.</div>"
-	h = h & "</td></tr>"
-	h = h & "</table></td></tr></table></div>"
-	BR_LogWelcomeHtml = h
+	h = h & BR_RtBox("#FFF8E6", "Handle with care", "#14142B", Array( _
+	"This is an audit record. Do not edit or delete documents. Operators have Author access with Create documents and no Delete; only the database owner manages the design.", _
+	"The documents contain personal data (names, Internet addresses, servers). Share access only with people who need it, and back the database up like any other audit data."))
+	h = h & BR_RtP("HCL Software" & dot & "BulkReg " & BR_VERSION & dot & "Central log database. Written by BulkReg agents 01 - 05; design set up by agent 00.", "8pt", "normal", "#6B7280")
+	BR_LogWelcomeRich = h
 End Function

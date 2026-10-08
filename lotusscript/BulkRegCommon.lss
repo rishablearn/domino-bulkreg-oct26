@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.9.6
+' Script Library : BulkRegCommon            Version 3.9.8
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.9.6"
+Public Const BR_VERSION = "3.9.8"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -2095,6 +2095,14 @@ Function BR_NewestOpenBatch() As String
 		End If
 	End ForAll
 	If best <> "" Then BR_NewestOpenBatch = d & best
+End Function
+
+' Value of a List As Long element as text, "0" when the element does not exist.
+' (Do NOT write BR_IIfStr(IsElement(l(k)), CStr(l(k)), "0"): a function call evaluates BOTH arguments,
+' so the missing element is read anyway -> error 120 "List item does not exist". This crashed Build
+' Batch in the summary whenever a batch had no ERROR rows.)
+Function BR_ListLongText(lst List As Long, k As String) As String
+	If IsElement(lst(k)) Then BR_ListLongText = CStr(lst(k)) Else BR_ListLongText = "0"
 End Function
 
 ' Server reachability (home or replica server), checked once per server per run
