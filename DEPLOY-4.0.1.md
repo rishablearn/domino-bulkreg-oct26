@@ -18,6 +18,8 @@ Upgrade from 3.6.6 up to 4.0.0. Libraries `BulkRegCommon` and `BulkRegAgents` ch
 
 ## 1. Before you start
 
+- **Rebuild OPEN batches.** Register re-reads each Person document and applies the current naming rule, so a batch file built with an older release shows the old `LastName` / `FullNameAfter`. Run 02 - Build Batch again before registering.
+
 - Back up the current `bulkreg.nsf`, `config\bulkreg.ini` and `config\server_mapping.csv`.
 - No batch should be half-registered. Finish or leave closed any OPEN batch. Open batches built with 3.6.6 still work; their users count towards the server capacity.
 - Have ready: the two mail server names and the internet domain (e.g. `<demo.com>`).

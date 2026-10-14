@@ -781,6 +781,8 @@ End Function
 Function BR_BuildLastName(doc As NotesDocument, u As BRUser) As String
 	Dim src As String, sfx As String, sep As String, lst As Variant, i As Integer, tok As String, v As String, s As String
 	src = BR_Clean(BR_Item(doc, Trim$(CfgS("LastNameField", "LastName"))))
+	' characters that are name separators in Domino (/ \ = , +) would split or break the name: replaced by -
+	src = Replace(Replace(Replace(Replace(Replace(src, "/", "-"), "\", "-"), "=", "-"), ",", "-"), "+", "-")
 	If src = "" Then Exit Function
 	lst = Split(CfgS("LastNameSuffixFields", "ShortName,sAMAccountName"), ",")
 	For i = 0 To UBound(lst)
@@ -1125,9 +1127,9 @@ Sub BR_ReadUser(doc As NotesDocument, u As BRUser)
 	u.UNID = doc.UniversalID
 	u.GUID = BR_Item(doc, "objectGUID")
 	u.FullNameBefore = BR_Item(doc, "FullName")
-	' Name parts for the registration (no name is constructed, no splitting, no rank handling):
-	'   LastName = the value of the Person item named in LastNameField (shipped: JobTitle, which holds the
-	'              whole name from AD, e.g. "Sgt Naman Kumar") - taken exactly as it is
+	' Name parts for the registration:
+	'   LastName = BR_BuildLastName: <LastNameField value> - <ShortName|sAMAccountName>, upper case (e.g. ANALYST-JDOE)
+	'              for unregistered users; the stored LastName for registered ones (never renamed)
 	'   FirstName / MiddleInitial = items named in FirstNameField / MiddleNameField (shipped: empty = none)
 	' Domino builds the common name from these values:  <First> [<Middle>] <Last>
 	If Trim$(CfgS("FirstNameField", "")) <> "" Then u.FirstName = BR_Clean(BR_Item(doc, Trim$(CfgS("FirstNameField", ""))))
