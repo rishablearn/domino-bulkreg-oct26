@@ -1,0 +1,1301 @@
+'=====================================================================
+' Script Library : BulkRegAuto              Version 4.0.1
+' Purpose        : AutoSync - registers NEW Active Directory users (DirSync Person
+'                  documents) in the Domino Directory automatically, with the SAME
+'                  logic as the manual agents 01-04 and a set of safety gates.
+' Used by        : agent  BulkReg\07 - AutoSync  (Agent07_AutoSync.lss)
+' Uses           : BulkRegAgents  (which uses BulkRegCommon)
+' Runs in        : a SCHEDULED AGENT ON A DOMINO SERVER (Linux or Windows), no operator.
+'                  Config: bulkreg_auto.ini (path in notes.ini  BulkRegAutoConfig=...).
+'
+' HOW TO INSTALL : Designer > Code > Script Libraries > New LotusScript Library,
+'                  name it exactly "BulkRegAuto". Click in the editor, Ctrl+A, Delete,
+'                  paste this WHOLE file, Ctrl+S. Create BulkRegCommon and BulkRegAgents
+'                  first (same release). Full steps: docs/AUTOSYNC.md
+'
+' WHAT ONE RUN DOES (every step is logged and audited like the manual agents):
+'   0  Gates     AutoMode, STOP file, initial-load flag, single-instance lock, run-as
+'                identity, environment (servers, folders, policy, UseCA), self-pause
+'   1  Cleanup   abandons OPEN batches left by an earlier run (users are offered again)
+'   2  Select    same selection as Build Batch + settling time (AutoMinAgeMinutes) and
+'                backoff / quarantine of users that failed before
+'   3  Build     BR_RunBuildBatch  (home server pool, mail file names, validation)
+'   4  Gates     backlog size, error ratio
+'   5  Register  BR_RunRegisterBatch  (LIVE) or the dry run (SHADOW)
+'   6  Verify    BR_VerifyDoc for every user registered by AutoSync until it is
+'                fully OK (vault, mail file, ACL, replicas) or AutoVerifyDays passed
+'   7  Report    state file, quarantine list, Domino mail summary, log database
+'
+' It NEVER changes the manual workflow: gAuto / gEmbedded are False for agents 00-06.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: (Declarations) ---
+'#####################################################################
+
+Dim gBaHalt As String               ' reason when a gate stopped this run ("" = no gate stopped it)
+Dim gBaReport As String             ' report text of this run (lines separated by Chr$(10)); goes into the mail
+Dim gBaWarn As Long                 ' warnings of this run
+Dim gBaHaveLock As Boolean
+Dim gBaLockFile As String
+Dim gBaStateDir As String
+Dim gBaSt List As String            ' state file key -> value
+Dim gBaQ List As String             ' quarantine: lower-case objectGUID -> att TAB first TAB last TAB nextTry TAB name TAB reason
+Dim gBaP List As String             ' pending verification: NoteID -> guid TAB name TAB batch TAB added TAB tries TAB status
+Dim gBaBaseExtra As String          ' ExtraSelection exactly as configured (before AutoSync adds its clauses)
+Dim gBaQNew As Long                 ' users newly put on backoff / quarantine in this run
+Dim gBaResolved As Long, gBaVFailed As Long, gBaVFixed As Long
+Dim gBaFailLines As String          ' failed users of this run (max 15 lines)
+Dim gBaOkLines As String            ' registered users of this run (max 25 lines)
+Dim gBaVFailLines As String         ' users whose verification gave up
+Dim gBaCapErr As Long               ' rows of the Build output that failed because home servers / mail folders are full
+Dim gBaLoadFail As String           ' a state file could not be read (then nothing is saved over it and the run halts)
+Dim gBaVerifyDeadline As Double     ' verification of earlier users stops at this time (number of days, like Now)
+
+'#####################################################################
+' --- part 3: Subs and Functions (Designer gives each its own entry) ---
+'#####################################################################
+
+'=====================================================================
+' SMALL HELPERS
+'=====================================================================
+' Appends one line to the run report (the mail body)
+Sub BA_L(s As String)
+	If gBaReport <> "" Then gBaReport = gBaReport & Chr$(10)
+	gBaReport = gBaReport & s
+End Sub
+
+' A warning: counted, logged and written to the report
+Sub BA_Warn(s As String)
+	gBaWarn = gBaWarn + 1
+	BR_Log LVL_WARN, s
+	Call BA_L("WARNING: " & s)
+End Sub
+
+' A standing remark (configuration advice): logged and written to the report, but NOT counted as a warning of the run,
+' so it does not cause a mail on every run
+Sub BA_Note(s As String)
+	BR_Log LVL_WARN, s
+	Call BA_L("NOTE: " & s)
+End Sub
+
+' Message text without the parameter dump that BR_RegisterOne appends after a failed RegisterNewUser
+' (names, addresses and paths stay in the local debug log; mails and state files get the short text)
+Function BA_Short(msg As String) As String
+	Dim p As Integer
+	p = InStr(msg, " | parameters:")
+	If p > 0 Then BA_Short = Left$(msg, p - 1) Else BA_Short = msg
+End Function
+
+' Replaces file f by tmp; the old content is kept as f.bak and restored if the copy fails
+Sub BA_ReplaceFile(tmp As String, f As String)
+	On Error GoTo ErrH
+	If Dir$(f) <> "" Then
+		If Dir$(f & ".bak") <> "" Then Kill f & ".bak"
+		FileCopy f, f & ".bak"
+		Kill f
+	End If
+	FileCopy tmp, f
+	Kill tmp
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Could not replace " & f & ": " & Error$ & " - the previous content is " & f & ".bak"
+	On Error Resume Next
+	If Dir$(f) = "" And Dir$(f & ".bak") <> "" Then FileCopy f & ".bak", f
+End Sub
+
+' Whole-number config value kept inside [lo, hi]
+Function BA_CfgN(k As String, def As Long, lo As Long, hi As Long) As Long
+	Dim v As Long
+	v = CfgL(k, def)
+	If v < lo Then v = lo
+	If v > hi Then v = hi
+	BA_CfgN = v
+End Function
+
+' yyyymmddhhnnss, sortable as text and independent of the server locale
+Function BA_Stamp(d As Variant) As String
+	BA_Stamp = Format$(d, "yyyymmddhhnnss")
+End Function
+
+' Removes characters that would break the CSV / state files
+Function BA_Clean(s As String, maxLen As Integer) As String
+	Dim t As String
+	t = Replace(Replace(Replace(Replace(s, Chr$(13), " "), Chr$(10), " "), Chr$(9), " "), """", "'")
+	If Len(t) > maxLen Then t = Left$(t, maxLen)
+	BA_Clean = Trim$(t)
+End Function
+
+' Config path of bulkreg_auto.ini: notes.ini BulkRegAutoConfig=..., else the Linux default
+Function BA_ConfigPath() As String
+	Dim s As NotesSession, p As String
+	Set s = New NotesSession
+	On Error Resume Next
+	p = Trim$(s.GetEnvironmentString("BulkRegAutoConfig", True))
+	On Error GoTo 0
+	If p = "" And InStr(1, s.Platform, "Windows", 5) = 0 Then p = "/local/notesdata/bulkreg/config/bulkreg_auto.ini"
+	BA_ConfigPath = p
+End Function
+
+' Writes (replaces) a small text file
+Sub BA_WriteFile(path As String, txt As String)
+	Dim fh As Integer
+	fh = FreeFile()
+	Open path For Output As #fh Charset = "UTF-8"
+	Print #fh, txt
+	Close #fh
+End Sub
+
+' First line of a text file, "" when it does not exist
+Function BA_ReadFirstLine(path As String) As String
+	Dim fh As Integer, txt As String
+	If Dir$(path) = "" Then Exit Function
+	On Error GoTo ErrH
+	fh = FreeFile()
+	Open path For Input As #fh Charset = "UTF-8"
+	If Not EOF(fh) Then Line Input #fh, txt
+	Close #fh
+	BA_ReadFirstLine = Trim$(Replace(txt, Uchr$(&HFEFF), ""))
+	Exit Function
+ErrH:
+	On Error Resume Next
+	Close #fh
+	BA_ReadFirstLine = ""
+End Function
+
+'=====================================================================
+' STATE FILE  <AutoStateDir>/autosync_state.txt   (key=value, written after every run)
+'   FailedRuns, LastRunEnd, LastRunStatus, LastHeartbeatDay, LastAlert_<type> (one stamp per alert type)
+'=====================================================================
+' A crash between "delete the file" and "copy the new one" leaves only f.bak: that is NOT an empty state
+Sub BA_CheckBak(f As String)
+	If Dir$(f) = "" And Dir$(f & ".bak") <> "" Then gBaLoadFail = gBaLoadFail & f & " is missing but " & f & ".bak exists (copy it back); "
+End Sub
+
+Sub BA_StateLoad()
+	Dim fh As Integer, txt As String, p As Integer, f As String
+	Erase gBaSt
+	f = gBaStateDir & "autosync_state.txt"
+	Call BA_CheckBak(f)
+	If Dir$(f) = "" Then Exit Sub
+	On Error GoTo ErrH
+	fh = FreeFile()
+	Open f For Input As #fh Charset = "UTF-8"
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		txt = Replace(txt, Uchr$(&HFEFF), "")
+		p = InStr(txt, "=")
+		If p > 1 Then gBaSt(Trim$(Left$(txt, p - 1))) = Trim$(Mid$(txt, p + 1))
+	Loop
+	Close #fh
+	Exit Sub
+ErrH:
+	gBaLoadFail = gBaLoadFail & "state file unreadable (" & Error$ & "): " & f & "; "
+	On Error Resume Next
+	Close #fh
+	BR_Log LVL_WARN, "State file could not be read (" & Error$ & ") - continuing with defaults"
+End Sub
+
+Function BA_St(k As String, def As String) As String
+	If IsElement(gBaSt(k)) Then BA_St = gBaSt(k) Else BA_St = def
+End Function
+
+Sub BA_StSet(k As String, v As String)
+	gBaSt(k) = v
+End Sub
+
+Sub BA_StateSave()
+	Dim txt As String, f As String, tmp As String
+	On Error GoTo ErrH
+	ForAll v In gBaSt
+		If txt <> "" Then txt = txt & Chr$(13) & Chr$(10)
+		txt = txt & ListTag(v) & "=" & v
+	End ForAll
+	f = gBaStateDir & "autosync_state.txt"
+	tmp = gBaStateDir & "autosync_state.tmp"
+	Call BA_WriteFile(tmp, txt)
+	Call BA_ReplaceFile(tmp, f)
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "State file could not be written: " & Error$ & " (" & gBaStateDir & ")"
+End Sub
+
+'=====================================================================
+' SINGLE-INSTANCE LOCK  <AutoStateDir>/autosync.lock
+'   A run that finds a younger lock stops quietly; an older lock (crashed run) is replaced.
+'=====================================================================
+Function BA_LockAcquire() As Boolean
+	Dim ageMin As Long, staleMin As Long
+	On Error GoTo ErrH
+	gBaLockFile = gBaStateDir & "autosync.lock"
+	staleMin = BA_CfgN("AutoLockStaleMin", 45, 5, 1440)
+	If Dir$(gBaLockFile) <> "" Then
+		ageMin = DateDiff("n", FileDateTime(gBaLockFile), Now)
+		If ageMin < staleMin Then
+			BR_Log LVL_WARN, "Another AutoSync run holds the lock (" & BA_ReadFirstLine(gBaLockFile) & ", " & ageMin & " min old) - this run stops"
+			Exit Function
+		End If
+		BR_Log LVL_WARN, "Stale lock (" & ageMin & " min old, " & BA_ReadFirstLine(gBaLockFile) & ") replaced - the earlier run probably crashed or was stopped by the Agent Manager"
+		Kill gBaLockFile
+	End If
+	Call BA_WriteFile(gBaLockFile, "run " & gRunID & " on " & gSession.UserName & " since " & Format$(Now, "yyyy-mm-dd hh:nn:ss"))
+	gBaHaveLock = True
+	BA_LockAcquire = True
+	Exit Function
+ErrH:
+	BR_Log LVL_ERROR, "Lock file problem: " & Error$ & " (" & gBaLockFile & ")"
+End Function
+
+Sub BA_LockRelease()
+	On Error Resume Next
+	If gBaHaveLock Then
+		If Dir$(gBaLockFile) <> "" Then Kill gBaLockFile
+	End If
+	gBaHaveLock = False
+End Sub
+
+'=====================================================================
+' QUARANTINE / BACKOFF  <AutoStateDir>/autosync_quarantine.csv
+'   A user that failed (validation error in Build, FAILED in Register) is not offered again
+'   before NextTry:  AutoRetryBackoffMin x 2^(attempt-1) minutes  (30, 60, 120 ...)
+'   and, from AutoMaxAttempts on, AutoQuarantineHours (default 168 = 7 days). The user is then
+'   tried once more automatically; delete the line (or the file) to retry at once.
+'   Everything is keyed by objectGUID. The list is read by the selection formula (BA_Selection).
+'=====================================================================
+Function BA_QField(v As String, idx As Integer) As String
+	Dim parts As Variant
+	parts = Split(v, Chr$(9))
+	If idx <= UBound(parts) Then BA_QField = CStr(parts(idx))
+End Function
+
+Sub BA_QLoad()
+	Dim fh As Integer, txt As String, f As String, cols List As Integer, delim As String, parts As Variant, first As Boolean
+	Dim g As String
+	Erase gBaQ
+	f = gBaStateDir & "autosync_quarantine.csv"
+	Call BA_CheckBak(f)
+	If Dir$(f) = "" Then Exit Sub
+	On Error GoTo ErrH
+	fh = FreeFile()
+	Open f For Input As #fh Charset = "UTF-8"
+	first = True
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		If first Then
+			Call BR_CsvHeader(txt, delim, cols)
+			first = False
+		ElseIf Trim$(txt) <> "" Then
+			parts = BR_CsvSplit(txt, delim)
+			g = LCase$(BR_CsvGet(parts, cols, "objectGUID"))
+			If g <> "" Then
+				gBaQ(g) = BR_CsvGet(parts, cols, "Attempts") & Chr$(9) & BR_CsvGet(parts, cols, "FirstSeen") & Chr$(9) & BR_CsvGet(parts, cols, "LastSeen") & Chr$(9) & _
+				BR_CsvGet(parts, cols, "NextTry") & Chr$(9) & BR_CsvGet(parts, cols, "Name") & Chr$(9) & BR_CsvGet(parts, cols, "LastReason")
+			End If
+		End If
+	Loop
+	Close #fh
+	Exit Sub
+ErrH:
+	gBaLoadFail = gBaLoadFail & "quarantine file unreadable (" & Error$ & "): " & f & "; "
+	On Error Resume Next
+	Close #fh
+	BR_Log LVL_ERROR, "Quarantine file could not be read: " & Error$ & " - " & f
+End Sub
+
+Sub BA_QSave()
+	Dim f As String, tmp As String, old As String
+	On Error GoTo ErrH
+	f = gBaStateDir & "autosync_quarantine.csv"
+	tmp = gBaStateDir & "autosync_quarantine.tmp"
+	If Dir$(tmp) <> "" Then Kill tmp
+	Call BR_AppendLine(tmp, Uchr$(&HFEFF) & "objectGUID,Name,Attempts,FirstSeen,LastSeen,NextTry,LastReason")
+	old = BA_Stamp(DateAdd("d", -60, Now))
+	ForAll qe In gBaQ
+		If BA_QField(CStr(qe), 2) >= old Then       ' entries not seen for 60 days are forgotten
+			Call BR_AppendLine(tmp, Q(ListTag(qe)) & "," & Q(BA_QField(CStr(qe), 4)) & "," & Q(BA_QField(CStr(qe), 0)) & "," & Q(BA_QField(CStr(qe), 1)) & "," & _
+			Q(BA_QField(CStr(qe), 2)) & "," & Q(BA_QField(CStr(qe), 3)) & "," & Q(BA_QField(CStr(qe), 5)))
+		End If
+	End ForAll
+	Call BA_ReplaceFile(tmp, f)
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Quarantine file could not be written: " & Error$ & " (" & gBaStateDir & ")"
+End Sub
+
+' One more failed attempt for this user: sets the next time he may be tried
+Sub BA_QRecord(guid As String, userName As String, reason As String)
+	Dim k As String, att As Long, first As String, nxt As String, nowS As String
+	If Trim$(guid) = "" Then Exit Sub
+	k = LCase$(Trim$(guid))
+	nowS = BA_Stamp(Now)
+	If IsElement(gBaQ(k)) Then
+		att = CLng(Val(BA_QField(gBaQ(k), 0))) + 1
+		first = BA_QField(gBaQ(k), 1)
+	Else
+		att = 1
+		first = nowS
+	End If
+	If att >= BA_CfgN("AutoMaxAttempts", 3, 1, 20) Then
+		nxt = BA_Stamp(DateAdd("h", BA_CfgN("AutoQuarantineHours", 168, 1, 8760), Now))
+	Else
+		nxt = BA_Stamp(DateAdd("n", CLng(BA_CfgN("AutoRetryBackoffMin", 30, 1, 1440) * (2 ^ (att - 1))), Now))
+	End If
+	gBaQ(k) = CStr(att) & Chr$(9) & first & Chr$(9) & nowS & Chr$(9) & nxt & Chr$(9) & BA_Clean(userName, 120) & Chr$(9) & BA_Clean(reason, 200)
+	gBaQNew = gBaQNew + 1
+	BR_Log LVL_WARN, "Backoff: " & userName & " attempt " & att & " - next try not before " & nxt & " (" & BA_Clean(reason, 120) & ")"
+End Sub
+
+' A failure AT RegisterNewUser may already have created an ID file or a mail file: no quick retry, straight to the long hold
+Sub BA_QHard(guid As String, userName As String, reason As String)
+	Dim k As String, mx As Long, first As String, nowS As String
+	k = LCase$(Trim$(guid))
+	If k = "" Then Exit Sub
+	nowS = BA_Stamp(Now)
+	mx = BA_CfgN("AutoMaxAttempts", 3, 1, 20)
+	If IsElement(gBaQ(k)) Then first = BA_QField(gBaQ(k), 1) Else first = nowS
+	gBaQ(k) = CStr(mx - 1) & Chr$(9) & first & Chr$(9) & nowS & Chr$(9) & nowS & Chr$(9) & "" & Chr$(9) & ""
+	Call BA_QRecord(guid, userName, reason)
+End Sub
+
+Sub BA_QClear(guid As String)
+	Dim k As String
+	k = LCase$(Trim$(guid))
+	If k <> "" Then
+		If IsElement(gBaQ(k)) Then Erase gBaQ(k)
+	End If
+End Sub
+
+' Number of users that are currently held back (NextTry in the future)
+Function BA_QActive() As Long
+	Dim n As Long, nowS As String
+	nowS = BA_Stamp(Now)
+	ForAll qe In gBaQ
+		If BA_QField(CStr(qe), 3) > nowS Then n = n + 1
+	End ForAll
+	BA_QActive = n
+End Function
+
+' Number of users on the long quarantine (attempts >= AutoMaxAttempts and still held back)
+Function BA_QLong() As Long
+	Dim n As Long, nowS As String, mx As Long
+	nowS = BA_Stamp(Now)
+	mx = BA_CfgN("AutoMaxAttempts", 3, 1, 20)
+	ForAll qe In gBaQ
+		If BA_QField(CStr(qe), 3) > nowS And CLng(Val(BA_QField(CStr(qe), 0))) >= mx Then n = n + 1
+	End ForAll
+	BA_QLong = n
+End Function
+
+' Selection formula fragment that leaves the held-back users out ("" when there are none).
+' Only characters that can occur in a GUID are accepted, so the list can never break the formula.
+Function BA_QExclusion() As String
+	Dim lst As String, nowS As String, g As String, i As Integer, c As String, okG As Boolean, n As Long
+	nowS = BA_Stamp(Now)
+	ForAll qe In gBaQ
+		If BA_QField(CStr(qe), 3) > nowS And n < 500 Then
+			g = ListTag(qe)
+			okG = True
+			For i = 1 To Len(g)
+				c = Mid$(g, i, 1)
+				If Not (c Like "[0-9a-zA-Z{}-]") Then okG = False
+			Next
+			If okG Then
+				If lst <> "" Then lst = lst & ":"
+				lst = lst & """" & g & """"
+				n = n + 1
+			End If
+		End If
+	End ForAll
+	If n >= 500 Then BR_Log LVL_WARN, "More than 500 users are held back: only the first 500 are left out of the selection (see autosync_quarantine.csv)"
+	If lst <> "" Then BA_QExclusion = "@IsNotMember(@LowerCase(@Text(objectGUID)); " & lst & ")"
+End Function
+
+'=====================================================================
+' PENDING VERIFICATION  <AutoStateDir>/autosync_pending.csv
+'   Every user AutoSync registered stays here until Verify finds vault, mail file, ACL,
+'   Notes name and ALL cluster replicas in order (replicas are created later by AdminP).
+'=====================================================================
+Sub BA_PLoad()
+	Dim fh As Integer, txt As String, f As String, cols List As Integer, delim As String, parts As Variant, first As Boolean
+	Dim k As String
+	Erase gBaP
+	f = gBaStateDir & "autosync_pending.csv"
+	Call BA_CheckBak(f)
+	If Dir$(f) = "" Then Exit Sub
+	On Error GoTo ErrH
+	fh = FreeFile()
+	Open f For Input As #fh Charset = "UTF-8"
+	first = True
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		If first Then
+			Call BR_CsvHeader(txt, delim, cols)
+			first = False
+		ElseIf Trim$(txt) <> "" Then
+			parts = BR_CsvSplit(txt, delim)
+			k = BR_CsvGet(parts, cols, "NoteID")
+			If k <> "" Then
+				gBaP(k) = BR_CsvGet(parts, cols, "objectGUID") & Chr$(9) & BR_CsvGet(parts, cols, "Name") & Chr$(9) & BR_CsvGet(parts, cols, "Batch") & Chr$(9) & _
+				BR_CsvGet(parts, cols, "Added") & Chr$(9) & BR_CsvGet(parts, cols, "Tries") & Chr$(9) & BR_CsvGet(parts, cols, "LastStatus")
+			End If
+		End If
+	Loop
+	Close #fh
+	Exit Sub
+ErrH:
+	gBaLoadFail = gBaLoadFail & "pending-verification file unreadable (" & Error$ & "): " & f & "; "
+	On Error Resume Next
+	Close #fh
+	BR_Log LVL_ERROR, "Pending-verification file could not be read: " & Error$ & " - " & f
+End Sub
+
+Sub BA_PSave()
+	Dim f As String, tmp As String
+	On Error GoTo ErrH
+	f = gBaStateDir & "autosync_pending.csv"
+	tmp = gBaStateDir & "autosync_pending.tmp"
+	If Dir$(tmp) <> "" Then Kill tmp
+	Call BR_AppendLine(tmp, Uchr$(&HFEFF) & "NoteID,objectGUID,Name,Batch,Added,Tries,LastStatus")
+	ForAll pe In gBaP
+		Call BR_AppendLine(tmp, Q(ListTag(pe)) & "," & Q(BA_QField(CStr(pe), 0)) & "," & Q(BA_QField(CStr(pe), 1)) & "," & Q(BA_QField(CStr(pe), 2)) & "," & _
+		Q(BA_QField(CStr(pe), 3)) & "," & Q(BA_QField(CStr(pe), 4)) & "," & Q(BA_QField(CStr(pe), 5)))
+	End ForAll
+	Call BA_ReplaceFile(tmp, f)
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Pending-verification file could not be written: " & Error$ & " (" & gBaStateDir & ")"
+End Sub
+
+Function BA_PCount() As Long
+	Dim n As Long
+	ForAll pe In gBaP
+		n = n + 1
+	End ForAll
+	BA_PCount = n
+End Function
+
+Sub BA_PAdd(noteID As String, guid As String, userName As String, batchID As String)
+	If Trim$(noteID) = "" Then Exit Sub
+	gBaP(noteID) = guid & Chr$(9) & BA_Clean(userName, 120) & Chr$(9) & batchID & Chr$(9) & BA_Stamp(Now) & Chr$(9) & "0" & Chr$(9) & "REGISTERED_PENDING"
+End Sub
+
+' Verifies every pending user with the manual Verify logic (BR_VerifyDoc) and removes the ones that are fully OK.
+' Mail file title and ACL deviations are corrected (the same two fixes agent 04 offers) when AutoFixMailTitleAcl=1.
+' A user that is still not OK after AutoVerifyDays is reported and dropped from the list.
+Sub BA_VerifyPending(db As NotesDatabase)
+	Dim doc As NotesDocument, nid As String, tries As Long, ok As Boolean, limitS As String, nm As String
+	Dim done List As String, upd List As String, why As String, fixOn As Boolean, vf As String, tr As String, nPend As Long
+	nPend = BA_PCount()
+	If nPend = 0 Then Exit Sub
+	On Error GoTo ErrH
+	' own report, NOT a BATCH-*.csv file (so it never looks like a batch)
+	vf = BR_BatchDir() & "AUTO_verify_" & gRunID & ".csv"
+	gResultsFile = vf
+	Call BR_AppendLine(vf, Uchr$(&HFEFF) & BR_AuditHeader())
+	fixOn = CfgB("AutoFixMailTitleAcl", True) And Not CfgB("DryRun", True)       ' SHADOW never changes a mail file
+	limitS = BA_Stamp(DateAdd("d", -BA_CfgN("AutoVerifyDays", 3, 1, 30), Now))
+	BR_Log LVL_INFO, "Verifying " & nPend & " user(s) registered by AutoSync earlier (report " & vf & ")"
+	ForAll pe In gBaP
+		If gBaVerifyDeadline > 0 And CDbl(Now) > gBaVerifyDeadline Then
+			BR_Log LVL_WARN, "Verification stopped: run-time budget used up - the remaining users are checked by the next run"
+			Exit ForAll
+		End If
+		nid = ListTag(pe)
+		nm = BA_QField(CStr(pe), 1)
+		tries = CLng(Val(BA_QField(CStr(pe), 4))) + 1
+		Set doc = Nothing
+		On Error Resume Next
+		Set doc = db.GetDocumentByID(nid)
+		Err = 0
+		On Error GoTo ErrH
+		' the counters of BR_VerifyDoc are per call here
+		gVUnreg = 0: gVInV = 0: gVNotV = 0: gVErr = 0: gVGone = 0: gVMailBad = 0: gVRepBad = 0
+		gVNameBad = 0: gVTitleBad = 0: gVAclBad = 0
+		Erase gVTitles
+		Erase gVAcls
+		Call BR_VerifyDoc(doc, nid, "*auto")
+		' optional fixes: only the mail file title and the mail file ACL, exactly as agent 04
+		If fixOn And gVTitleBad > 0 Then
+			ForAll tt In gVTitles
+				tr = BR_MailTitleFix(StrLeft(ListTag(tt), "!!"), StrRight(ListTag(tt), "!!"), CStr(tt), True, False)
+				BR_Log LVL_INFO, "Mail file title " & ListTag(tt) & " -> '" & tt & "': " & tr
+				If tr = "TITLE_SET" Then gBaVFixed = gBaVFixed + 1
+			End ForAll
+		End If
+		If fixOn And gVAclBad > 0 Then
+			ForAll ta In gVAcls
+				tr = BR_MailAclFix(StrLeft(ListTag(ta), "!!"), StrRight(ListTag(ta), "!!"), CStr(ta), True)
+				BR_Log LVL_INFO, "Mail file ACL " & ListTag(ta) & ": " & tr
+				If Left$(tr, 7) = "ACL_SET" Then gBaVFixed = gBaVFixed + 1
+			End ForAll
+		End If
+		ok = (gVInV = 1 And gVNotV = 0 And gVErr = 0 And gVGone = 0 And gVMailBad = 0 And gVRepBad = 0 And gVNameBad = 0 And gVUnreg = 0)
+		why = ""
+		If gVGone > 0 Then why = why & "Person document no longer exists; "
+		If gVUnreg > 0 Then why = why & "not registered; "
+		If gVNotV > 0 Then why = why & "not in ID vault; "
+		If gVErr > 0 Then why = why & "vault check error; "
+		If gVMailBad > 0 Then why = why & "mail file missing; "
+		If gVRepBad > 0 Then why = why & "cluster replicas incomplete; "
+		If gVNameBad > 0 Then why = why & "wrong Notes name; "
+		If ok Then
+			done(nid) = "OK"
+			gBaResolved = gBaResolved + 1
+		ElseIf gVGone > 0 Then
+			done(nid) = "GONE"
+			gBaVFailed = gBaVFailed + 1
+			If Len(gBaVFailLines) < 1500 Then gBaVFailLines = gBaVFailLines & "  " & nm & " : " & why & Chr$(10)
+		ElseIf BA_QField(CStr(pe), 3) < limitS Then
+			done(nid) = "GAVE_UP"
+			gBaVFailed = gBaVFailed + 1
+			BR_Log LVL_ERROR, "VERIFY FAILED after " & BA_CfgN("AutoVerifyDays", 3, 1, 30) & " day(s): " & nm & " - " & why
+			If Len(gBaVFailLines) < 1500 Then gBaVFailLines = gBaVFailLines & "  " & nm & " : " & why & Chr$(10)
+		Else
+			upd(nid) = BA_QField(CStr(pe), 0) & Chr$(9) & nm & Chr$(9) & BA_QField(CStr(pe), 2) & Chr$(9) & BA_QField(CStr(pe), 3) & Chr$(9) & CStr(tries) & Chr$(9) & BA_Clean(why, 120)
+		End If
+	End ForAll
+	' apply the changes after the loop (a list must not be changed while ForAll walks it)
+	ForAll d1 In done
+		Erase gBaP(ListTag(d1))
+	End ForAll
+	ForAll u1 In upd
+		gBaP(ListTag(u1)) = CStr(u1)
+	End ForAll
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Verification of pending users stopped: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	Call BA_L("WARNING: verification of earlier users stopped: " & Error$)
+	gBaWarn = gBaWarn + 1
+End Sub
+
+'=====================================================================
+' SELECTION  -  the Build Batch selection plus AutoSync's own clauses
+'=====================================================================
+Function BA_AndFormula(a As String, b As String) As String
+	If Trim$(a) = "" Then BA_AndFormula = b Else BA_AndFormula = "(" & a & ") & " & b
+End Function
+
+' ExtraSelection = the configured clause AND "settled for AutoMinAgeMinutes" AND "not held back by backoff".
+' The finished formula is test-run once (1 document) so a formula the server rejects stops the run
+' with a clear message instead of an aborted Build. Returns "" or an error text.
+Function BA_Selection(db As NotesDatabase) As String
+	Dim f As String, age As Long, ex As String, test As NotesDocumentCollection
+	On Error GoTo ErrH
+	f = gBaBaseExtra
+	age = BA_CfgN("AutoMinAgeMinutes", 60, 0, 10080)
+	If age > 0 Then f = BA_AndFormula(f, "(@Modified < @Adjust(@Now; 0; 0; 0; 0; -" & CStr(age) & "; 0))")
+	ex = BA_QExclusion()
+	If ex <> "" Then f = BA_AndFormula(f, "(" & ex & ")")
+	gCfg("extraselection") = f
+	BR_Log LVL_INFO, "AutoSync selection: " & BR_SelectionFormula(True)
+	Set test = db.Search(BR_SelectionFormula(True), Nothing, 1)
+	Exit Function
+ErrH:
+	BA_Selection = "the selection formula was rejected (" & Error$ & ", err " & Err & "): " & BR_SelectionFormula(True) & " - set AutoMinAgeMinutes=0 or correct ExtraSelection"
+End Function
+
+'=====================================================================
+' ENVIRONMENT GATE  -  returns "" or the list of problems (each one stops the run)
+'=====================================================================
+Function BA_EnvCheck(strict As Boolean) As String
+	Dim s As String, cache List As String, pool As Variant, i As Integer, keyName As String, vs As String, f As String
+	Dim staleMin As Long, runMin As Long, marker As String, anyBatch As String
+	If Not CfgB("UseCA", True) Then s = s & "UseCA must be 1: a certifier ID password cannot be stored for an unattended run; "
+	If Trim$(CfgS("CertifierName", "")) = "" Then s = s & "CertifierName is empty; "
+	If Trim$(CfgS("RegistrationServer", "")) = "" Then s = s & "RegistrationServer is empty; "
+	If Trim$(CfgS("DirectoryServer", "")) = "" Then s = s & "DirectoryServer is empty; "
+	' every value must be free of <PLACEHOLDER>
+	ForAll cv In gCfg
+		keyName = ListTag(cv)
+		If keyName <> "extraselection" And keyName <> "mailfiletitle" Then
+			If InStr(cv, "<") > 0 And InStr(InStr(cv, "<"), cv, ">") > 0 Then s = s & keyName & " still contains a <PLACEHOLDER>; "
+		End If
+	End ForAll
+	' an ID that is not deposited in the vault is lost: a policy must assign the vault, and the vault must be checkable
+	If Trim$(CfgS("DefaultPolicy", "")) = "" And Not CfgB("OrgPolicyAssignsVault", False) Then s = s & "no vault policy: set DefaultPolicy or OrgPolicyAssignsVault=1; "
+	If Trim$(CfgS("VaultServer", "")) = "" Then s = s & "VaultServer is required (AutoSync verifies the vault deposit of every user it registers); "
+	If Trim$(CfgS("MailTemplate", "")) = "" And Not CfgB("RegisterCreateMailDb", True) Then s = s & "RegisterCreateMailDb=0 needs MailTemplate; "
+	If Trim$(CfgS("HomeServers", "")) = "" And Trim$(CfgS("DefaultHomeServer", "")) = "" Then s = s & "neither HomeServers nor DefaultHomeServer is set; "
+	If strict And Not CfgB("CheckMailFileExists", True) Then s = s & "CheckMailFileExists must be 1 for LIVE (it stops a second registration from reusing a mail file); "
+	' lock timing: a lock may only count as stale when no healthy run can still be active
+	runMin = BA_CfgN("AutoMaxRuntimeMin", 8, 1, 600)
+	staleMin = BA_CfgN("AutoLockStaleMin", 45, 5, 1440)
+	If staleMin <= (runMin * 2 + 5) Then s = s & "AutoLockStaleMin (" & staleMin & ") must exceed 2 x AutoMaxRuntimeMin + 5 (" & (runMin * 2 + 5) & "); "
+	' folders (local to the server that runs the agent)
+	If Not BR_DirWritable(BR_CfgDir("IDFileDir", "ids")) Then s = s & "IDFileDir not writable: " & BR_CfgDir("IDFileDir", "ids") & "; "
+	If CfgB("WritePasswordFile", True) Then
+		If Not BR_DirWritable(BR_CfgDir("PasswordDir", "secure")) Then s = s & "PasswordDir not writable: " & BR_CfgDir("PasswordDir", "secure") & "; "
+	End If
+	If Not BR_DirWritable(BR_BatchDir()) Then
+		s = s & "BatchDir not writable: " & BR_BatchDir() & "; "
+	Else
+		' BatchDir must belong to AutoSync alone: open batches in it are abandoned automatically
+		marker = BR_BatchDir() & "AUTOSYNC_OWNED.txt"
+		If Dir$(marker) = "" Then
+			anyBatch = Dir$(BR_BatchDir() & "BATCH-*.csv")
+			If anyBatch <> "" Then
+				s = s & "BatchDir " & BR_BatchDir() & " contains batch files (" & anyBatch & ") but no AUTOSYNC_OWNED.txt: it may be a MANUAL batch folder - point BatchDir to an own folder, or create the marker file if this folder really belongs to AutoSync; "
+			Else
+				Call BA_WriteFile(marker, "This folder belongs to BulkReg AutoSync. Open BATCH-*.csv files in it are abandoned automatically. Created " & Format$(Now, "yyyy-mm-dd hh:nn:ss"))
+			End If
+		End If
+	End If
+	' servers
+	If Not BR_HomeServerOK(CfgS("RegistrationServer", ""), cache) Then s = s & "RegistrationServer unreachable: " & CfgS("RegistrationServer", "") & "; "
+	If BR_HomePool() <> "" Then
+		pool = Split(BR_HomePool(), ",")
+		For i = 0 To UBound(pool)
+			If Not BR_HomeServerOK(CStr(pool(i)), cache) Then s = s & "home server unreachable: " & pool(i) & "; "
+		Next
+	End If
+	If Trim$(CfgS("VaultServer", "")) <> "" Then
+		If Not BR_HomeServerOK(CfgS("VaultServer", ""), cache) Then
+			s = s & "vault server unreachable: " & CfgS("VaultServer", "") & "; "
+		Else
+			' can THIS agent ask the vault at all? (a name that does not exist must answer NOT_IN_VAULT, not an error)
+			vs = BR_VaultStatus("CN=BulkReg Probe/O=Probe", CfgS("VaultServer", ""))
+			BR_Log LVL_INFO, "Vault probe: " & vs
+			If Left$(vs, 11) = "CHECK_ERROR" Then
+				If strict Then
+					s = s & "the vault cannot be queried from this agent (" & vs & "): LIVE would register users it cannot verify; "
+				Else
+					BA_Warn "the vault cannot be queried from this agent (" & vs & ") - LIVE mode would stop on this"
+				End If
+			End If
+		End If
+	End If
+	If CfgS("MailClusterServers", "") <> "" Then
+		pool = Split(BR_SrvList(CfgS("MailClusterServers", ""), ""), ",")
+		For i = 0 To UBound(pool)
+			If Not BR_HomeServerOK(CStr(pool(i)), cache) Then BA_Note "mail cluster member unreachable: " & pool(i) & " (AdminP creates its replicas when it is back)"
+		Next
+	End If
+	If Trim$(CfgS("MailACLManager", "")) = "" Then BA_Note "MailACLManager is empty: the identity that runs the agent (" & gOperator & ") would be the only Manager of every new mail file - name the administrators"
+	BA_EnvCheck = s
+End Function
+
+'=====================================================================
+' BATCH FILES OF AutoSync  (BatchDir of bulkreg_auto.ini belongs to AutoSync alone)
+'=====================================================================
+' Renames BATCH-<id>.csv to <prefix><id>.csv  (SHADOW-, ABANDONED-). The new name is not a BATCH-* file, so the
+' users in it are offered again by the next run. Returns the new path ("" on failure).
+Function BA_RetireBatch(bfile As String, prefix As String) As String
+	Dim nm As String, np As String
+	On Error GoTo ErrH
+	nm = StrRightBack(bfile, gSep)
+	If Left$(nm, 6) <> "BATCH-" Then Exit Function
+	np = BR_BatchDir() & prefix & Mid$(nm, 7)
+	If Dir$(np) <> "" Then Kill np
+	FileCopy bfile, np
+	Kill bfile
+	BA_RetireBatch = np
+	Exit Function
+ErrH:
+	BR_Log LVL_WARN, "Could not rename " & bfile & " to " & prefix & "...: " & Error$
+End Function
+
+' A batch of an earlier run that was never registered (crash, gate stop) blocks its users for ever
+' (an open batch hides its users from the next Build). AutoSync batches are never reviewed by hand, so they are abandoned.
+Function BA_AbandonOpen() As Long
+	Dim d As String, f As String, files List As String, n As Long
+	On Error GoTo ErrH
+	d = BR_BatchDir()
+	f = Dir$(d & "BATCH-*.csv")
+	Do While f <> ""
+		If InStr(f, "_") = 0 Then files(f) = f
+		f = Dir$()
+	Loop
+	ForAll bf In files
+		If Dir$(d & Left$(CStr(bf), Len(CStr(bf)) - 4) & "_results.csv") = "" Then
+			If BA_RetireBatch(d & CStr(bf), "ABANDONED-") <> "" Then
+				n = n + 1
+				BR_Log LVL_WARN, "Open batch of an earlier run abandoned: " & bf & " (its users are offered again)"
+			End If
+		End If
+	End ForAll
+	BA_AbandonOpen = n
+	Exit Function
+ErrH:
+	BR_Log LVL_WARN, "Open batches could not be checked: " & Error$
+	BA_AbandonOpen = n
+End Function
+
+' Reads the Build output: collects names for the report; records the rows with Check=ERROR as failed attempts (LIVE only)
+' Reads the Build output.
+'   pass 1 = report: names of the rows that will be registered (only when listOk, i.e. SHADOW), the ERROR rows, capacity errors
+'   pass 2 = record: rows with Check=ERROR count as a failed attempt of that user (backoff); runs only AFTER every gate passed,
+'            so a systematic problem that halts the run puts nobody on backoff
+Sub BA_ScanBuild(bfile As String, pass As Integer, listOk As Boolean)
+	Dim fh As Integer, txt As String, cols List As Integer, delim As String, parts As Variant, first As Boolean
+	Dim nm As String, chk As String, inc As String, iss As String, nOk As Long, nBad As Long, capRow As Boolean, infraRow As Boolean
+	On Error GoTo ErrH
+	fh = FreeFile()
+	Open bfile For Input As #fh Charset = "UTF-8"
+	first = True
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		If first Then
+			Call BR_CsvHeader(txt, delim, cols)
+			first = False
+		ElseIf Trim$(txt) <> "" Then
+			parts = BR_CsvSplit(txt, delim)
+			nm = BR_CsvGet(parts, cols, "NotesName")
+			If nm = "" Then nm = BR_CsvGet(parts, cols, "FullName")
+			chk = UCase$(BR_CsvGet(parts, cols, "Check"))
+			inc = UCase$(BR_CsvGet(parts, cols, "Include"))
+			iss = BR_CsvGet(parts, cols, "Issues")
+			If inc = "Y" Then
+				nOk = nOk + 1
+				If pass = 1 And listOk And nOk <= 25 Then gBaOkLines = gBaOkLines & "  " & nm & Chr$(10)
+			ElseIf chk = "ERROR" Then
+				nBad = nBad + 1
+				capRow = (InStr(iss, "home servers are full") > 0 Or InStr(iss, "mail folders (") > 0)
+				infraRow = (InStr(iss, "unreachable") > 0)
+				If pass = 1 Then
+					If capRow Then gBaCapErr = gBaCapErr + 1
+					If nBad <= 15 Then gBaFailLines = gBaFailLines & "  " & nm & " : " & BA_Clean(iss, 160) & Chr$(10)
+				ElseIf Not capRow And Not infraRow Then
+					' a full server or an unreachable server is not the user's fault: no backoff for those
+					Call BA_QRecord(BR_CsvGet(parts, cols, "objectGUID"), nm, "BUILD: " & iss)
+				End If
+			End If
+		End If
+	Loop
+	Close #fh
+	Exit Sub
+ErrH:
+	On Error Resume Next
+	Close #fh
+	BR_Log LVL_WARN, "Build file could not be read for the report: " & Error$
+End Sub
+
+' Reads the LIVE results of the Register step: registered users go to the verification list, failed users to backoff
+' Reads the LIVE results of the Register step:
+'   registered users                      -> verification list, removed from backoff
+'   failed AFTER RegisterNewUser worked   -> verification list too (the Person document has a certificate now)
+'   failed AT RegisterNewUser             -> long hold at once (an ID file or mail file may already exist)
+'   other failures                        -> backoff
+Sub BA_ReadResults(rfile As String)
+	Dim fh As Integer, txt As String, cols List As Integer, delim As String, parts As Variant, first As Boolean
+	Dim res As String, nm As String, g As String, nBad As Long, nOk As Long, msg As String
+	If Dir$(rfile) = "" Then Exit Sub
+	On Error GoTo ErrH
+	fh = FreeFile()
+	Open rfile For Input As #fh Charset = "UTF-8"
+	first = True
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		If first Then
+			Call BR_CsvHeader(txt, delim, cols)
+			first = False
+		ElseIf Trim$(txt) <> "" Then
+			parts = BR_CsvSplit(txt, delim)
+			res = UCase$(BR_CsvGet(parts, cols, "Result"))
+			nm = BR_CsvGet(parts, cols, "FullNameAfter")
+			If nm = "" Then nm = BR_CsvGet(parts, cols, "FullNameBefore")
+			g = BR_CsvGet(parts, cols, "objectGUID")
+			msg = BA_Short(BR_CsvGet(parts, cols, "Message"))
+			Select Case res
+			Case "REGISTERED", "REGISTERED_PENDING"
+				Call BA_PAdd(BR_CsvGet(parts, cols, "NoteID"), g, nm, gBatchID)
+				Call BA_QClear(g)
+				nOk = nOk + 1
+				If nOk <= 25 Then gBaOkLines = gBaOkLines & "  " & nm & BR_IIfStr(res = "REGISTERED_PENDING", "  (pending: " & BA_Clean(msg, 100) & ")", "") & Chr$(10)
+			Case "REGISTERED_WRONG_NAME"
+				Call BA_PAdd(BR_CsvGet(parts, cols, "NoteID"), g, nm, gBatchID)
+				nBad = nBad + 1
+				If nBad <= 15 Then gBaFailLines = gBaFailLines & "  " & nm & " : REGISTERED WITH A WRONG NAME - " & BA_Clean(msg, 140) & Chr$(10)
+			Case "FAILED", "FAILED_VALIDATION"
+				nBad = nBad + 1
+				If InStr(msg, "stage=verify") > 0 Or InStr(msg, "stage=createmail") > 0 Or InStr(msg, "stage=mailfile") > 0 Or InStr(msg, "stage=replicas") > 0 Or InStr(msg, "stage=vault") > 0 Then
+					Call BA_PAdd(BR_CsvGet(parts, cols, "NoteID"), g, nm, gBatchID)
+					' "stage=verify": RegisterNewUser worked but the certificate is not visible yet - never offer him again quickly
+					If InStr(msg, "stage=verify") > 0 Then Call BA_QHard(g, nm, res & ": " & msg)
+					If nBad <= 15 Then gBaFailLines = gBaFailLines & "  " & nm & " : registered, but a follow-up step failed (verified again by the next runs) - " & BA_Clean(msg, 140) & Chr$(10)
+				ElseIf InStr(msg, "stage=RegisterNewUser") > 0 Then
+					Call BA_QHard(g, nm, res & ": " & msg)
+					If nBad <= 15 Then gBaFailLines = gBaFailLines & "  " & nm & " : RegisterNewUser failed - held for the long quarantine; check for a left-over ID file or mail file - " & BA_Clean(msg, 120) & Chr$(10)
+				Else
+					Call BA_QRecord(g, nm, res & ": " & msg)
+					If nBad <= 15 Then gBaFailLines = gBaFailLines & "  " & nm & " : " & res & " - " & BA_Clean(msg, 160) & Chr$(10)
+				End If
+			End Select
+		End If
+	Loop
+	Close #fh
+	Exit Sub
+ErrH:
+	On Error Resume Next
+	Close #fh
+	BR_Log LVL_ERROR, "Results file could not be read: " & Error$ & " - " & rfile
+End Sub
+
+'=====================================================================
+' NOTIFICATION  (Domino mail to AutoNotifyTo; the same text is in the log database Run document)
+'   Never contains passwords, ID files or any secret - user names and counts only.
+'=====================================================================
+Function BA_Notify(host As NotesDatabase, subj As String, body As String) As Boolean
+	Dim memo As NotesDocument, rt As NotesRichTextItem, tos As String, parts As Variant, lst As Variant, n As Integer, i As Integer
+	Dim lines As Variant, t As String, joined As String
+	On Error GoTo ErrH
+	tos = Trim$(CfgS("AutoNotifyTo", ""))
+	If tos = "" Or InStr(tos, "<") > 0 Then
+		BR_Log LVL_WARN, "AutoNotifyTo is not set - no mail sent: " & subj
+		Exit Function
+	End If
+	parts = Split(tos, ",")
+	For i = 0 To UBound(parts)
+		t = Trim$(CStr(parts(i)))
+		If t <> "" Then
+			If joined <> "" Then joined = joined & Chr$(1)
+			joined = joined & t
+			n = n + 1
+		End If
+	Next
+	If n = 0 Then Exit Function
+	lst = Split(joined, Chr$(1))
+	Set memo = host.CreateDocument()          ' any database will do: the memo is mailed, never saved
+	Call memo.ReplaceItemValue("Form", "Memo")
+	Call memo.ReplaceItemValue("SendTo", lst)
+	Call memo.ReplaceItemValue("Subject", subj)
+	Set rt = New NotesRichTextItem(memo, "Body")
+	lines = Split(body, Chr$(10))
+	For i = 0 To UBound(lines)
+		Call rt.AppendText(CStr(lines(i)))
+		Call rt.AddNewLine(1)
+	Next
+	memo.SaveMessageOnSend = False
+	Call memo.Send(False)
+	BR_Log LVL_INFO, "Mail sent to " & tos & " : " & subj
+	BA_Notify = True
+	Exit Function
+ErrH:
+	BR_Log LVL_ERROR, "Mail to " & tos & " could not be sent: " & Error$ & " (err " & Err & ")"
+End Function
+
+' True when the same alert has not been mailed within AutoAlertRepeatHours
+' Stable type of an alert (the text itself contains counts and names that change from run to run)
+Function BA_AlertType(summary As String) As String
+	If InStr(summary, "STOP file") > 0 Then
+		BA_AlertType = "STOP"
+	ElseIf InStr(summary, "CAPACITY") > 0 Then
+		BA_AlertType = "CAPACITY"
+	ElseIf InStr(summary, "backlog") > 0 Then
+		BA_AlertType = "BACKLOG"
+	ElseIf InStr(summary, "environment check failed") > 0 Then
+		BA_AlertType = "ENV"
+	ElseIf InStr(summary, "Check=ERROR") > 0 Then
+		BA_AlertType = "ERRORRATIO"
+	ElseIf InStr(summary, "selection formula") > 0 Then
+		BA_AlertType = "SELECTION"
+	ElseIf InStr(summary, "AutoInitialLoadDone") > 0 Then
+		BA_AlertType = "INITIALLOAD"
+	ElseIf InStr(summary, "ABORTED") > 0 Then
+		BA_AlertType = "ABORTED"
+	ElseIf Left$(summary, 6) = "FAILED" Then
+		BA_AlertType = "FAILED"
+	Else
+		BA_AlertType = Replace(Replace(BA_Clean(Left$(summary, 30), 30), "=", "-"), " ", "_")
+	End If
+End Function
+
+' True when an alert of this type has not been mailed within AutoAlertRepeatHours
+Function BA_AlertDue(summary As String) As Boolean
+	Dim lim As String
+	lim = BA_Stamp(DateAdd("h", -BA_CfgN("AutoAlertRepeatHours", 12, 1, 168), Now))
+	If BA_St("LastAlert_" & BA_AlertType(summary), "") < lim Then BA_AlertDue = True
+End Function
+
+Function BA_HeartbeatDue() As Boolean
+	If Format$(Now, "yyyy-mm-dd") = BA_St("LastHeartbeatDay", "") Then Exit Function
+	If Hour(Now) < BA_CfgN("AutoHeartbeatHour", 7, 0, 23) Then Exit Function
+	BA_HeartbeatDue = True
+End Function
+
+' Daily status block: directory counts, held-back users, open verifications, home server load
+Sub BA_DailyBlock(db As NotesDatabase)
+	Dim allCol As NotesDocumentCollection, unCol As NotesDocumentCollection, nAll As Long, nUn As Long, cap As Long, keep As String
+	On Error GoTo ErrH
+	keep = CfgS("ExtraSelection", "")
+	gCfg("extraselection") = gBaBaseExtra                      ' count ALL users, not only the ones AutoSync may take now
+	Set allCol = db.Search(BR_SelectionFormula(False), Nothing, 0)
+	nAll = allCol.Count
+	Set unCol = db.Search(BR_SelectionFormula(True), Nothing, 0)
+	nUn = unCol.Count
+	gCfg("extraselection") = keep
+	Call BA_L("Directory   : " & nAll & " DirSync users, " & (nAll - nUn) & " registered, " & nUn & " not yet registered (includes users waiting for the settling time, held back, or without Internet address)")
+	Call BA_L("Held back   : " & BA_QActive() & " user(s) on backoff/quarantine (" & BA_QLong() & " on the long quarantine)  -  list: autosync_quarantine.csv")
+	Call BA_L("Verification: " & BA_PCount() & " registered user(s) still being verified (replicas / vault)")
+	cap = CfgL("HomeServerMaxUsers", 0)
+	ForAll ld In gSrvLoad
+		Call BA_L("Home server " & ListTag(ld) & " : " & ld & BR_IIfStr(cap > 0, " of " & cap, "") & " users counted")
+	End ForAll
+	Exit Sub
+ErrH:
+	gCfg("extraselection") = keep
+	Call BA_L("Directory counts could not be read: " & Error$)
+End Sub
+
+' STOP file: blocks every following run until an administrator deletes it
+Sub BA_WriteStop(reason As String)
+	On Error Resume Next
+	Call BA_WriteFile(gBaStateDir & "STOP", "AutoSync stopped itself at " & Format$(Now, "yyyy-mm-dd hh:nn:ss") & ": " & reason & Chr$(13) & Chr$(10) & "Delete this file to resume (after the cause is fixed).")
+End Sub
+
+'=====================================================================
+' BA_RunAutoSync  -  runs agent BulkReg\07 - AutoSync
+'   The agent itself only contains:  Call BA_RunAutoSync()
+'=====================================================================
+Sub BA_RunAutoSync()
+	On Error GoTo ErrH
+	Dim mode As String, dryRun As Boolean, db As NotesDatabase, t0 As Double
+	Dim envErr As String, selErr As String, nAband As Long, cap As Long, maxRows As Long
+	Dim backlog As Long, errPct As Long, bfile As String, failedRun As Boolean, selfPaused As Boolean
+	Dim summary As String, resFile As String, stateReady As Boolean, inFinish As Boolean, hb As Boolean
+	Dim sendKind As String, subj As String, body As String, notifyOn As String, expUser As String
+	Dim prevFailed As Long, stopFile As String, errText As String, effName As String, ranOk As Boolean
+	Dim host As NotesDatabase, regStarted As Boolean, resultsRead As Boolean, mailed As Boolean, plainKey As String
+
+	gAuto = True
+	gEmbedded = False
+	gBaHalt = "": gBaReport = "": gBaWarn = 0: gBaHaveLock = False: gBaQNew = 0
+	gBaResolved = 0: gBaVFailed = 0: gBaVFixed = 0
+	gBaFailLines = "": gBaOkLines = "": gBaVFailLines = "": gBaCapErr = 0: gBaLoadFail = "": gBaVerifyDeadline = 0
+	gEmbDeadline = 0: gEmbError = "": gBaBaseExtra = ""
+	gRegOK = 0: gRegFail = 0: gRegSkip = 0: gRegStop = "": gRegRows = 0
+	gBldFileCount = 0: gBldRows = 0: gBldInc = 0: gBldErr = 0: gBldWarn = 0: gBldNoInet = 0: gBldInOpen = 0: gBldLeft = 0
+	Erase gBaSt
+	Erase gBaQ
+	Erase gBaP
+	gAutoCfgPath = BA_ConfigPath()
+	If Not BR_Init("AutoSync") Then
+		gAuto = False
+		Exit Sub
+	End If
+	t0 = CDbl(Now)
+	gBaVerifyDeadline = t0 + ((BA_CfgN("AutoMaxRuntimeMin", 8, 1, 600) * 2) / 1440#)      ' verification gets its own, equally long budget
+	gBaStateDir = BR_CfgDir("AutoStateDir", "state")
+	gBaBaseExtra = Trim$(CfgS("ExtraSelection", ""))
+	mode = UCase$(Trim$(CfgS("AutoMode", "SHADOW")))
+	notifyOn = UCase$(Trim$(CfgS("AutoNotifyOn", "ACTIVITY")))
+	BR_Log LVL_INFO, "AutoSync " & BR_VERSION & " | AutoMode=" & mode & " | host user=" & gOperator & " | platform=" & gPlatform & " | state " & gBaStateDir
+
+	' ---------------- 0. gates ----------------
+	If mode = "OFF" Then
+		summary = "AutoSync is OFF (AutoMode=OFF) - nothing done"
+		GoTo Finish
+	End If
+	If mode <> "LIVE" And mode <> "SHADOW" Then
+		gBaHalt = "AutoMode must be OFF, SHADOW or LIVE (it is '" & mode & "')"
+		GoTo Finish
+	End If
+	dryRun = (mode <> "LIVE")
+	If dryRun Then gCfg("dryrun") = "1" Else gCfg("dryrun") = "0"
+
+	If Not BR_DirWritable(gBaStateDir) Then
+		gBaHalt = "AutoStateDir is missing or not writable: " & gBaStateDir
+		GoTo Finish
+	End If
+	Call BA_StateLoad()
+	Call BA_QLoad()
+	Call BA_PLoad()
+	prevFailed = CLng(Val(BA_St("FailedRuns", "0")))
+	If gBaLoadFail <> "" Then
+		gBaHalt = "state file problem: " & gBaLoadFail & "(nothing is saved over them; repair or delete the file)"
+		GoTo Finish                               ' stateReady stays False: no file is written
+	End If
+	stateReady = True
+
+	stopFile = gBaStateDir & "STOP"
+	If Dir$(stopFile) <> "" Then
+		gBaHalt = "STOP file present - " & BA_ReadFirstLine(stopFile) & "  (delete " & stopFile & " to resume)"
+		GoTo Finish
+	End If
+	If Not CfgB("AutoInitialLoadDone", False) Then
+		gBaHalt = "AutoInitialLoadDone=0: the initial bulk registration is not marked as finished. Complete the manual batches (agents 01-04), verify, then set AutoInitialLoadDone=1"
+		GoTo Finish
+	End If
+	' who is the agent really running as? (UserName and EffectiveUserName can differ on a server - both are logged)
+	On Error Resume Next
+	effName = gSession.EffectiveUserName
+	Err = 0
+	On Error GoTo ErrH
+	If effName = "" Then effName = gOperator
+	BR_Log LVL_INFO, "Identity: UserName=" & gOperator & " | EffectiveUserName=" & effName
+	expUser = Trim$(CfgS("AutoExpectedUser", ""))
+	If expUser <> "" Then
+		If LCase$(BR_Abbr(effName)) <> LCase$(BR_Abbr(expUser)) Then
+			gBaHalt = "the agent runs as '" & effName & "' but AutoExpectedUser is '" & expUser & "' (wrong signer / Run on behalf of)"
+			GoTo Finish
+		End If
+	End If
+	If Not BA_LockAcquire() Then
+		summary = "SKIPPED - another AutoSync run is still active (lock file " & gBaStateDir & "autosync.lock)"
+		stateReady = False                 ' the other run owns the state files: this run changes and mails nothing
+		GoTo Finish
+	End If
+	' state is read AGAIN under the lock (an earlier run may have saved it a moment ago); an unreadable file stops the run
+	gBaLoadFail = ""
+	Call BA_StateLoad()
+	Call BA_QLoad()
+	Call BA_PLoad()
+	prevFailed = CLng(Val(BA_St("FailedRuns", "0")))
+	If gBaLoadFail <> "" Then
+		gBaHalt = "state file problem: " & gBaLoadFail & "(nothing is saved over them; repair or delete the file)"
+		stateReady = False
+		GoTo Finish
+	End If
+	' self-pause: after AutoMaxFailedRuns failed runs in a row the STOP file blocks everything until an administrator removes it
+	If prevFailed >= BA_CfgN("AutoMaxFailedRuns", 3, 1, 50) Then
+		Call BA_L("The STOP file was removed - the failed-run counter (" & prevFailed & ") is reset.")
+		prevFailed = 0
+		Call BA_StSet("FailedRuns", "0")
+	End If
+	envErr = BA_EnvCheck(Not dryRun)
+	If envErr <> "" Then
+		gBaHalt = "environment check failed: " & envErr
+		GoTo Finish
+	End If
+	Set db = BR_OpenDirectory()
+	selErr = BA_Selection(db)
+	If selErr <> "" Then
+		gBaHalt = selErr
+		GoTo Finish
+	End If
+
+	' ---------------- 1. clean up ----------------
+	nAband = BA_AbandonOpen()
+	If nAband > 0 Then BA_Warn nAband & " open batch file(s) of an earlier run were abandoned - their users are offered again in this run"
+
+	' ---------------- 2. build (same code as agent 02) ----------------
+	maxRows = CfgL("MaxBatchRows", 1000)
+	cap = BA_CfgN("AutoMaxUsersPerRun", 50, 1, 1000)
+	If cap > maxRows Then cap = maxRows
+	gCfg("batchsize") = CStr(cap)
+	gCfg("buildmaxbatches") = "1"                    ' one batch per run = the per-run cap
+	gEmbedded = True
+	Call BR_RunBuildBatch()
+	gEmbedded = False
+	If gEmbError <> "" Then
+		failedRun = True
+		summary = "FAILED - " & gEmbError
+		GoTo Finish
+	End If
+	backlog = gBldRows + gBldLeft
+	Call BA_L("Build       : " & gBldRows & " user(s) in this run's batch (Include=Y " & gBldInc & ", ERROR " & gBldErr & ", WARN " & gBldWarn & "), " & gBldLeft & " more waiting for the next run (cap " & cap & " per run)")
+	Call BA_L("Not offered : " & gBldNoInet & " without Internet address (flagged, waiting for AD), " & gBldInOpen & " in an open batch")
+	If gBldFileCount = 0 Or Not IsElement(gBldFiles("1")) Then
+		summary = "Nothing to register"
+		GoTo Finish
+	End If
+	bfile = gBldFiles("1")
+	Call BA_ScanBuild(bfile, 1, dryRun)
+	' capacity: no free home server / numbered mail folder is not a problem of one user - it blocks every new user
+	If gBaCapErr > 0 Then
+		Call BA_RetireBatch(bfile, "ABANDONED-")
+		gBaHalt = "CAPACITY: " & gBaCapErr & " user(s) cannot get a home server or mail folder (all home servers or all pre-created mail folders are full). Raise HomeServerMaxUsers / MailFolderMax and create the folders (see Preflight _mailfolders.txt)"
+		GoTo Finish
+	End If
+
+	' ---------------- 3. gates on the built batch ----------------
+	If backlog > BA_CfgN("AutoMaxBacklog", 200, 1, 100000) Then
+		Call BA_RetireBatch(bfile, "ABANDONED-")
+		gBaHalt = "backlog of " & backlog & " eligible users is above AutoMaxBacklog=" & BA_CfgN("AutoMaxBacklog", 200, 1, 100000) & " - a bulk import or an unfinished initial load? Check the directory, then raise AutoMaxBacklog or run the manual batches"
+		GoTo Finish
+	End If
+	If gBldRows > 0 Then errPct = (gBldErr * 100) \ gBldRows
+	If gBldErr >= BA_CfgN("AutoErrorGateMin", 5, 1, 1000) And errPct > BA_CfgN("AutoMaxErrorPct", 25, 1, 100) Then
+		Call BA_RetireBatch(bfile, "ABANDONED-")
+		gBaHalt = gBldErr & " of " & gBldRows & " rows (" & errPct & "%) have Check=ERROR, above AutoMaxErrorPct=" & BA_CfgN("AutoMaxErrorPct", 25, 1, 100) & " - a systematic problem (mapping, short name, capacity)? Nothing was registered"
+		GoTo Finish
+	End If
+	If gBldInc = 0 Then
+		If Not dryRun Then
+			Call BA_ScanBuild(bfile, 2, False)
+			Call BA_QSave()
+		End If
+		Call BA_RetireBatch(bfile, BR_IIfStr(dryRun, "SHADOW-", "ABANDONED-"))
+		summary = "No user can be registered in this run (" & gBldErr & " with errors)"
+		GoTo Finish
+	End If
+
+	' every gate has passed: only now do the ERROR rows count as failed attempts of their users (backoff)
+	If Not dryRun Then
+		Call BA_ScanBuild(bfile, 2, False)
+		Call BA_QSave()                           ' saved at once: an Agent Manager kill later must not lose the backoff
+	End If
+
+	' ---------------- 4. register (same code as agent 03) ----------------
+	gEmbBatchFile = bfile
+	gEmbDryRun = dryRun
+	gEmbDeadline = t0 + (BA_CfgN("AutoMaxRuntimeMin", 8, 1, 600) / 1440#)
+	regStarted = True
+	gEmbedded = True
+	Call BR_RunRegisterBatch()
+	gEmbedded = False
+	If gEmbError <> "" Then
+		failedRun = True
+		summary = "FAILED - " & gEmbError
+		' users registered before the error must still be verified, failed ones must go to backoff
+		If Not dryRun And gResultsFile <> "" Then
+			Call BA_ReadResults(gResultsFile)
+			resultsRead = True
+			Call BA_QSave()
+			Call BA_PSave()
+		End If
+		GoTo Finish
+	End If
+	If dryRun Then
+		Call BA_RetireBatch(bfile, "SHADOW-")
+		Call BA_L("Register    : SHADOW - " & gRegOK & " user(s) WOULD be registered, " & gRegFail & " would fail validation, " & gRegSkip & " skipped. Nothing was changed in Domino.")
+		summary = "SHADOW - would register " & gRegOK & ", would fail " & gRegFail & ", skipped " & gRegSkip
+		ranOk = True
+	Else
+		resFile = gResultsFile
+		If resFile <> "" Then
+			On Error Resume Next
+			FileCopy resFile, gRunDir & StrRightBack(resFile, gSep)
+			Err = 0
+			On Error GoTo ErrH
+			Call BA_ReadResults(resFile)
+			resultsRead = True
+			Call BA_QSave()                       ' saved at once, before the (long) verification
+			Call BA_PSave()
+		End If
+		Call BA_L("Register    : LIVE - registered " & gRegOK & ", failed " & gRegFail & ", skipped " & gRegSkip & BR_IIfStr(gRegStop <> "", "  |  stopped early: " & gRegStop, ""))
+		failedRun = ((gRegFail > 0 And gRegOK = 0) Or Left$(gRegStop, 7) = "Circuit" Or InStr(gRegStop, "Wrong Notes name") > 0)
+		summary = "LIVE - registered " & gRegOK & ", failed " & gRegFail & ", skipped " & gRegSkip & BR_IIfStr(gRegStop <> "", " | " & gRegStop, "")
+		If failedRun Then summary = "FAILED - " & summary
+		ranOk = Not failedRun
+	End If
+
+Finish:
+	If gEmbedded Then gEmbedded = False
+	inFinish = True
+	' an unexpected abort inside the register step: still book the users it registered / failed
+	If regStarted And Not dryRun And Not resultsRead And gBaHaveLock And stateReady Then
+		If gResultsFile <> "" Then
+			Call BA_ReadResults(gResultsFile)
+			resultsRead = True
+		End If
+	End If
+	' ---------------- 5. verify users registered earlier / now ----------------
+	If stateReady And gBaHalt = "" And Not (db Is Nothing) And gBaHaveLock Then
+		If BA_PCount() > 0 Then Call BA_VerifyPending(db)
+	End If
+	' ---------------- 6. state, quarantine, self-pause ----------------
+	If stateReady Then
+		If gBaHaveLock Then
+			Call BA_PSave()                       ' also in SHADOW: finished / given-up verifications must not repeat
+			If Not dryRun Then Call BA_QSave()
+		End If
+		If failedRun Then
+			prevFailed = prevFailed + 1
+			Call BA_StSet("FailedRuns", CStr(prevFailed))
+			If prevFailed >= BA_CfgN("AutoMaxFailedRuns", 3, 1, 50) Then
+				selfPaused = True
+				Call BA_WriteStop(prevFailed & " failed AutoSync runs in a row. Last: " & summary)
+			End If
+		ElseIf ranOk Then
+			Call BA_StSet("FailedRuns", "0")          ' only a run that really processed users clears the counter (idle runs leave it alone)
+		End If
+	End If
+	If gBaHalt <> "" Then
+		summary = "HALTED - " & gBaHalt
+		BR_Log LVL_ERROR, summary
+	End If
+	If summary = "" Then summary = "finished"
+	If gBaVFailed > 0 Then BR_Log LVL_ERROR, gBaVFailed & " registered user(s) could not be verified"
+
+	' ---------------- 7. report + mail ----------------
+	If stateReady Then
+		If Not (gLogDb Is Nothing) Then
+			Set host = gLogDb
+		Else
+			Set host = db
+		End If
+		hb = BA_HeartbeatDue()
+		If hb And Not (db Is Nothing) Then Call BA_DailyBlock(db)
+		If gBaQNew > 0 Then Call BA_L("Backoff      : " & gBaQNew & " user(s) put on backoff / quarantine in this run")
+		If BA_PCount() > 0 Or gBaResolved > 0 Or gBaVFixed > 0 Then Call BA_L("Verification : " & gBaResolved & " user(s) fully verified now, " & gBaVFixed & " mail file title/ACL fixed, " & BA_PCount() & " still pending")
+		If gBaOkLines <> "" Then Call BA_L(BR_IIfStr(dryRun, "Would register (max 25):", "Registered (max 25):") & Chr$(10) & Left$(gBaOkLines, Len(gBaOkLines) - 1))
+		If gBaFailLines <> "" Then Call BA_L("Problems (max 15):" & Chr$(10) & Left$(gBaFailLines, Len(gBaFailLines) - 1))
+		If gBaVFailLines <> "" Then Call BA_L("VERIFICATION GAVE UP on:" & Chr$(10) & Left$(gBaVFailLines, Len(gBaVFailLines) - 1))
+		If selfPaused Then Call BA_L("SELF-PAUSED: " & prevFailed & " failed runs in a row. " & gBaStateDir & "STOP was written; no further run happens until it is deleted.")
+
+		sendKind = ""
+		If gBaHalt <> "" Or failedRun Or selfPaused Then
+			If selfPaused Or BA_AlertDue(summary) Then sendKind = "ALERT"
+		ElseIf gBaVFailed > 0 Then
+			sendKind = "ALERT"
+		ElseIf Not dryRun And gRegFail > 0 Then
+			sendKind = "ALERT"
+		ElseIf Not dryRun And notifyOn <> "ERRORS" And (gRegOK > 0 Or gBaWarn > 0 Or gBaQNew > 0 Or gBaResolved > 0) Then
+			sendKind = "ACTIVITY"
+		ElseIf notifyOn = "ALWAYS" And Not dryRun Then
+			sendKind = "ACTIVITY"
+		End If
+		If sendKind = "" And hb Then sendKind = "DAILY"
+		If sendKind <> "" Then
+			subj = "[BulkReg AutoSync] " & sendKind & " " & mode & " - " & Left$(summary, 90) & " (" & BR_Abbr(gOperator) & ")"
+			body = "BulkReg AutoSync " & BR_VERSION & Chr$(10) & "Mode    : " & mode & Chr$(10) & "Run     : " & gRunID & "  (" & Format$(Now, "yyyy-mm-dd hh:nn:ss") & ")" & Chr$(10) & _
+			"Runs as : " & gOperator & Chr$(10) & "Result  : " & summary & Chr$(10) & Chr$(10) & gBaReport & Chr$(10) & Chr$(10) & _
+			"Details : run folder " & gRunDir & " and the Run / Audit documents of " & CfgS("LogServer", "") & "!!" & CfgS("LogDb", "") & Chr$(10) & _
+			"No passwords or ID files are ever part of this mail."
+			If Not (host Is Nothing) Then mailed = BA_Notify(host, subj, body)
+			' dedupe stamps only when Domino accepted the mail - otherwise the alert would be silenced for hours
+			If mailed Then
+				If sendKind = "ALERT" Then Call BA_StSet("LastAlert_" & BA_AlertType(summary), BA_Stamp(Now))
+				If hb Then Call BA_StSet("LastHeartbeatDay", Format$(Now, "yyyy-mm-dd"))
+			End If
+		End If
+		Call BA_StSet("LastRunEnd", Format$(Now, "yyyy-mm-dd hh:nn:ss"))
+		Call BA_StSet("LastRunStatus", BA_Clean(summary, 150))
+		Call BA_StSet("LastRunMode", mode)
+		Call BA_StateSave()
+	End If
+
+	If Not stateReady And (gBaHalt <> "" Or failedRun) And Not (gLogDb Is Nothing) Then
+		' the state folder is not usable (or not trusted): the state file cannot throttle, so the time of the last
+		' such mail is kept in the server's notes.ini (BulkRegAutoPlainAlert)
+		On Error Resume Next
+		plainKey = gSession.GetEnvironmentString("BulkRegAutoPlainAlert", True)
+		Err = 0
+		On Error GoTo ErrH
+		If plainKey < BA_Stamp(DateAdd("h", -BA_CfgN("AutoAlertRepeatHours", 12, 1, 168), Now)) Then
+			If BA_Notify(gLogDb, "[BulkReg AutoSync] ALERT " & mode & " - " & Left$(summary, 90), "BulkReg AutoSync " & BR_VERSION & Chr$(10) & "Run: " & gRunID & Chr$(10) & "Result: " & summary & Chr$(10) & Chr$(10) & gBaReport) Then
+				On Error Resume Next
+				Call gSession.SetEnvironmentVar("BulkRegAutoPlainAlert", BA_Stamp(Now), True)
+				Err = 0
+				On Error GoTo ErrH
+			End If
+		End If
+	End If
+
+	' ---------------- close ----------------
+Bail:
+	On Error Resume Next
+	Call BA_LockRelease()
+	gEmbedded = False
+	gAuto = False
+	' the run document of the log database gets the report as its summary
+	BR_Close Left$(summary, 400)
+	Exit Sub
+
+ErrH:
+	errText = Error$ & " (err " & Err & ", line " & Erl & ")"
+	gEmbedded = False
+	BR_Log LVL_ERROR, "AutoSync aborted: " & errText
+	If inFinish Then
+		summary = "ABORTED while finishing: " & errText
+		Resume Bail
+	End If
+	failedRun = True
+	summary = "ABORTED - unexpected error: " & errText
+	Resume Finish
+End Sub
