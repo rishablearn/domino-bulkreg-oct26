@@ -1,6 +1,10 @@
-# BulkReg 3.9.3 – Deployment steps
+# BulkReg 4.0.1 – Deployment steps
 
-Upgrade from 3.6.6, 3.7.0, 3.8.0, 3.9.0, 3.9.1 or 3.9.2. Libraries `BulkRegCommon` and `BulkRegAgents` change, plus two config files. The six agents are unchanged (only the version comment in their header).
+Upgrade from 3.6.6 up to 4.0.0. Libraries `BulkRegCommon` and `BulkRegAgents` change, plus the config files. Everything runs locally in the Notes client. The agents are unchanged (only the version comment in their header).
+
+**4.0.1 change (unique last name):** `LastName` is built as `<LastNameField> + "-" + <ShortName or sAMAccountName>` in upper case, e.g. JobTitle `analyst` + short name `jdoe` -> `ANALYST-JDOE` -> Notes name `ANALYST-JDOE/Demo`. The generated value is copied to the Person item `Location` after the registered name was verified. `JobTitle`, `Department` and the other source items are never changed. New keys (add to your ini from `config/bulkreg.ini`): `LastNameSuffixFields`, `LastNameSeparator`, `LastNameUppercase`, `LastNameBackupField`, `LastNameBackupOverwrite`. `Location` is not allowed as a MatchField in `server_mapping.csv` (the run stops if a rule uses it). Users already registered are never renamed. New ERRORs: no usable suffix, `OrgUnit` equal to the organization (would give `/Demo/Demo`). The run stops (REGISTERED_WRONG_NAME) when the registered common name differs from the generated one.
+
+**AutoSync removed:** 4.0.0 shipped an unattended server agent; it is deleted in 4.0.1. If you installed it, delete the `BulkReg\07 - AutoSync` agent, the `BulkRegAuto` library and `bulkreg_auto.nsf` from the server.
 
 **3.9.3 change:** `HomeServerAssignment=FILL` (first server 2500, then the second); new `OverrideADInternetAddress=0` in `bulkreg.ini`.
 
@@ -70,7 +74,20 @@ InternetDomain=<demo.com>
 
 **c. Short name.** The AD samaccountname maps to the Person item `ShortName` (a text list), so the default `ShortNameFields=ShortName` is correct. BulkReg looks at every value of the list and takes the first one without blanks, `/` or `=` that is not "First Last". If no value qualifies, the user gets an ERROR (`ShortName ... looks like a full name`).
 
-**c2. Registration name.** `LastNameField=JobTitle` (shipped). The JobTitle value, e.g. "Sgt Naman Kumar", is registered as the last name exactly as it is (no first name), so the Notes name is `Sgt Naman Kumar/Demo`. A user with an empty JobTitle gets an ERROR (Domino needs a last name). Check the `FullNameAfter` column of the Preflight audit CSV in the pilot.
+**c2. Registration name (4.0.1).**
+
+```ini
+LastNameField=JobTitle
+LastNameSuffixFields=ShortName,sAMAccountName
+LastNameSeparator=-
+LastNameUppercase=1
+LastNameBackupField=Location
+LastNameBackupOverwrite=1
+FirstNameField=
+MiddleNameField=
+```
+
+Result: JobTitle `analyst`, short name `jdoe` -> last name `ANALYST-JDOE`, Notes name `ANALYST-JDOE/Demo` (no first name). A user with an empty JobTitle or no usable suffix gets an ERROR. Check the `FullNameAfter` column of the Preflight audit CSV in the pilot: the organization must appear once (`ANALYST-JDOE/Demo`, never `/Demo/Demo`). Remove any `Location` rule from `server_mapping.csv`.
 
 **d. Mapping file.** The only active line must be:
 
@@ -93,9 +110,9 @@ Run **01 - Preflight Check**, DryRun setting irrelevant. Open the run folder und
 
 ## 6. Pilot (2 users), then production
 
-1. Set `BatchSize=2`, `DryRun=1`. Run **02 - Build Batch**. In `BATCH-<id>.csv` check: `ShortName`, `InternetAddress` with `InetSource=CONSTRUCTED` where AD had none, `HomeServer` different for the two rows, `MailFile` like `mail1/<name>.nsf`, `NotesName` like `Abc xyz/Demo`.
+1. Set `BatchSize=2`, `DryRun=1`. Run **02 - Build Batch**. In `BATCH-<id>.csv` check: `ShortName`, `InternetAddress` with `InetSource=CONSTRUCTED` where AD had none, `HomeServer` different for the two rows, `MailFile` like `mail1/<name>.nsf`, `NotesName` and `FullNameAfter` like `ANALYST-JDOE/Demo`.
 2. Run **03 - Register Batch** (dry run, WOULD_REGISTER). Then `DryRun=0` and run it live on the same batch, typing the batch ID.
-3. Run **04 - Verify**. In the Person documents confirm `MailServer`, `MailFile` (`mail1/...`), `ShortName`, `InternetAddress`, and that the file exists under `/local/notesdata/mail1/` on the right server.
+3. Run **04 - Verify**. In the Person documents confirm `MailServer`, `MailFile` (`mail1/<shortname>.nsf`), `ShortName`, `InternetAddress`, `Location` = the generated last name (`JobTitle` and `Department` unchanged), and that the file exists under `/local/notesdata/mail1/` on the right server.
 4. Set `BatchSize=1000`, `DryRun=1`, and run the normal cycle from the README: 02, review, 03 dry run, `DryRun=0`, 03, 04. Repeat 5 times. Re-run 01 occasionally; its plan shrinks as users are registered.
 
 ## 7. What to watch

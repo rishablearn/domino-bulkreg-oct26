@@ -6,7 +6,7 @@
 #  OLD repo (this folder): untouched except one tag marking its last state.
 #  NEW repo (sibling folder): 2 commits
 #     1. "Baseline" = exact tree of OLD HEAD (what was committed so far)
-#     2. "New changes" = everything uncommitted now (AutoSync 4.0.0 ...)
+#     2. "New changes" = everything uncommitted now (4.0.x changes ...)
 #  so `git show HEAD` in the new repo is precisely "all new changes".
 #
 #  Usage:  scripts/split_repo.sh <NEW_REPO_DIR> [dry-run]
@@ -62,7 +62,7 @@ if git -C "$NEW" diff --cached --quiet; then
   echo "No new changes to commit."
 else
   git_new commit -q -m "BulkReg ${VER}: new changes since baseline" \
-    -m "See CHANGELOG.md and docs/AUTOSYNC.md."
+    -m "See CHANGELOG.md."
 fi
 git_new tag "v${VER}"
 

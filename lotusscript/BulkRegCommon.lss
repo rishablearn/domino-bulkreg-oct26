@@ -1135,7 +1135,7 @@ Sub BR_ReadUser(doc As NotesDocument, u As BRUser)
 	u.ShortName = BR_PickShortName(doc)            ' AD samaccountname (ShortNameFields) - never the FullName / cn
 	If BR_IsRegistered(doc) Then
 		' Already registered (any naming rule, e.g. LastName=JobTitle): the name is NEVER regenerated or renamed.
-		' LastName shows what the Person document holds; Verify and AutoSync follow-up only read it.
+		' LastName shows what the Person document holds; Verify only reads it.
 		u.LastName = BR_Clean(BR_Item(doc, "LastName"))
 		u.LastNameSuffix = ""
 	Else
