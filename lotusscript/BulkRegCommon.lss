@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 3.9.9
+' Script Library : BulkRegCommon            Version 4.0.1
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "3.9.9"
+Public Const BR_VERSION = "4.0.1"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -52,6 +52,7 @@ Public Type BRUser
 	LastName As String
 	MiddleInitial As String
 	ShortName As String
+	LastNameSuffix As String    ' suffix actually appended to the last name ("" = none usable)
 	InternetAddress As String
 	MailSystemBefore As String
 	MailFileBefore As String
@@ -99,8 +100,27 @@ Public gAdminP As NotesAdministrationProcess   ' AdminP requests (cluster replic
 Public gOSCache List As String      ' detected platform per server (LINUX / WINDOWS / "" = undecided)
 Public gSrvLoad List As Long        ' users per home server: already registered into the new mail folders + open batches + assigned in this run
 
-Public Const gSep = "\"                         ' Windows path separator
-Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder
+Public gSep As String                           ' LOCAL path separator: "\" on Windows, "/" elsewhere (set in BR_Init)
+Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder (manual, Windows client)
+
+' ---------- AutoSync (4.0.0): unattended run as a scheduled agent on a Domino server ----------
+' gAuto      True = unattended: no prompts / message boxes, config path from gAutoCfgPath, Linux or Windows
+'            server allowed. Set only by BulkRegAuto (BA_RunAutoSync). Manual agents never set it.
+' gEmbedded  True while BulkRegAuto calls BR_RunBuildBatch / BR_RunRegisterBatch as steps of ONE AutoSync run:
+'            they skip BR_Init (done), BR_Close, confirmations and prompts and report through the gEmb... variables.
+Public gAuto As Boolean
+Public gEmbedded As Boolean
+Public gAutoCfgPath As String           ' path of bulkreg_auto.ini (set by BulkRegAuto)
+Public gEmbBatchFile As String          ' batch file the embedded Register step processes
+Public gEmbDryRun As Boolean            ' embedded Register step: True = simulate (SHADOW), False = LIVE
+Public gEmbDeadline As Double           ' embedded Register step: stop before the next user when Now (as a number) passes this; 0 = no limit
+Public gEmbError As String              ' embedded step failed: error text ("" = no error)
+' result of the embedded Build step
+Public gBldFileCount As Long, gBldRows As Long, gBldInc As Long, gBldErr As Long, gBldWarn As Long
+Public gBldNoInet As Long, gBldInOpen As Long, gBldLeft As Long
+Public gBldFiles List As String         ' batch number -> full path of the batch file
+' result of the embedded Register step
+Public gRegOK As Long, gRegFail As Long, gRegSkip As Long, gRegStop As String, gRegRows As Long
 Public gBase As String
 Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes.ini
 ' columns of a batch file (BATCH-<id>.csv) written by Agent 02, read by Agents 03/04
@@ -131,6 +151,7 @@ Function BR_Init(toolName As String) As Boolean
 	gLogLevel = LVL_INFO
 	gBase = BR_DEFAULT_BASE
 	gPlatform = gSession.Platform
+	If InStr(1, gPlatform, "Windows", 5) > 0 Then gSep = "\" Else gSep = "/"      ' local file system separator
 	' globals of the libraries survive between agent runs in one client session - start clean
 	gBatchID = ""
 	gResultsFile = ""
@@ -148,27 +169,36 @@ Function BR_Init(toolName As String) As Boolean
 	Erase gCfg
 	Randomize
 
-	' ---- supported environment: Windows client only ----
-	If gSession.IsOnServer Then
-		Print "BulkReg: must be run from the Windows Domino Administrator client (Actions menu), not on a server. Run refused."
-		Exit Function
-	End If
-	If InStr(1, gPlatform, "Windows", 5) = 0 Then
-		Messagebox "BulkReg is supported only in the Domino Administrator client on Windows." & Chr$(10) & _
-		"Detected platform: " & gPlatform, 16, "BulkReg"
-		Exit Function
+	If gAuto Then
+		' ---- AutoSync: unattended scheduled agent (server). No prompts, config path is given by BulkRegAuto ----
+		cfgPath = gAutoCfgPath
+		If Trim$(CStr(cfgPath)) = "" Then
+			Print "BulkReg AutoSync: no configuration file path. Run refused."
+			Exit Function
+		End If
+	Else
+		' ---- manual agents: supported environment = Windows Domino Administrator client only ----
+		If gSession.IsOnServer Then
+			Print "BulkReg: must be run from the Windows Domino Administrator client (Actions menu), not on a server. Run refused."
+			Exit Function
+		End If
+		If InStr(1, gPlatform, "Windows", 5) = 0 Then
+			Messagebox "BulkReg is supported only in the Domino Administrator client on Windows." & Chr$(10) & _
+			"Detected platform: " & gPlatform, 16, "BulkReg"
+			Exit Function
+		End If
+
+		Set ws = New NotesUIWorkspace
+		lastPath = gSession.GetEnvironmentString(BR_ENV_CFG, True)
+		If lastPath = "" Then lastPath = gBase & "config\bulkreg.ini"
+		cfgPath = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg " & BR_VERSION & " - " & toolName, _
+		"Path to bulkreg.ini:", lastPath)
+		If IsEmpty(cfgPath) Then Exit Function
+		If Trim$(CStr(cfgPath)) = "" Then Exit Function
+		Call gSession.SetEnvironmentVar(BR_ENV_CFG, CStr(cfgPath), True)
 	End If
 
-	Set ws = New NotesUIWorkspace
-	lastPath = gSession.GetEnvironmentString(BR_ENV_CFG, True)
-	If lastPath = "" Then lastPath = gBase & "config\bulkreg.ini"
-	cfgPath = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg " & BR_VERSION & " - " & toolName, _
-	"Path to bulkreg.ini:", lastPath)
-	If IsEmpty(cfgPath) Then Exit Function
-	If Trim$(CStr(cfgPath)) = "" Then Exit Function
-	Call gSession.SetEnvironmentVar(BR_ENV_CFG, CStr(cfgPath), True)
-
-	If Not BR_LoadConfig(BR_Path(CStr(cfgPath))) Then Exit Function
+	If Not BR_LoadConfig(BR_LocalPath(CStr(cfgPath))) Then Exit Function
 	gLogLevel = BR_LevelFromName(CfgS("LogLevel", "INFO"))
 
 	' mail folder settings must describe folders DIRECTLY under the Domino data directory
@@ -248,25 +278,38 @@ End Function
 '=====================================================================
 ' PATH + MESSAGE HELPERS (Windows)
 '=====================================================================
-' Accepts / or \ in config values and returns a Windows path
+' CANONICAL "\" form of a path inside a server (mail file paths such as mail1\smith.nsf). BulkReg keeps
+' mail paths with "\" internally on every platform; BR_SrvPathFor converts them to the form the target
+' server understands. Do NOT use this for files on the machine that runs BulkReg - use BR_LocalPath.
 Function BR_Path(p As String) As String
 	BR_Path = Replace(p, "/", "\")
 End Function
 
-' Folder from config (or <BaseDir>\<defSub>\), with trailing backslash
+' File or folder on the machine that RUNS BulkReg (config, batches, audit, ID files ...):
+' "\" on a Windows client or server, "/" on Linux. Accepts either separator in config values.
+Function BR_LocalPath(p As String) As String
+	If gSep = "/" Then BR_LocalPath = Replace(p, "\", "/") Else BR_LocalPath = Replace(p, "/", "\")
+End Function
+
+' Folder from config (or <BaseDir>\<defSub>\), with trailing separator
 Function BR_CfgDir(k As String, defSub As String) As String
 	BR_CfgDir = BR_Dir(CfgS(k, gBase & defSub))
 End Function
 
 ' File path from config (or <BaseDir>\<defRel>)
 Function BR_CfgFile(k As String, defRel As String) As String
-	BR_CfgFile = BR_Path(CfgS(k, gBase & defRel))
+	BR_CfgFile = BR_LocalPath(CfgS(k, gBase & defRel))
 End Function
 
-' Message box for the operator (also written to the debug log)
+' Message box for the operator (also written to the debug log).
+' AutoSync (gAuto): no message box - the text goes to the debug log and the server console.
 Sub BR_Msg(txt As String, mbType As Integer)
 	If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [MSG  ] " & Replace(txt, Chr$(10), " | "))
-	Messagebox txt, mbType, "BulkReg " & gTool
+	If gAuto Then
+		Print "BulkReg " & gTool & ": " & Replace(txt, Chr$(10), " | ")
+	Else
+		Messagebox txt, mbType, "BulkReg " & gTool
+	End If
 End Sub
 
 Function BR_IIfStr(c As Boolean, a As String, b As String) As String
@@ -282,6 +325,7 @@ Function BR_ToolLabel(toolName As String) As String
 	Case "register": BR_ToolLabel = "03-RegisterBatch"
 	Case "verify": BR_ToolLabel = "04-Verify"
 	Case "exportbatchreg": BR_ToolLabel = "05-Export"
+	Case "autosync": BR_ToolLabel = "07-AutoSync"
 	Case Else: BR_ToolLabel = toolName
 	End Select
 End Function
@@ -292,11 +336,18 @@ Function BR_RunModeLabel(toolName As String) As String
 	Case "register": BR_RunModeLabel = BR_IIfStr(CfgB("DryRun", True), "DRYRUN", "LIVE-PRODUCTION")
 	Case "setuplog": BR_RunModeLabel = "SETUP"
 	Case "verify": BR_RunModeLabel = "VERIFY"            ' read-only, except the optional title fix it asks for
+	Case "autosync"                                       ' AutoMode: LIVE registers, SHADOW simulates, OFF does nothing
+		Select Case UCase$(Trim$(CfgS("AutoMode", "SHADOW")))
+		Case "LIVE": BR_RunModeLabel = "LIVE-PRODUCTION"
+		Case "OFF": BR_RunModeLabel = "READ-ONLY"
+		Case Else: BR_RunModeLabel = "DRYRUN"
+		End Select
 	Case Else: BR_RunModeLabel = "READ-ONLY"
 	End Select
 End Function
 
 Sub BR_Close(summary As String)
+	If gEmbedded Then Exit Sub          ' a step inside an AutoSync run: BulkRegAuto closes the run itself
 	On Error Resume Next
 	' run folder: finish RUN_INFO.txt and keep a copy of the batch results / dry-run report
 	If gRunDir <> "" Then
@@ -407,6 +458,14 @@ Function BR_LoadMapping(path As String) As Boolean
 				Exit Function
 			End If
 			parts = Split(txt, ";")
+			' Location (and the item that holds the last-name backup) is NOT a mapping field: the backup value is
+			' written by BulkReg itself, so a rule on it would route users differently before and after registration.
+			If LCase$(Trim$(parts(0))) = "location" Or (Trim$(CfgS("LastNameBackupField", "Location")) <> "" And LCase$(Trim$(parts(0))) = LCase$(Trim$(CfgS("LastNameBackupField", "Location")))) Then
+				Close #fh
+				BR_Msg "server_mapping.csv: MatchField '" & Trim$(parts(0)) & "' is not allowed - it holds the last-name backup written by BulkReg." & Chr$(10) & Chr$(10) & txt & Chr$(10) & Chr$(10) & _
+				"Use another field (Department, CompanyName, InternetAddress ...) or delete the rule." & Chr$(10) & path, 16
+				Exit Function
+			End If
 			If UBound(parts) >= 2 Then
 				ReDim Preserve gMap(gMapCount) As BRMapRule
 				gMap(gMapCount).MatchField = Trim$(parts(0))
@@ -707,6 +766,83 @@ Function BR_PickShortName(doc As NotesDocument) As String
 	BR_PickShortName = firstVal
 End Function
 
+' Builds the LAST NAME that is registered (and therefore part of FullNameAfter / the CN):
+'   <LastNameField value> <LastNameSeparator> <suffix>      e.g. analyst-jdoe -> ANALYST-JDOE
+' Config (bulkreg.ini):
+'   LastNameField         Person item used as the source (JobTitle, Department, any item)
+'   LastNameSuffixFields  comma list, first usable value wins. The token ShortName means the validated short
+'                         name (u.ShortName); any other token is read as a Person item (e.g. sAMAccountName).
+'                         EMPTY = no suffix. Default: ShortName,sAMAccountName
+'   LastNameSeparator     text between source and suffix (default "-")
+'   LastNameUppercase     1 (default) = UCase$ the final value
+' Returns "" when the source is empty so Validate still flags "LastName missing" (no "-JDOE" names).
+' Deterministic: the same Person document always gives the same value, so Preflight, Build Batch and
+' Register show the same FullNameAfter.
+Function BR_BuildLastName(doc As NotesDocument, u As BRUser) As String
+	Dim src As String, sfx As String, sep As String, lst As Variant, i As Integer, tok As String, v As String, s As String
+	src = BR_Clean(BR_Item(doc, Trim$(CfgS("LastNameField", "LastName"))))
+	If src = "" Then Exit Function
+	lst = Split(CfgS("LastNameSuffixFields", "ShortName,sAMAccountName"), ",")
+	For i = 0 To UBound(lst)
+		tok = Trim$(CStr(lst(i)))
+		If tok <> "" Then
+			If LCase$(tok) = "shortname" Then v = u.ShortName Else v = BR_Clean(BR_Item(doc, tok))
+			' a value that looks like a full name or a DN is not an identifier (same rule as BR_PickShortName)
+			If v <> "" And InStr(v, " ") = 0 And InStr(v, "/") = 0 And InStr(v, "=") = 0 Then
+				sfx = v
+				Exit For
+			End If
+		End If
+	Next
+	sep = CfgS("LastNameSeparator", "-")
+	s = src
+	' do not append twice when the source already ends with the suffix (re-run / already built value)
+	If sfx <> "" Then
+		If LCase$(Right$(src, Len(sep & sfx))) <> LCase$(sep & sfx) Then s = src & sep & sfx
+	End If
+	If CfgB("LastNameUppercase", True) Then s = UCase$(s)
+	u.LastNameSuffix = sfx                         ' "" = no usable suffix (Validate reports an ERROR)
+	BR_BuildLastName = s
+End Function
+
+' True for Person items that must never receive the backup: JobTitle, Department, the name items, and any
+' item configured as LastNameField, in LastNameSuffixFields or ShortNameFields.
+Function BR_IsProtectedItem(fld As String) As Boolean
+	Dim lst As Variant, i As Integer, f As String, all As String
+	f = LCase$(Trim$(fld))
+	all = "," & "jobtitle,department,companyname,firstname,lastname,middleinitial,fullname,shortname,internetaddress,mailfile,mailserver,mailsystem,certificate," & _
+	LCase$(Replace(CfgS("LastNameField", "") & "," & CfgS("LastNameSuffixFields", "") & "," & CfgS("ShortNameFields", ""), " ", "")) & ","
+	BR_IsProtectedItem = (InStr(all, "," & f & ",") > 0)
+End Function
+
+' Backup copy of the generated last name in the Person document (item LastNameBackupField, default
+' Location, text). Called after a successful registration. Empty LastNameBackupField = switched off.
+' Returns "" or a short note for the audit/log. The previous value is reported, never silently lost.
+Function BR_StoreLastNameBackup(doc As NotesDocument, u As BRUser) As String
+	On Error GoTo ErrH
+	Dim fld As String, oldV As String
+	fld = Trim$(CfgS("LastNameBackupField", "Location"))
+	If fld = "" Or u.LastName = "" Then Exit Function
+	' The source items are never written: JobTitle, Department and every item BulkReg reads for the name stay as AD
+	' delivered them. Only the backup item receives the generated last name.
+	If BR_IsProtectedItem(fld) Then
+		BR_StoreLastNameBackup = "BACKUP_ERROR " & fld & " is a protected item (source/name item) - not written; set LastNameBackupField=Location"
+		Exit Function
+	End If
+	oldV = BR_Item(doc, fld)
+	If oldV = u.LastName Then Exit Function                       ' already stored - idempotent
+	If oldV <> "" And Not CfgB("LastNameBackupOverwrite", True) Then
+		BR_StoreLastNameBackup = "BACKUP_SKIPPED " & fld & " already holds '" & oldV & "'"
+		Exit Function
+	End If
+	Call doc.ReplaceItemValue(fld, u.LastName)
+	Call doc.Save(True, False)
+	BR_StoreLastNameBackup = "BACKUP_OK " & fld & "='" & u.LastName & "'" & BR_IIfStr(oldV <> "", " (previous value '" & oldV & "' replaced)", "")
+	Exit Function
+ErrH:
+	BR_StoreLastNameBackup = "BACKUP_ERROR " & fld & ": " & Error$ & " (line " & Erl & ")"
+End Function
+
 ' Keeps the Internet address of the Person document; when it is empty builds
 ' <shortname>@<InternetDomain> (ConstructInternetAddress=1, default). u.InetSource tells which.
 Sub BR_ApplyInternetAddress(u As BRUser)
@@ -979,7 +1115,7 @@ Sub BR_ClearUser(u As BRUser)
 	u.MailFileStatus = "": u.MailFileNote = "": u.HomeServer = "": u.OrgUnit = "": u.Policy = ""
 	u.Groups = "": u.MapRule = "": u.IDFile = "": u.VaultStatus = "": u.VaultServer = ""
 	u.ClusterReplicas = "": u.ReplicaStatus = "": u.Issues = ""
-	u.ReplicaSpec = "": u.AutoHome = "": u.InetSource = ""
+	u.ReplicaSpec = "": u.AutoHome = "": u.InetSource = "": u.LastNameSuffix = ""
 End Sub
 
 ' Reads a Person document into a BRUser and applies mapping
@@ -996,8 +1132,15 @@ Sub BR_ReadUser(doc As NotesDocument, u As BRUser)
 	' Domino builds the common name from these values:  <First> [<Middle>] <Last>
 	If Trim$(CfgS("FirstNameField", "")) <> "" Then u.FirstName = BR_Clean(BR_Item(doc, Trim$(CfgS("FirstNameField", ""))))
 	If Trim$(CfgS("MiddleNameField", "")) <> "" Then u.MiddleInitial = BR_Clean(BR_Item(doc, Trim$(CfgS("MiddleNameField", ""))))
-	u.LastName = BR_Clean(BR_Item(doc, Trim$(CfgS("LastNameField", "LastName"))))
 	u.ShortName = BR_PickShortName(doc)            ' AD samaccountname (ShortNameFields) - never the FullName / cn
+	If BR_IsRegistered(doc) Then
+		' Already registered (any naming rule, e.g. LastName=JobTitle): the name is NEVER regenerated or renamed.
+		' LastName shows what the Person document holds; Verify and AutoSync follow-up only read it.
+		u.LastName = BR_Clean(BR_Item(doc, "LastName"))
+		u.LastNameSuffix = ""
+	Else
+		u.LastName = BR_BuildLastName(doc, u)      ' <source>-<ShortName|sAMAccountName>, upper case (needs u.ShortName)
+	End If
 	u.InternetAddress = BR_Clean(BR_Item(doc, "InternetAddress"))
 	Call BR_ApplyInternetAddress(u)                ' empty address -> <shortname>@<InternetDomain>
 	u.MailSystemBefore = BR_Item(doc, "MailSystem")
@@ -1330,6 +1473,11 @@ End Function
 Function BR_Validate(u As BRUser) As String
 	Dim s As String
 	If u.LastName = "" Then s = s & "ERROR:LastName missing (Person item " & CfgS("LastNameField", "LastName") & " is empty - Domino needs a last name to register); "
+	' A last name without suffix is just the source value (e.g. the job title) = NOT unique; Domino rejects
+	' two users with the same full name. Only checked when a suffix is configured (LastNameSuffixFields).
+	If u.LastName <> "" And u.LastNameSuffix = "" And Trim$(CfgS("LastNameSuffixFields", "ShortName,sAMAccountName")) <> "" Then
+		s = s & "ERROR:No usable suffix for the last name '" & u.LastName & "' (LastNameSuffixFields=" & CfgS("LastNameSuffixFields", "ShortName,sAMAccountName") & " all empty or invalid) - not unique, user not registered; "
+	End If
 	' Missing Internet address is never an ERROR:
 	'   SkipNoInternetAddress=1 (default) -> SKIP: the user is left out of batches and flagged
 	'     (SKIPPED_NO_INET) until the address exists in AD and DirSync has written it;
@@ -1350,6 +1498,11 @@ Function BR_Validate(u As BRUser) As String
 	' OrgUnit is ONE plain OU name (Sales). O=Demo, OU=Sales or Sales/Demo would create a wrong
 	' Notes name such as Neha Arora/O=Demo/Demo.
 	If InStr(u.OrgUnit, "=") > 0 Or InStr(u.OrgUnit, "/") > 0 Or InStr(u.OrgUnit, "\") > 0 Then s = s & "ERROR:OrgUnit '" & u.OrgUnit & "' must be one plain OU name such as Sales (no O=, OU= or /); "
+	' The organization must appear ONCE at the end of FullNameAfter: an OrgUnit equal to the organization
+	' (OrgUnit=Demo with certifier /Demo) would give Name/Demo/Demo.
+	If u.OrgUnit <> "" Then
+		If LCase$(u.OrgUnit) = LCase$(BR_CertifierOrg()) Then s = s & "ERROR:OrgUnit '" & u.OrgUnit & "' repeats the organization of the certifier - FullNameAfter would end /" & u.OrgUnit & "/" & u.OrgUnit & ". Leave OrgUnit empty; "
+	End If
 	If u.MailFile = "" Then
 		s = s & "ERROR:No MailFile; "
 	ElseIf LCase$(Right$(u.MailFile, 4)) <> ".nsf" Or InStr(u.MailFile, ":") > 0 Or Left$(u.MailFile, 1) = "\" Then
@@ -1394,7 +1547,7 @@ Sub BR_Log(lvl As Integer, msg As String)
 	Dim txt As String
 	If lvl < gLogLevel Then Exit Sub
 	txt = Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [" & BR_LevelName(lvl) & "] " & msg
-	Print txt                                    ' status bar / client console
+	If (Not gAuto) Or lvl >= LVL_WARN Then Print txt      ' status bar / client console (AutoSync: server console only for WARN and ERROR)
 	If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, txt)
 	If Not (gLogDb Is Nothing) Then Call BR_LogEntry(lvl, msg)
 End Sub
@@ -1429,6 +1582,14 @@ Function BR_CertifierForReg() As String
 	BR_CertifierForReg = "/" & s
 End Function
 
+' The organization (last component of the certifier): /Demo -> Demo, /Sales/Demo -> Demo
+Function BR_CertifierOrg() As String
+	Dim s As String
+	s = Mid$(BR_CertifierForReg(), 2)
+	BR_CertifierOrg = StrRightBack(s, "/")
+	If BR_CertifierOrg = "" Then BR_CertifierOrg = s
+End Function
+
 ' Common name the registration builds from the Person document: First [Middle] Last
 Function BR_CommonName(u As BRUser) As String
 	Dim s As String
@@ -1448,11 +1609,30 @@ Function BR_ExpectedName(u As BRUser) As String
 End Function
 
 ' "" when the registered name has the expected hierarchy, else a description of the problem
+' Common name of a just-registered user must be exactly the generated one (First [MI] LAST-SHORTNAME).
+' Used right after registration only: Verify also sees users registered under an older naming rule.
+Function BR_CnProblem(actual As String, u As BRUser) As String
+	Dim nn As NotesName
+	If Trim$(actual) = "" Then Exit Function
+	Set nn = New NotesName(actual)
+	If LCase$(nn.Common) <> LCase$(BR_CommonName(u)) Then BR_CnProblem = "Common name '" & nn.Common & "' differs from the generated name '" & BR_CommonName(u) & "'"
+End Function
+
 Function BR_NameProblem(actual As String, u As BRUser) As String
-	Dim a As String, sfx As String
-	If Not CfgB("UseCA", True) Then Exit Function     ' certifier ID file: hierarchy comes from the ID, not checked
+	Dim a As String, sfx As String, parts As Variant, n As Integer
 	a = BR_Abbr(actual)
+	If a = "" Then Exit Function
+	If Not CfgB("UseCA", True) Then Exit Function     ' certifier ID file: hierarchy comes from the ID, not checked
 	sfx = BR_ExpectedSuffix(u.OrgUnit)
+	' organization must appear once: Name/Demo, never Name/Demo/Demo
+	parts = Split(a, "/")
+	n = UBound(parts)
+	If n >= 2 Then
+		If LCase$(CStr(parts(n))) = LCase$(CStr(parts(n - 1))) And LCase$(CStr(parts(n))) = LCase$(BR_CertifierOrg()) Then
+			BR_NameProblem = "Notes name '" & a & "' repeats the organization '/" & CStr(parts(n)) & "' - expected '" & BR_ExpectedName(u) & "'"
+			Exit Function
+		End If
+	End If
 	If InStr(a, "=") > 0 Then
 		BR_NameProblem = "Notes name '" & a & "' contains '=' - expected '" & BR_ExpectedName(u) & "'"
 	ElseIf LCase$(Right$(a, Len(sfx))) <> LCase$(sfx) Then
@@ -1754,8 +1934,10 @@ Sub BR_LogClose(summary As String)
 	Call gRunDoc.ReplaceItemValue("EndTime", Now)
 	Call gRunDoc.ReplaceItemValue("BatchID", gBatchID)
 	Call gRunDoc.ReplaceItemValue("Summary", summary)
-	If InStr(summary, "ABORTED") > 0 Then
-		Call gRunDoc.ReplaceItemValue("Status", "ABORTED")
+	If InStr(summary, "ABORTED") > 0 Or Left$(summary, 6) = "HALTED" Then
+		Call gRunDoc.ReplaceItemValue("Status", "ABORTED")        ' HALTED = AutoSync stopped by one of its own safety gates
+	ElseIf Left$(summary, 6) = "FAILED" Then
+		Call gRunDoc.ReplaceItemValue("Status", "FAILED")         ' AutoSync run in which registration failed (shown by log view 6 - Problems)
 	ElseIf InStr(LCase$(summary), "cancel") > 0 Or InStr(summary, "Not approved") > 0 Then
 		Call gRunDoc.ReplaceItemValue("Status", "CANCELLED")
 	Else
@@ -1791,7 +1973,7 @@ End Function
 ' (First [MI] Last/OU/Org built from the name fields) - so FullNameAfter is never empty in audit rows.
 Function BR_AfterName(u As BRUser) As String
 	If u.FullNameAfter <> "" Then
-		BR_AfterName = u.FullNameAfter
+		BR_AfterName = BR_Abbr(u.FullNameAfter)       ' abbreviated (Name/Org), never CN=..\O=.. - one /Org
 	ElseIf u.LastName <> "" Then
 		BR_AfterName = BR_ExpectedName(u)
 	End If
@@ -1875,7 +2057,7 @@ End Function
 Function BR_Dir(p As String) As String
 	Dim s As String
 	If p = "" Then Exit Function
-	s = BR_Path(p)
+	s = BR_LocalPath(p)
 	If Right$(s, 1) = gSep Then BR_Dir = s Else BR_Dir = s & gSep
 End Function
 

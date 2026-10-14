@@ -45,12 +45,14 @@ tbl(["Item", "Value"], [
   ["Version", META.version + " (" + META.status + ")"],
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
-  ["Applies to", "HCL Domino 14.x servers (any supported OS). All BulkReg work is done from the **HCL Domino Administrator 14.x client on Windows**."],
-  ["Framework version", "BulkReg " + KIT_VERSION + ": script libraries BulkRegCommon and BulkRegAgents, 6 one-line agents (00–05), config templates, optional PowerShell helper, Audit Viewer"],
+  ["Applies to", "HCL Domino 14.x servers (any supported OS). The initial load and all manual work are done from the **HCL Domino Administrator 14.x client on Windows**; AutoSync (Part E) runs as a scheduled agent on a Domino server."],
+  ["Framework version", "BulkReg " + KIT_VERSION + ": script libraries BulkRegCommon, BulkRegAgents and BulkRegAuto, one-line agents 00–07, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["4.0.1", "**Release 4.0.1.** **Unique last name:** LastName = JobTitle + \"-\" + short name, upper case (`ANALYST-JDOE`), only this generated value is stored in the Person item `Location`; JobTitle and Department are never changed. Keys `LastNameSuffixFields`, `LastNameSeparator`, `LastNameUppercase`, `LastNameBackupField`, `LastNameBackupOverwrite`; new checks (no suffix, organization once, common name after registration); `Location` not allowed in server_mapping.csv; registered users are never renamed. See the settings table."],
+  ["4.0.0", "**Release 4.0.0.** **AutoSync:** unattended registration of NEW users by a scheduled agent on a Domino server (new library BulkRegAuto, agent 07, bulkreg_auto.ini, Part E, docs/AUTOSYNC.md). Shared libraries changed (path separator, unattended hooks); manual agents behave as before. Update BulkRegCommon and BulkRegAgents and run 01 - Preflight once."],
   ["3.9.9", "**Release 3.9.9.** **Compile fix:** *Variable not declared: ARRAY* in the welcome-screen code of BulkRegAgents (LotusScript has no Array function). Re-paste BulkRegAgents."],
   ["3.9.8", "**Release 3.9.8.** **Fix:** Build Batch aborted with *List item does not exist (err 120)* when no row of a batch was an ERROR (summary line). Re-paste BulkRegCommon and BulkRegAgents. Delete the batch files of an aborted run before rebuilding."],
   ["3.9.7", "**Release 3.9.7.** **Welcome screens are native rich text** (tables, fonts, colours) instead of pass-through HTML, which the Notes client shows as source text. Re-paste BulkRegAgents and run agent 06 and agent 00 again; they replace the About document."],
@@ -114,6 +116,7 @@ tbl(["Part", "Contents", "When"], [
   ["Agent Run Order", "One page: which agent, in which order, with which DryRun setting", "Keep it next to you"],
   ["C – Run a batch", "Procedures C1–C9: build, review, dry-run, register, verify, close", "For every batch of users"],
   ["D – Reference", "Multi-server design, file formats, settings, results, troubleshooting, security, glossary", "Look up as needed"],
+  ["E – AutoSync", "Automatic registration of NEW users after the initial load (scheduled server agent, safety gates, go-live ladder, runbook)", "After the initial load is finished"],
 ], [2000, 5000, 2360]);
 h2("Conventions");
 tbl(["You see", "Meaning"], [
@@ -521,7 +524,9 @@ tbl(["Key", "Enter", "From"], [
   ["CertifierIDFile", "With UseCA=0: `C:\\BulkReg\\cert\\<file>.id`. With UseCA=1: leave the placeholder or clear it.", "B5 Option 2"],
   ["HomeServers / HomeServerMaxUsers / HomeServerAssignment", "The mail servers that receive the users, e.g. `DominoADMail/Demo,DominoADMail2/Demo`; max users per server (`2500`); `FILL` (shipped: first server up to the max, then the next: 2500 + 2500; `FILLED` also accepted) or `BALANCED` (fewest users first). A mapping rule with `AUTO` as home server uses this pool.", "Worksheet 3"],
   ["ServerOS / ServerDataDir / ServerFileOwner", "`LINUX` (path separator `/`), `/local/notesdata`, and the Linux user:group of Domino for the chown line in the Preflight report", "–"],
-  ["LastNameField / FirstNameField / MiddleNameField", "Person items registered as last, first and middle name. Shipped: `LastNameField=JobTitle` (JobTitle holds the AD name with rank, e.g. `Sgt Naman Kumar`), used exactly as it is: Notes name **Sgt Naman Kumar/Demo**. `FirstNameField` and `MiddleNameField` are empty (no first name). A user whose LastNameField item is empty gets an ERROR.", "–"],
+  ["LastNameField / LastNameSuffixFields / LastNameSeparator / LastNameUppercase", "The registered last name is built: `<LastNameField> + <LastNameSeparator> + <suffix>`, then upper case. Shipped: `LastNameField=JobTitle`, `LastNameSuffixFields=ShortName,sAMAccountName` (first usable value; `ShortName` = the validated short name), `LastNameSeparator=-`, `LastNameUppercase=1`. Example: JobTitle `analyst`, short name `jdoe` -> last name `ANALYST-JDOE`, Notes name **ANALYST-JDOE/Demo**. ERROR when the source item is empty or no suffix is usable (the name would not be unique).", "analyst + jdoe -> ANALYST-JDOE"],
+  ["LastNameBackupField / LastNameBackupOverwrite", "Person item (text) that receives a copy of the generated last name after the registered name was verified. Shipped: `Location` (not synchronised from AD), overwrite `1` (an existing value is replaced and written to the log; `0` keeps it). Empty field = no backup. Only this generated value is written: `JobTitle`, `Department` and the other source/name items are never changed (a protected item as backup field is refused). `Location` must not be a MatchField in `server_mapping.csv` (the run stops with a message). Users that are already registered keep their name: it is never regenerated, renamed or backed up, and Verify only reads it.", "Location / 1"],
+  ["FirstNameField / MiddleNameField", "Person items registered as first name and middle initial. Shipped empty: no first name, the Notes name is the last name only. `FullNameAfter` (Preflight, Build Batch, Register, audit) shows the abbreviated name with the organization once; the run stops (REGISTERED_WRONG_NAME) when the registered common name differs from the generated one or the organization is repeated. An `OrgUnit` equal to the organization is an ERROR.", "empty"],
   ["ShortNameFields", "Person item(s) with the AD samaccountname, first non-empty wins (default `ShortName`). The FullName/cn is never used.", "–"],
   ["ConstructInternetAddress / InternetDomain / OverrideADInternetAddress", "`1` and e.g. `demo.com`: users without an Internet address in AD get `<shortname>@demo.com` (lower case). `OverrideADInternetAddress=1` builds it for every user, even when AD has an address (default 0).", "–"],
   ["PreflightScope / PreflightBatchNo", "`ALL` (default) checks everybody; `BATCH` checks only batch number `PreflightBatchNo` in detail", "–"],
@@ -614,7 +619,7 @@ tbl(["Typical field", "Typical use"], [
   ["InternetAddress", "Split by e-mail domain (*@emea.demo.com)"],
   ["Department", "Split by department (Sales*, Finance)"],
   ["CompanyName", "Split by company or subsidiary"],
-  ["Location / OfficeCity / OfficeCountry", "Split by site or country"],
+  ["OfficeCity / OfficeCountry", "Split by site or country (not Location: it holds the last-name backup; a rule on Location stops the run)"],
   ["LastName", "Split alphabetically ([a-l]*), roughly in halves"],
   ["ShortName or InternetAddress (exact value)", "Exceptions for single users"],
 ], [3800, 5560]);
@@ -1412,6 +1417,63 @@ tbl(["Term", "Meaning"], [
   ["Cluster replica", "A copy of a mail file with the same replica ID on another cluster member, kept in sync by cluster replication"],
   ["AdminP", "The Domino Administration Process; carries out requests such as Create Replica (admin4.nsf)"],
 ], [2600, 6760]);
+pb();
+
+// ================================================================ PART E - AUTOSYNC
+h1("Part E – AutoSync (new users, unattended)");
+p("After the initial load, users that DirSync adds to the Domino Directory can be registered automatically. **Agent 07 - AutoSync** runs as a **scheduled agent on a Domino server** and uses the same code and the same configuration keys as agents 02 (build), 03 (register) and 04 (verify). The operator's review of a batch is replaced by safety gates. The full design, prerequisites and runbook are in `docs/AUTOSYNC.md`; this part is the summary.");
+warn("AutoSync has **not** been compiled or run against a live Domino server. It starts in **SHADOW** mode, which only simulates. Go live only after the SHADOW period and the one-user pilot (E3). Points to prove in the pilot: registration from a server agent and the identity the CA checks, `@Modified` in the selection, mail from the agent, Agent Manager limits.");
+h2("E1. What one run does");
+tbl(["Step", "What"], [
+  ["Gates", "AutoMode, STOP file, AutoInitialLoadDone, run-as identity, single-instance lock, environment check (UseCA=1, vault policy, servers, folders, no placeholders), selection-formula test"],
+  ["Clean-up", "Open batches of an earlier run are abandoned so their users are offered again"],
+  ["Build", "Agent 02 code: unregistered DirSync users that have not changed for AutoMinAgeMinutes and are not held back, at most AutoMaxUsersPerRun"],
+  ["Gates", "Capacity (no free home server or mail folder), backlog, error ratio"],
+  ["Register", "Agent 03 code. SHADOW: dry run, nothing changes. LIVE: registers"],
+  ["Verify", "Agent 04 code, every run, for every user AutoSync registered, until vault, mail file, ACL, Notes name and all replicas are OK (AutoVerifyDays)"],
+  ["Report", "State files, Run/Audit documents in bulkreg_log.nsf, Domino mail (alert / activity / daily status)"],
+], [1800, 7560]);
+h2("E2. Set up (once)");
+ol(
+  "Finish and verify the initial load with agents 01–04. Keep `AutoInitialLoadDone=0` until then.",
+  "Create a dedicated service administrator ID. In the Server document add it under **Run unrestricted methods and operations**. It must be allowed to register users with your CA certifier (Registration Authority) and have the directory rights registration needs.",
+  "Create `bulkreg_auto.nsf` on the server. Script libraries `BulkRegCommon`, `BulkRegAgents`, `BulkRegAuto` (in this order), agent `BulkReg\\07 - AutoSync` from `Agent07_AutoSync.lss`. Sign with the service ID.",
+  "Create `/local/notesdata/bulkreg/{config,ids,secure,audit,batches,state}` owned by the Domino service account (ids and secure private). Copy `config/bulkreg_auto.ini` and `server_mapping.csv` to `config/`.",
+  "Edit `bulkreg_auto.ini`: every `<PLACEHOLDER>`, the registration keys from your `bulkreg.ini`, `MailACLManager`, `AutoNotifyTo`. Raise `HomeServerMaxUsers` and `MailFolderMax` for the growth you expect and create the extra mail folders on every home server (defaults are full after 5000 users).",
+  "Add `BulkRegAutoConfig=<path of bulkreg_auto.ini>` to the server's notes.ini (Linux default is the path above).",
+  "Schedule agent 07: every 60 minutes, run on **one** named server. Keep `AutoMaxRuntimeMin` below the Agent Manager time limit of the Server document.",
+);
+h2("E3. Go-live ladder");
+tbl(["Phase", "Setting", "Done when"], [
+  ["0", "`AutoMode=SHADOW`, `AutoInitialLoadDone=1`; run once", "Gates pass, a FINISHED SHADOW run is in the log database, the daily mail arrived"],
+  ["1", "SHADOW for 3–5 days", "The would-register lists match AD (users, home server, mail file, address, policy)"],
+  ["2", "`AutoMode=LIVE`, `AutoMaxUsersPerRun=1`", "2–3 users are fully OK: Person document, vault, mail file, replicas, ACL, title"],
+  ["3", "`AutoMaxUsersPerRun=10`, then 50", "A week of calm daily mails"],
+], [900, 4200, 4260]);
+note("Back to safe at any time: `AutoMode=OFF`, or create the file `STOP` in the state folder (`scripts/linux/autosync_ctl.sh pause`).");
+h2("E4. Safety gates");
+tbl(["Gate", "Key", "Effect"], [
+  ["Mode", "AutoMode OFF / SHADOW / LIVE", "SHADOW changes nothing in Domino"],
+  ["Initial load", "AutoInitialLoadDone", "0 = the run halts"],
+  ["STOP file / self-pause", "AutoMaxFailedRuns (3)", "The run halts until the STOP file is deleted; three failed runs in a row create it"],
+  ["Settling time", "AutoMinAgeMinutes (60)", "A Person document that changed recently waits"],
+  ["Per-run cap", "AutoMaxUsersPerRun (50)", "The rest wait for the next run"],
+  ["Capacity", "HomeServerMaxUsers, MailFolderMax", "Halt + alert when no home server or mail folder is free"],
+  ["Backlog", "AutoMaxBacklog (200)", "Halt: bulk import or unfinished initial load"],
+  ["Error ratio", "AutoErrorGateMin (5), AutoMaxErrorPct (25)", "Halt on a systematic problem; one bad user never blocks the others"],
+  ["Backoff / quarantine", "AutoRetryBackoffMin, AutoMaxAttempts, AutoQuarantineHours", "A failed user is retried after 30, 60 … minutes, then held 7 days"],
+  ["Run-time budget", "AutoMaxRuntimeMin (8)", "Stops between two users; the rest is offered again"],
+  ["Verification", "AutoVerifyDays (3)", "A user that is still not OK is reported"],
+], [2200, 3400, 3760]);
+h2("E5. Operate");
+ul(
+  "**Daily status mail** (after `AutoHeartbeatHour`): no mail means the agent is not running.",
+  "**Alert mail:** the same alert is repeated only every `AutoAlertRepeatHours`. The table of alert texts, cause and fix is in `docs/AUTOSYNC.md` section 8.",
+  "**State folder:** `STOP`, `autosync.lock`, `autosync_state.txt`, `autosync_quarantine.csv` (delete a line to retry a user), `autosync_pending.csv`.",
+  "**Log database:** every run is a Run document, every user an Audit document; view 6 *Problems* lists runs that were halted or failed.",
+  "**Manual agents** stay available for ad-hoc work. Pause AutoSync (`AutoMode=OFF`) before running manual batches; they do not see each other's open batches.",
+);
+warn("User ID files and initial passwords are written on the server (`IDFileDir`, `PasswordDir`). AutoSync never deletes them. Restrict both folders to the service account, hand over, then purge as for the manual process.");
 pb();
 
 // ================================================================ APPENDICES

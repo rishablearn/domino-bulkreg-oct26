@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 3.9.9
+' Script Library : BulkRegAgents            Version 4.0.1
 ' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -146,7 +146,7 @@ Sub BR_RunPreflight()
 		Next
 	End If
 	BR_Log LVL_INFO, "Fallback platform ServerOS=" & UCase$(Trim$(CfgS("ServerOS", "LINUX"))) & " | ServerOSDetect=" & CfgS("ServerOSDetect", "1") & " | data directory " & CfgS("ServerDataDir", "/local/notesdata")
-	BR_Log LVL_INFO, "Registration name: LastName = Person item " & CfgS("LastNameField", "LastName") & " (taken as it is) | FirstNameField=" & BR_IIfStr(Trim$(CfgS("FirstNameField", "")) = "", "(none)", CfgS("FirstNameField", "")) & " | MiddleNameField=" & BR_IIfStr(Trim$(CfgS("MiddleNameField", "")) = "", "(none)", CfgS("MiddleNameField", ""))
+	BR_Log LVL_INFO, "Registration name: LastName = Person item " & CfgS("LastNameField", "LastName") & " + '" & CfgS("LastNameSeparator", "-") & "' + suffix from [" & CfgS("LastNameSuffixFields", "ShortName,sAMAccountName") & "] | uppercase=" & CfgS("LastNameUppercase", "1") & " | backup field=" & BR_IIfStr(Trim$(CfgS("LastNameBackupField", "Location")) = "", "(off)", CfgS("LastNameBackupField", "Location")) & " | FirstNameField=" & BR_IIfStr(Trim$(CfgS("FirstNameField", "")) = "", "(none)", CfgS("FirstNameField", "")) & " | MiddleNameField=" & BR_IIfStr(Trim$(CfgS("MiddleNameField", "")) = "", "(none)", CfgS("MiddleNameField", ""))
 	If UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "BALANCED" And UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "FILL" And UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) <> "FILLED" Then
 		BR_Log LVL_WARN, "HomeServerAssignment=" & CfgS("HomeServerAssignment", "") & " is not BALANCED or FILL - BALANCED is used"
 		envWarn = envWarn + 1
@@ -484,7 +484,12 @@ Sub BR_RunBuildBatch()
 	Dim baseID As String, batchNo As Long, rowsIn As Long, maxBatches As Long, bi As Long, bl As String
 	Dim batchFiles List As String, bRows List As Long, bInc List As Long, bErr List As Long, bSrv List As Long, bk As String
 
-	If Not BR_Init("BuildBatch") Then Exit Sub
+	If gEmbedded Then
+		gEmbError = "": gBldFileCount = 0: gBldRows = 0: gBldInc = 0: gBldErr = 0: gBldWarn = 0: gBldNoInet = 0: gBldInOpen = 0: gBldLeft = 0
+		Erase gBldFiles
+	Else
+		If Not BR_Init("BuildBatch") Then Exit Sub                  ' (embedded in AutoSync: BR_Init was done by BulkRegAuto)
+	End If
 	maxBatches = CfgL("BuildMaxBatches", 0)                         ' 0 = build ALL batches in this run
 	batchMax = CfgL("BatchSize", 1000)
 	If batchMax < 1 Then batchMax = 1000
@@ -681,6 +686,16 @@ Sub BR_RunBuildBatch()
 	Call BR_AppendLine(sumFile, "Next: review each " & baseID & "-NN.csv (Include / HomeServer / MailFile / ClusterReplicas / Policy),")
 	Call BR_AppendLine(sumFile, "      then run Actions > BulkReg > 03 - Register Batch once per batch file, starting with -01.")
 
+	If gEmbedded Then
+		' AutoSync step: hand the result to BulkRegAuto (it closes the run and reports)
+		gBldFileCount = batchNo: gBldRows = nRows: gBldInc = nInc: gBldErr = nErr: gBldWarn = nWarn
+		gBldNoInet = nNoInet: gBldInOpen = nInOpen: gBldLeft = nLeft
+		ForAll bfx In batchFiles
+			gBldFiles(ListTag(bfx)) = CStr(bfx)
+		End ForAll
+		BR_Log LVL_INFO, "Build (AutoSync): batches=" & batchNo & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " warn=" & nWarn & " left=" & nLeft & " in_open_batch=" & nInOpen & " no_inet=" & nNoInet
+		Exit Sub
+	End If
 	BR_Close "batches=" & batchNo & " (" & baseID & "-01.." & Format$(batchNo, "00") & ") rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft & " skipped_no_inet=" & BR_IIfStr(skipNoInet, CStr(nNoInet), "0")
 	BR_Msg batchNo & " batch file(s) created: " & baseID & "-01 .. -" & Format$(batchNo, "00") & Chr$(10) & Chr$(10) & _
 	"Rows: " & nRows & "   Include=Y: " & nInc & "   WARN: " & nWarn & "   ERROR (Include=N): " & nErr & Chr$(10) & _
@@ -691,6 +706,7 @@ Sub BR_RunBuildBatch()
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Build Batch aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	If gEmbedded Then gEmbError = "Build aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
 	BR_Close "ABORTED"
 	BR_Msg "Build Batch aborted: " & Error$, 16
 	Exit Sub
@@ -751,29 +767,39 @@ Sub BR_RunRegisterBatch()
 	Dim nOK As Long, nFail As Long, nSkip As Long, nConsec As Long, res As String, stopReason As String
 	Dim j As Long, summary As String
 
-	If Not BR_Init("Register") Then Exit Sub
-	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
+	If gEmbedded Then
+		' AutoSync step: BR_Init was done by BulkRegAuto; batch file and mode are given, nothing is asked
+		gEmbError = "": gRegOK = 0: gRegFail = 0: gRegSkip = 0: gRegStop = "": gRegRows = 0
+		If gEmbDryRun Then gMode = "DRYRUN" Else gMode = "LIVE"
+	Else
+		If Not BR_Init("Register") Then Exit Sub
+		If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
+	End If
 	maxRows = CfgL("MaxBatchRows", 1000)
 	pauseMs = CfgL("PauseMs", 500)
 	maxConsec = CfgL("MaxConsecutiveErrors", 5)
 	bdir = BR_BatchDir()
 
 	' ---------- choose the batch file ----------
-	Set ws = New NotesUIWorkspace
-	bfile = BR_NewestOpenBatch()
-	If bfile = "" Then
-		BR_Close "No open batch"
-		BR_Msg "There is no open batch file in " & bdir & Chr$(10) & "Run Actions > BulkReg > 02 - Build Batch first.", 48
-		Exit Sub
+	If gEmbedded Then
+		bfile = gEmbBatchFile
+	Else
+		Set ws = New NotesUIWorkspace
+		bfile = BR_NewestOpenBatch()
+		If bfile = "" Then
+			BR_Close "No open batch"
+			BR_Msg "There is no open batch file in " & bdir & Chr$(10) & "Run Actions > BulkReg > 02 - Build Batch first.", 48
+			Exit Sub
+		End If
+		ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Register batch (" & gMode & ")", "Batch file to register (reviewed):", bfile)
+		If IsEmpty(ans) Then
+			BR_Close "Cancelled"
+			Exit Sub
+		End If
+		bfile = BR_LocalPath(Trim$(CStr(ans)))
 	End If
-	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Register batch (" & gMode & ")", "Batch file to register (reviewed):", bfile)
-	If IsEmpty(ans) Then
-		BR_Close "Cancelled"
-		Exit Sub
-	End If
-	bfile = BR_Path(Trim$(CStr(ans)))
 	If Dir$(bfile) = "" Then Error 6001, "Batch file not found: " & bfile
-	bname = StrRightBack(bfile, "\")
+	bname = StrRightBack(bfile, gSep)
 	If LCase$(Right$(bname, 4)) <> ".csv" Or Left$(bname, 6) <> "BATCH-" Or InStr(bname, "_") > 0 Then Error 6002, "Not a batch file (expected BATCH-<id>.csv): " & bname
 	gBatchID = Left$(bname, Len(bname) - 4)
 	If Dir$(bdir & gBatchID & "_results.csv") <> "" Then Error 6003, gBatchID & " is already DONE (" & gBatchID & "_results.csv exists). Build a new batch."
@@ -829,7 +855,9 @@ Sub BR_RunRegisterBatch()
 	Close #fh
 	BR_Log LVL_INFO, "Batch " & gBatchID & " loaded: Include=Y " & n & ", Include=N " & nExcluded & _
 	" | file " & bfile & " | size " & FileLen(bfile) & " bytes | modified " & FileDateTime(bfile)
+	gRegRows = n
 	If n = 0 Then
+		If gEmbedded Then Exit Sub                       ' AutoSync: nothing to register (gRegRows = 0)
 		BR_Close "Batch has no Include=Y rows"
 		BR_Msg gBatchID & " has no rows with Include=Y. Nothing to do.", 48
 		Exit Sub
@@ -842,8 +870,13 @@ Sub BR_RunRegisterBatch()
 	End ForAll
 
 	' ---------- confirmation ----------
-	If Not BR_ConfirmRun(n, nExcluded, srvText, repText) Then Exit Sub
-	BR_Log LVL_INFO, "Batch " & gBatchID & " approved for " & gMode & " by " & gOperator
+	' AutoSync has no operator: its approval is the set of safety gates in BulkRegAuto (see docs/AUTOSYNC.md)
+	If gEmbedded Then
+		BR_Log LVL_INFO, "Batch " & gBatchID & " approved for " & gMode & " by AutoSync gates (operator " & gOperator & ")"
+	Else
+		If Not BR_ConfirmRun(n, nExcluded, srvText, repText) Then Exit Sub
+		BR_Log LVL_INFO, "Batch " & gBatchID & " approved for " & gMode & " by " & gOperator
+	End If
 
 	' ---------- results file ----------
 	If gMode = "LIVE" Then
@@ -870,7 +903,7 @@ Sub BR_RunRegisterBatch()
 		Case Else
 			nFail = nFail + 1: nConsec = nConsec + 1
 		End Select
-		Print "BulkReg " & gMode & " " & gBatchID & ": " & (i + 1) & "/" & n & "  ok=" & nOK & " fail=" & nFail & " skip=" & nSkip
+		If Not gAuto Then Print "BulkReg " & gMode & " " & gBatchID & ": " & (i + 1) & "/" & n & "  ok=" & nOK & " fail=" & nFail & " skip=" & nSkip
 		If gStopRun <> "" Then
 			stopReason = gStopRun
 			BR_Log LVL_ERROR, "Run stopped: " & stopReason
@@ -880,6 +913,14 @@ Sub BR_RunRegisterBatch()
 			stopReason = "Circuit breaker: " & nConsec & " consecutive failures"
 			BR_Log LVL_ERROR, stopReason
 			Exit For
+		End If
+		' AutoSync run-time budget (the Agent Manager would kill the agent at its own limit): stop cleanly between users
+		If gEmbedded And gEmbDeadline > 0 Then
+			If CDbl(Now) > gEmbDeadline And i < n - 1 Then
+				stopReason = "Run-time budget reached (AutoMaxRuntimeMin) - remaining users are offered again by the next run"
+				BR_Log LVL_WARN, stopReason
+				Exit For
+			End If
 		End If
 		If pauseMs > 0 Then Sleep pauseMs / 1000
 	Next
@@ -896,6 +937,13 @@ Sub BR_RunRegisterBatch()
 
 	gCertPwd = ""
 	summary = gMode & " | " & gBatchID & " | rows=" & n & " ok=" & nOK & " failed=" & nFail & " skipped=" & nSkip & " | " & stopReason
+	If gEmbedded Then
+		' AutoSync step: hand the result to BulkRegAuto (it closes the run and reports)
+		gRegOK = nOK: gRegFail = nFail: gRegSkip = nSkip
+		If stopReason <> "All batch rows processed" Then gRegStop = stopReason
+		BR_Log LVL_INFO, "Register (AutoSync): " & summary
+		Exit Sub
+	End If
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Results: " & gResultsFile & Chr$(10) & "Log: " & gDebugFile & _
 	BR_IIfS(gPwFile <> "", Chr$(10) & "Passwords (restricted): " & gPwFile, "") & Chr$(10) & Chr$(10) & _
@@ -905,6 +953,7 @@ Sub BR_RunRegisterBatch()
 ErrH:
 	gCertPwd = ""
 	BR_Log LVL_ERROR, "Run aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	If gEmbedded Then gEmbError = "Register aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
 	BR_Close "ABORTED"
 	BR_Msg "Run aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
 	Exit Sub
@@ -962,7 +1011,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	Dim doc As NotesDocument, reg As NotesRegistration, u As BRUser
 	Dim t0 As Double, issues As String, userPwd As String, mailFile As String
 	Dim stage As String, emsg As String, homeCanon As String, nn As NotesName
-	Dim foundOn As String, rl As Variant, ri As Integer, repOK As Boolean, nameProb As String, titleRes As String, aclRes As String
+	Dim foundOn As String, rl As Variant, ri As Integer, repOK As Boolean, nameProb As String, titleRes As String, aclRes As String, bkRes As String
 	Dim paramDump As String
 	t0 = Timer
 	On Error GoTo ErrH
@@ -1048,7 +1097,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 
 	' ---- checks a dry run CAN do without changing anything (the registration itself is not run) ----
 	' the ID file folder must exist on THIS workstation (the ID file is written locally)
-	If Not BR_DirWritable(StrLeftBack(u.IDFile, "\") & "\") Then issues = issues & "ERROR:ID file folder is missing or not writable: " & StrLeftBack(u.IDFile, "\") & "\ (IDFileDir); "
+	If Not BR_DirWritable(StrLeftBack(u.IDFile, gSep) & gSep) Then issues = issues & "ERROR:ID file folder is missing or not writable: " & StrLeftBack(u.IDFile, gSep) & gSep & " (IDFileDir); "
 	' a configured mail template must exist on the home server
 	If CfgS("MailTemplate", "") <> "" Then
 		If Not BR_MailFileExists(u.HomeServer, CfgS("MailTemplate", "")) Then issues = issues & "ERROR:Mail template " & CfgS("MailTemplate", "") & " not found on " & u.HomeServer & "; "
@@ -1143,14 +1192,24 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	u.FullNameAfter = BR_Item(doc, "FullName")
 	u.MailSystemAfter = BR_Item(doc, "MailSystem")
 	If Not BR_IsRegistered(doc) Then Error 4002, "RegisterNewUser returned but Person doc has no Certificate"
-	' the Notes name must be First Last/OU/Org - stop the whole run at the first wrong name
-	nameProb = BR_NameProblem(u.FullNameAfter, u)
+	' the Notes name must be the generated CN + OU/Org (organization once) - stop the whole run at the first wrong name
+	nameProb = BR_CnProblem(u.FullNameAfter, u)
+	If nameProb = "" Then nameProb = BR_NameProblem(u.FullNameAfter, u)
 	If nameProb <> "" Then
 		gStopRun = "Wrong Notes name created - run stopped so no further users get it: " & nameProb & ". Check CertifierName and OrgUnit (guide D6)."
 		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED_WRONG_NAME", BR_Elapsed(t0), nameProb)
 		BR_Log LVL_ERROR, "WRONG NAME " & nameProb
 		BR_RegisterOne = "FAIL:name"
 		Exit Function
+	End If
+
+	' ---------- backup copy of the generated last name (LastNameBackupField, default Location) ----------
+	' only after the name is verified, so a wrongly named user gets no backup
+	stage = "lastname backup"
+	bkRes = BR_StoreLastNameBackup(doc, u)
+	If bkRes <> "" Then
+		u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & bkRes
+		BR_Log BR_IIfInt2(Left$(bkRes, 9) = "BACKUP_OK", LVL_INFO, LVL_WARN), bkRes
 	End If
 
 	' ---------- RegisterCreateMailDb=0: BulkReg creates the mail file itself ----------

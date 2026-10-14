@@ -1,6 +1,6 @@
 MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer;ClusterReplicas
 # =====================================================================================
-# BulkReg 3.9.9 - server_mapping.csv : WHICH USER GOES TO WHICH HOME SERVER
+# BulkReg 4.0.1 - server_mapping.csv : WHICH USER GOES TO WHICH HOME SERVER
 # Full instructions with examples: Admin Guide, procedure B12.
 # =====================================================================================
 # WHAT IT DOES
@@ -15,7 +15,9 @@ MatchField;MatchPattern;HomeServer;OrgUnit;Policy;Groups;VaultServer;ClusterRepl
 #
 # ONE RULE = ONE LINE, 8 columns separated by a semicolon ;
 #   1 MatchField      Person document field to test, e.g. InternetAddress, Department,
-#                     CompanyName, Location, LastName. * = every user (catch-all).
+#                     CompanyName, LastName. * = every user (catch-all).
+#                     Location is NOT allowed: BulkReg writes the last-name backup there (a rule on it
+#                     stops the run with a message). LastName = the LastName item of the Person document.
 #                     Find field names: open a DirSync Person document > File > Document
 #                     Properties > Fields tab.
 #   2 MatchPattern    Value to compare with (not case-sensitive):
