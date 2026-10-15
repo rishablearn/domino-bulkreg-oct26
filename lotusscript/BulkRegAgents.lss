@@ -1102,7 +1102,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	If CfgS("MailTemplate", "") <> "" Then
 		If Not BR_MailFileExists(u.HomeServer, CfgS("MailTemplate", "")) Then issues = issues & "ERROR:Mail template " & CfgS("MailTemplate", "") & " not found on " & u.HomeServer & "; "
 	End If
-	If Not CfgB("RegisterCreateMailDb", True) And CfgS("MailTemplate", "") = "" Then issues = issues & "ERROR:RegisterCreateMailDb=0 needs MailTemplate (e.g. mail14.ntf) in bulkreg.ini; "
+	If (Not CfgB("RegisterCreateMailDb", True) Or BR_MailDeferred()) And CfgS("MailTemplate", "") = "" Then issues = issues & "ERROR:RegisterCreateMailDb=0 / MailFileDeferred=1 needs MailTemplate (e.g. mail14.ntf) in bulkreg.ini; "
 	If InStr(issues, "ERROR:") > 0 Then
 		Call BR_Audit(u, gMode, "REGISTER", "FAILED_VALIDATION", BR_Elapsed(t0), issues)
 		BR_Log LVL_ERROR, "VALIDATION " & u.FullNameBefore & " : " & issues
@@ -1119,7 +1119,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 			u.ReplicaStatus = "OFF (CreateClusterReplicas=0)"
 		End If
 		u.FullNameAfter = BR_ExpectedName(u)               ' the name the user WOULD get, e.g. Neha Arora/Demo
-		Call BR_Audit(u, gMode, "REGISTER", "WOULD_REGISTER", BR_Elapsed(t0), "Notes name: " & u.FullNameAfter & " | mail file title: " & BR_MailTitle(u) & " " & issues)
+		Call BR_Audit(u, gMode, "REGISTER", "WOULD_REGISTER", BR_Elapsed(t0), "Notes name: " & u.FullNameAfter & " | mail file title: " & BR_MailTitle(u) & BR_IIfStr(BR_MailDeferred(), " | mail file creation DEFERRED (agent 07)", "") & " " & issues)
 		BR_Log LVL_INFO, "DRYRUN would register " & u.FullNameBefore & " as " & u.FullNameAfter & " -> " & u.HomeServer & " (" & u.Policy & ")"
 		BR_RegisterOne = "OK:dryrun"
 		Exit Function
@@ -1137,7 +1137,9 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		reg.CertifierIDFile = BR_CfgFile("CertifierIDFile", "")
 	End If
 	' ---- Domino mail file: always created on the user's home server ----
-	reg.CreateMailDb = CfgB("RegisterCreateMailDb", True)   ' 0 = BulkReg creates the mail file itself after the registration (needs MailTemplate)
+	' 0 = BulkReg creates the mail file itself after the registration (needs MailTemplate)
+	' MailFileDeferred=1 = no mail file now at all (fast registration); agent 07 creates it later
+	reg.CreateMailDb = CfgB("RegisterCreateMailDb", True) And Not BR_MailDeferred()
 	reg.MailSystem = REG_MAILSYSTEM_NOTES                ' HCL default, set explicitly: DirSync users had Other Internet Mail
 	If CfgS("MailTemplate", "") <> "" Then reg.MailTemplateName = CfgS("MailTemplate", "")
 	reg.MailACLManager = Trim$(StrLeft(BR_MailManagers() & ",", ","))   ' first manager; all of them are enforced after registration
@@ -1213,11 +1215,17 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	End If
 
 	' ---------- RegisterCreateMailDb=0: BulkReg creates the mail file itself ----------
-	If Not CfgB("RegisterCreateMailDb", True) Then
-		stage = "createmail"
-		titleRes = BR_CreateMailFile(u.HomeServer, u.MailFile, CfgS("MailTemplate", ""), BR_MailTitle(u))
-		u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & titleRes
-		BR_Log BR_IIfInt2(Left$(titleRes, 12) = "MAIL_CREATED", LVL_INFO, LVL_ERROR), "Mail file " & u.HomeServer & "!!" & u.MailFile & " : " & titleRes
+	If Not CfgB("RegisterCreateMailDb", True) Or BR_MailDeferred() Then
+		If BR_MailDeferred() Then
+			' MailFileDeferred=1: the Person document gets the mail file pointer now, the file itself is created later by 07
+			u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & "MAIL_DEFERRED (create with 07 - Create Mail Files)"
+			BR_Log LVL_INFO, "Mail file " & u.HomeServer & "!!" & u.MailFile & " : creation deferred"
+		Else
+			stage = "createmail"
+			titleRes = BR_CreateMailFile(u.HomeServer, u.MailFile, CfgS("MailTemplate", ""), BR_MailTitle(u))
+			u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & titleRes
+			BR_Log BR_IIfInt2(Left$(titleRes, 12) = "MAIL_CREATED", LVL_INFO, LVL_ERROR), "Mail file " & u.HomeServer & "!!" & u.MailFile & " : " & titleRes
+		End If
 		' the Person document must point at the mail file
 		If BR_Item(doc, "MailFile") = "" Then
 			Call doc.ReplaceItemValue("MailFile", BR_SrvPathFor(u.HomeServer, u.MailFile))
@@ -1230,7 +1238,9 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	' ---------- mail file ----------
 	stage = "mailfile"
 	BR_Log LVL_INFO, "Mail: system '" & u.MailSystemBefore & "' -> '" & u.MailSystemAfter & "', MailFile in Person doc: " & BR_Item(doc, "MailFile")
-	If BR_MailFileExists(u.HomeServer, u.MailFile) Then
+	If BR_MailDeferred() Then
+		u.MailFileStatus = "MAILFILE_DEFERRED"     ' by design: 07 - Create Mail Files creates it (title, ACL, replicas)
+	ElseIf BR_MailFileExists(u.HomeServer, u.MailFile) Then
 		u.MailFileStatus = "MAILFILE_OK"
 		' database title of the mail file (e.g. "Neha Arora") - set BEFORE the replicas are requested
 		titleRes = BR_MailTitleFix(u.HomeServer, u.MailFile, BR_MailTitle(u), True, CfgB("MailFileTitleOverwrite", False))
@@ -1250,6 +1260,8 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		u.ReplicaStatus = "NONE"
 	ElseIf Not CfgB("CreateClusterReplicas", True) Then
 		u.ReplicaStatus = "NOT_REQUESTED (CreateClusterReplicas=0)"
+	ElseIf u.MailFileStatus = "MAILFILE_DEFERRED" Then
+		u.ReplicaStatus = "DEFERRED (requested by 07 - Create Mail Files)"
 	ElseIf u.MailFileStatus <> "MAILFILE_OK" Then
 		u.ReplicaStatus = "NOT_REQUESTED (mail file not yet on home server - create the replicas manually, guide C7)"
 	Else
@@ -1265,13 +1277,13 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	userPwd = ""
 
 	' replicas are fine when none are needed, switched off, or all requests were posted
-	If u.ReplicaStatus = "NONE" Or InStr(u.ReplicaStatus, "CreateClusterReplicas=0") > 0 Then
+	If u.ReplicaStatus = "NONE" Or InStr(u.ReplicaStatus, "CreateClusterReplicas=0") > 0 Or Left$(u.ReplicaStatus, 8) = "DEFERRED" Then
 		repOK = True
 	ElseIf Left$(u.ReplicaStatus, 10) = "REQUESTED " And InStr(u.ReplicaStatus, "FAILED") = 0 Then
 		repOK = True
 	End If
-	If (u.VaultStatus = "IN_VAULT" Or u.VaultStatus = "NOT_CHECKED") And u.MailFileStatus = "MAILFILE_OK" And repOK Then
-		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED", BR_Elapsed(t0), issues)
+	If (u.VaultStatus = "IN_VAULT" Or u.VaultStatus = "NOT_CHECKED") And (u.MailFileStatus = "MAILFILE_OK" Or u.MailFileStatus = "MAILFILE_DEFERRED") And repOK Then
+		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED", BR_Elapsed(t0), issues & BR_IIfStr(u.MailFileStatus = "MAILFILE_DEFERRED", " Mail file NOT created yet - run 07 - Create Mail Files.", ""))
 		BR_Log LVL_INFO, "OK " & u.FullNameAfter & " vault=" & u.VaultStatus & " (" & Format$(BR_Elapsed(t0), "0.0") & "s)"
 	Else
 		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED_PENDING", BR_Elapsed(t0), issues & " Vault: " & u.VaultStatus & " Mail file: " & u.MailFileStatus & " Replicas: " & u.ReplicaStatus & " - re-check with Agent 04")
@@ -1514,7 +1526,7 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 	End If
 	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), BR_IIfStr(res = "UNREGISTERED" And u.InternetAddress = "", "no InternetAddress - " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped until the address exists in AD", "will be registered without address"), "") & _
 	BR_IIfStr(nmProb <> "", " WRONG NAME: " & nmProb, "") & BR_IIfStr(tRes <> "", " mail file " & tRes, "") & BR_IIfStr(aRes <> "", " " & aRes, "") & _
-	BR_IIfStr(u.MailFileStatus <> "" And u.MailFileStatus <> "MAILFILE_OK", " MAIL FILE NOT FOUND: Person doc MailServer='" & BR_Item(doc, "MailServer") & "' MailFile='" & u.MailFile & "' (tried as '" & BR_SrvPathFor(BR_Item(doc, "MailServer"), u.MailFile) & "'). The mail file is created by AdminP on the mail server after registration: check admin4.nsf / the server console for 'Create Mail File' errors, then re-run Verify.", ""))
+	BR_IIfStr(u.MailFileStatus <> "" And u.MailFileStatus <> "MAILFILE_OK", " MAIL FILE NOT FOUND: Person doc MailServer='" & BR_Item(doc, "MailServer") & "' MailFile='" & u.MailFile & "' (tried as '" & BR_SrvPathFor(BR_Item(doc, "MailServer"), u.MailFile) & "'). " & BR_IIfStr(BR_MailDeferred(), "MailFileDeferred=1: run 07 - Create Mail Files, then re-run Verify.", "The mail file is created by AdminP on the mail server after registration: check admin4.nsf / the server console for 'Create Mail File' errors, then re-run Verify."), ""))
 	BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus & " mail=" & u.MailFileStatus & " replicas=" & u.ReplicaStatus
 End Sub
 
@@ -1528,6 +1540,223 @@ Function BR_LatestBatch() As String
 		f = Dir$()
 	Loop
 	If best <> "" Then BR_LatestBatch = d & best
+End Function
+
+'=====================================================================
+' BR_RunCreateMailFiles  -  runs agent BulkReg\07 - Create Mail Files
+'   The agent itself only contains:  Call BR_RunCreateMailFiles()
+'
+' Second phase of the fast registration (MailFileDeferred=1): 03 - Register Batch registers the user and
+' points the Person document at the mail file but does NOT create it. This agent creates the missing mail
+' files from MailTemplate on each user's mail server, then sets the title, the ACL (MailACLManager + owner)
+' and requests the cluster replicas - the same steps 03 does when the mail file is created inline.
+'
+' Scope (asked at start): a batch file (only its Include=Y users) or blank = every registered DirSync user.
+' Only users whose Person document names a mail file that does NOT exist yet are touched; existing mail
+' files are never changed (idempotent - run it as often as needed). Honors DryRun (1 = report only).
+' Run it right after each 03 - Register Batch: until the mail file exists, mail for that user cannot be
+' delivered. It can run in a second Notes client while the next batch is being registered.
+'=====================================================================
+Sub BR_RunCreateMailFiles()
+	On Error GoTo ErrH
+	gMode = "": gStopRun = ""
+	Dim ws As NotesUIWorkspace, ans As Variant
+	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
+	Dim scopeFile As String, bname As String, fh As Integer, txt As String
+	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, nid As String, rep As String
+	Dim total As Long, nMade As Long, nExist As Long, nFail As Long, nSkip As Long, nConsec As Long
+	Dim maxConsec As Long, pauseMs As Long, maxPer As Long, res As String, summary As String, stopReason As String
+
+	If Not BR_Init("CreateMail") Then Exit Sub
+	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
+	maxConsec = CfgL("MaxConsecutiveErrors", 5)
+	pauseMs = CfgL("PauseMs", 500)
+	maxPer = CfgL("MailCreateMaxPerRun", 0)            ' 0 = no limit
+	If Trim$(CfgS("MailTemplate", "")) = "" Then
+		BR_Close "MailTemplate missing"
+		BR_Msg "MailTemplate (e.g. mail145.ntf) is required in bulkreg.ini to create mail files.", 16
+		Exit Sub
+	End If
+
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Create mail files (" & gMode & ")", _
+	"Create the missing mail files of ONE batch: enter the batch file path." & Chr$(10) & _
+	"All registered DirSync users: leave empty.", BR_LatestBatch())
+	If IsEmpty(ans) Then
+		BR_Close "Cancelled"
+		Exit Sub
+	End If
+	scopeFile = BR_LocalPath(Trim$(CStr(ans)))
+	If CInt(ws.Prompt(PROMPT_YESNO, "BulkReg - " & gMode, "Mode: " & BR_IIfStr(gMode = "LIVE", "LIVE - mail files WILL be created (template " & CfgS("MailTemplate", "") & ")", "DRY RUN (DryRun=1) - report only, NOTHING is created") & Chr$(10) & _
+	"Scope: " & BR_IIfStr(scopeFile = "", "all registered DirSync users", scopeFile) & Chr$(10) & _
+	"Limit per run: " & BR_IIfStr(maxPer > 0, CStr(maxPer), "none") & Chr$(10) & Chr$(10) & "Continue?")) <> 1 Then
+		BR_Close "Cancelled by operator"
+		Exit Sub
+	End If
+	gResultsFile = BR_BatchDir() & BR_IIfStr(scopeFile = "", "ALL", Left$(StrRightBack(scopeFile, gSep), Len(StrRightBack(scopeFile, gSep)) - 4)) & "_mailcreate_" & gMode & "_" & gRunID & ".csv"
+	Call BR_AppendLine(gResultsFile, Uchr$(&HFEFF) & BR_AuditHeader())
+	Set db = BR_OpenDirectory()
+
+	If scopeFile <> "" Then
+		If Dir$(scopeFile) = "" Then Error 8001, "Batch file not found: " & scopeFile
+		bname = StrRightBack(scopeFile, gSep)
+		If Left$(bname, 6) <> "BATCH-" Or InStr(bname, "_") > 0 Then Error 8002, "Choose the batch file itself (BATCH-<id>.csv): " & bname
+		gBatchID = Left$(bname, Len(bname) - 4)
+		fh = FreeFile()
+		Open scopeFile For Input As #fh Charset = "UTF-8"
+		isFirst = True
+		Do Until EOF(fh)
+			Line Input #fh, txt
+			If isFirst Then
+				Call BR_CsvHeader(txt, delim, cols)
+				isFirst = False
+			ElseIf Trim$(txt) <> "" Then
+				parts = BR_CsvSplit(txt, delim)
+				If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
+					nid = BR_CsvGet(parts, cols, "NoteID")
+					If IsElement(cols("clusterreplicas")) Then rep = BR_CsvGet(parts, cols, "ClusterReplicas") Else rep = "*auto"
+					total = total + 1
+					Set doc = Nothing
+					On Error Resume Next
+					Set doc = db.GetDocumentByID(nid)
+					Err = 0
+					On Error GoTo ErrH
+					res = BR_CreateMailOne(doc, nid, rep)
+					stopReason = BR_MailTally(res, nMade, nExist, nSkip, nFail, nConsec, maxConsec, maxPer, pauseMs)
+					If stopReason <> "" Then Exit Do
+				End If
+			End If
+		Loop
+		Close #fh
+	Else
+		Set col = BR_GetCandidates(db, False)
+		Set doc = col.GetFirstDocument()
+		Do While Not (doc Is Nothing)
+			total = total + 1
+			res = BR_CreateMailOne(doc, CStr(doc.NoteID), "*auto")
+			stopReason = BR_MailTally(res, nMade, nExist, nSkip, nFail, nConsec, maxConsec, maxPer, pauseMs)
+			If stopReason <> "" Then Exit Do
+			Set doc = col.GetNextDocument(doc)
+		Loop
+	End If
+	If stopReason = "" Then stopReason = "All users in scope processed"
+	summary = gMode & " | " & BR_IIfStr(gBatchID = "", "All DirSync users", gBatchID) & " | checked=" & total & " created/would create=" & nMade & " already existed=" & nExist & " failed=" & nFail & " skipped=" & nSkip & " | " & stopReason
+	BR_Close summary
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & gResultsFile & Chr$(10) & "Log: " & gDebugFile & Chr$(10) & Chr$(10) & _
+	BR_IIfStr(gMode = "LIVE", "Cluster replicas are created by AdminP over the next minutes/hours. Run 04 - Verify Registration and Vault next.", "Dry run only. Set DryRun=0 to create the mail files."), _
+	CInt(BR_IIfStr(nFail > 0, "48", "64"))
+	Exit Sub
+
+ErrH:
+	BR_Log LVL_ERROR, "Create mail files aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Create mail files aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
+	Exit Sub
+End Sub
+
+' Counts one result of BR_CreateMailOne (counters are passed by reference) and returns a stop reason,
+' or "" to continue. Pauses between created mail files.
+Function BR_MailTally(res As String, nMade As Long, nExist As Long, nSkip As Long, nFail As Long, nConsec As Long, maxConsec As Long, maxPer As Long, pauseMs As Long) As String
+	Select Case Left$(res, 2)
+	Case "OK": nMade = nMade + 1: nConsec = 0
+	Case "EX": nExist = nExist + 1: nConsec = 0
+	Case "SK": nSkip = nSkip + 1
+	Case Else: nFail = nFail + 1: nConsec = nConsec + 1
+	End Select
+	If nConsec >= maxConsec Then
+		BR_MailTally = "Circuit breaker: " & nConsec & " consecutive failures"
+		BR_Log LVL_ERROR, BR_MailTally
+	ElseIf maxPer > 0 And nMade >= maxPer Then
+		BR_MailTally = "MailCreateMaxPerRun (" & maxPer & ") reached - run again for the rest"
+		BR_Log LVL_INFO, BR_MailTally
+	ElseIf pauseMs > 0 And Left$(res, 2) = "OK" Then
+		Sleep pauseMs / 1000
+	End If
+End Function
+
+' One user. Returns OK... (created / would create), EXISTS, SKIP... or FAIL...
+Function BR_CreateMailOne(doc As NotesDocument, nid As String, rep As String) As String
+	Dim u As BRUser, t0 As Double, srv As String, cr As String, tRes As String, aRes As String, note As String
+	t0 = Timer
+	On Error GoTo ErrH
+	If doc Is Nothing Then
+		u.NoteID = nid
+		Call BR_Audit(u, gMode, "CREATE_MAIL", "NOT_FOUND", BR_Elapsed(t0), "Person document no longer exists")
+		BR_CreateMailOne = "SKIP:gone"
+		Exit Function
+	End If
+	Call BR_ReadUser(doc, u)
+	u.FullNameAfter = u.FullNameBefore
+	If Not BR_IsRegistered(doc) Then
+		Call BR_Audit(u, gMode, "CREATE_MAIL", "SKIPPED", BR_Elapsed(t0), "Not registered yet")
+		BR_CreateMailOne = "SKIP:unregistered"
+		Exit Function
+	End If
+	' the Person document is authoritative: 03 wrote MailServer + MailFile there
+	u.MailFile = BR_Path(BR_Item(doc, "MailFile"))
+	srv = BR_SrvAbbr(BR_Item(doc, "MailServer"))
+	u.HomeServer = srv
+	If u.MailFile = "" Or srv = "" Then
+		u.MailFileStatus = "NO_MAILFILE_IN_PERSON_DOC"
+		Call BR_Audit(u, gMode, "CREATE_MAIL", "SKIPPED", BR_Elapsed(t0), "Person document has no MailServer/MailFile")
+		BR_CreateMailOne = "SKIP:nomail"
+		Exit Function
+	End If
+	If BR_MailFileExists(srv, u.MailFile) Then
+		u.MailFileStatus = "MAILFILE_OK"
+		Call BR_Audit(u, gMode, "CREATE_MAIL", "MAIL_EXISTS", BR_Elapsed(t0), "Mail file already exists - not touched")
+		BR_CreateMailOne = "EXISTS"
+		Exit Function
+	End If
+	If rep = "*auto" Then cr = BR_ReplicaServers(srv, u.ReplicaSpec) Else cr = BR_SrvList(rep, srv)
+	u.ClusterReplicas = cr
+	u.MailFileStatus = "MAILFILE_MISSING"
+	If gMode = "DRYRUN" Then
+		u.ReplicaStatus = BR_IIfStr(cr = "", "NONE", "WOULD_REQUEST " & BR_ListCount(cr) & " (" & cr & ")")
+		Call BR_Audit(u, gMode, "CREATE_MAIL", "WOULD_CREATE", BR_Elapsed(t0), "Would create " & srv & "!!" & u.MailFile & " from " & CfgS("MailTemplate", "") & ", title '" & BR_MailTitle(u) & "'")
+		BR_CreateMailOne = "OK:dryrun"
+		Exit Function
+	End If
+
+	' ---- LIVE ----
+	tRes = BR_CreateMailFile(srv, u.MailFile, CfgS("MailTemplate", ""), BR_MailTitle(u))
+	If Left$(tRes, 12) <> "MAIL_CREATED" Then
+		u.ReplicaStatus = "NOT_REQUESTED (mail file not created)"
+		Call BR_Audit(u, gMode, "CREATE_MAIL", "FAILED", BR_Elapsed(t0), tRes)
+		BR_Log LVL_ERROR, "Mail file " & srv & "!!" & u.MailFile & " : " & tRes
+		BR_CreateMailOne = "FAIL:create"
+		Exit Function
+	End If
+	u.MailFileStatus = "MAILFILE_OK"
+	note = tRes
+	tRes = BR_MailTitleFix(srv, u.MailFile, BR_MailTitle(u), True, CfgB("MailFileTitleOverwrite", False))
+	note = note & "; " & tRes
+	' managers + owner BEFORE the replicas (they copy the ACL)
+	aRes = BR_MailAclFix(srv, u.MailFile, u.FullNameAfter, True)
+	note = note & "; " & aRes
+	If Left$(aRes, 9) = "ACL_ERROR" Then BR_Log LVL_WARN, "Mail file managers not set for " & u.MailFile & ": " & aRes
+	If cr = "" Then
+		u.ReplicaStatus = "NONE"
+	ElseIf Not CfgB("CreateClusterReplicas", True) Then
+		u.ReplicaStatus = "NOT_REQUESTED (CreateClusterReplicas=0)"
+	Else
+		u.ReplicaStatus = BR_RequestReplicas(u)
+	End If
+	u.MailFileNote = note
+	If Left$(aRes, 9) = "ACL_ERROR" Or Left$(tRes, 11) = "TITLE_ERROR" Or InStr(u.ReplicaStatus, "FAILED") > 0 Then
+		Call BR_Audit(u, gMode, "CREATE_MAIL", "CREATED_PENDING", BR_Elapsed(t0), note & " | replicas: " & u.ReplicaStatus & " - fix with 04 - Verify")
+		BR_Log LVL_WARN, "Mail file created with follow-up needed: " & u.MailFile & " : " & note & " | " & u.ReplicaStatus
+	Else
+		Call BR_Audit(u, gMode, "CREATE_MAIL", "MAIL_CREATED", BR_Elapsed(t0), note & " (" & Format$(BR_Elapsed(t0), "0.0") & "s)")
+		BR_Log LVL_INFO, "Mail file created " & srv & "!!" & u.MailFile & " (" & Format$(BR_Elapsed(t0), "0.0") & "s)"
+	End If
+	BR_CreateMailOne = "OK"
+	Exit Function
+ErrH:
+	Call BR_Audit(u, gMode, "CREATE_MAIL", "FAILED", BR_Elapsed(t0), "err=" & Err & " " & Error$ & " (line " & Erl & ")")
+	BR_Log LVL_ERROR, "Create mail FAILED " & u.FullNameBefore & " : " & Error$ & " (line " & Erl & ")"
+	BR_CreateMailOne = "FAIL:error"
+	Exit Function
 End Function
 
 '=====================================================================

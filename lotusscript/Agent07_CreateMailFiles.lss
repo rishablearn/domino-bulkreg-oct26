@@ -1,0 +1,40 @@
+'=====================================================================
+' Agent name : BulkReg\07 - Create Mail Files
+' Version    : see VERSION (libraries BulkRegCommon + BulkRegAgents)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunCreateMailFiles).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: open the agent, click in the editor, Ctrl+A, Delete, paste this
+'              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (NOT 'All selected documents' - Designer's default - or Notes asks for a selected document)
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunCreateMailFiles):
+'
+' Second phase of the fast registration. With MailFileDeferred=1 in bulkreg.ini,
+' 03 - Register Batch registers the users WITHOUT creating the mail files (the slow
+' part). This agent then creates every mail file that the Person document names but
+' that does not exist yet: from MailTemplate on the user's mail server, database title,
+' ACL (MailACLManager + owner), and the AdminP cluster replica requests.
+'
+' Scope (asked at start): one batch file, or blank = all registered DirSync users.
+' Existing mail files are never touched, so it can be re-run safely.
+' DryRun=1 (default) only reports what it would create (WOULD_CREATE).
+' Run it right after each 03 - Register Batch (mail cannot be delivered to a user until
+' the mail file exists); it may run in a second Notes client during the next batch.
+' Report: <BatchDir>\BATCH-<id>_mailcreate_<MODE>_<run>.csv + audit folder + log database.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunCreateMailFiles()
+End Sub

@@ -325,6 +325,7 @@ Function BR_ToolLabel(toolName As String) As String
 	Case "register": BR_ToolLabel = "03-RegisterBatch"
 	Case "verify": BR_ToolLabel = "04-Verify"
 	Case "exportbatchreg": BR_ToolLabel = "05-Export"
+	Case "createmail": BR_ToolLabel = "07-CreateMailFiles"
 	Case "autosync": BR_ToolLabel = "07-AutoSync"
 	Case Else: BR_ToolLabel = toolName
 	End Select
@@ -333,7 +334,7 @@ End Function
 ' Mode label: only 03 - Register Batch changes Domino, so only it is DRYRUN or LIVE-PRODUCTION
 Function BR_RunModeLabel(toolName As String) As String
 	Select Case LCase$(toolName)
-	Case "register": BR_RunModeLabel = BR_IIfStr(CfgB("DryRun", True), "DRYRUN", "LIVE-PRODUCTION")
+	Case "register", "createmail": BR_RunModeLabel = BR_IIfStr(CfgB("DryRun", True), "DRYRUN", "LIVE-PRODUCTION")
 	Case "setuplog": BR_RunModeLabel = "SETUP"
 	Case "verify": BR_RunModeLabel = "VERIFY"            ' read-only, except the optional title fix it asks for
 	Case "autosync"                                       ' AutoMode: LIVE registers, SHADOW simulates, OFF does nothing
@@ -766,6 +767,19 @@ Function BR_PickShortName(doc As NotesDocument) As String
 	BR_PickShortName = firstVal
 End Function
 
+' Separator between the last-name source and the suffix. Config lines are trimmed when read (BR_LoadConfig),
+' so "LastNameSeparator= " would arrive EMPTY. Therefore SPACE / BLANK (or " " in quotes) mean one blank.
+' Any other value is used as written ("-" default, "_", "." ...).
+Function BR_LastNameSep() As String
+	Dim s As String
+	s = CfgS("LastNameSeparator", "-")
+	Select Case UCase$(s)
+	Case "SPACE", "BLANK", """ """, "' '"
+		s = " "
+	End Select
+	BR_LastNameSep = s
+End Function
+
 ' Builds the LAST NAME that is registered (and therefore part of FullNameAfter / the CN):
 '   <LastNameField value> <LastNameSeparator> <suffix>      e.g. analyst-jdoe -> ANALYST-JDOE
 ' Config (bulkreg.ini):
@@ -773,7 +787,8 @@ End Function
 '   LastNameSuffixFields  comma list, first usable value wins. The token ShortName means the validated short
 '                         name (u.ShortName); any other token is read as a Person item (e.g. sAMAccountName).
 '                         EMPTY = no suffix. Default: ShortName,sAMAccountName
-'   LastNameSeparator     text between source and suffix (default "-")
+'   LastNameSeparator     text between source and suffix (default "-"). bulkreg.ini values are trimmed, so a
+'                         single blank is written as the keyword SPACE (or BLANK): SGT ABC XXZ 11100OPS
 '   LastNameUppercase     1 (default) = UCase$ the final value
 ' Returns "" when the source is empty so Validate still flags "LastName missing" (no "-JDOE" names).
 ' Deterministic: the same Person document always gives the same value, so Preflight, Build Batch and
@@ -796,7 +811,7 @@ Function BR_BuildLastName(doc As NotesDocument, u As BRUser) As String
 			End If
 		End If
 	Next
-	sep = CfgS("LastNameSeparator", "-")
+	sep = BR_LastNameSep()
 	s = src
 	' do not append twice when the source already ends with the suffix (re-run / already built value)
 	If sfx <> "" Then
@@ -1318,6 +1333,7 @@ Function BR_CheckMailFolderConfig() As String
 	If Trim$(CfgS("MailTemplate", "")) <> "" Then
 		If LCase$(Right$(Trim$(CfgS("MailTemplate", "")), 4)) <> ".ntf" Then e = e & "MailTemplate='" & CfgS("MailTemplate", "") & "' must be a template file ending in .ntf (e.g. mail145.ntf), not .nsf." & Chr$(10)
 	End If
+	If BR_MailDeferred() And Trim$(CfgS("MailTemplate", "")) = "" Then e = e & "MailFileDeferred=1 needs MailTemplate (e.g. mail145.ntf): agent 07 - Create Mail Files creates the mail files from it." & Chr$(10)
 	If InStr(CfgS("InternetDomain", ""), "<") > 0 Then e = e & "InternetDomain still contains a <placeholder>. Use e.g. InternetDomain=demo.com (or leave it empty to disable address construction)." & Chr$(10)
 	If UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "LINUX" And UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "WINDOWS" Then e = e & "ServerOS must be LINUX or WINDOWS." & Chr$(10)
 	If InStr(CfgS("ServerOSMap", ""), "<") > 0 Then e = e & "ServerOSMap still contains a <placeholder>. Use e.g. ServerOSMap=DominoADMail/Demo:LINUX,DominoADMail2/Demo:WINDOWS or leave it empty." & Chr$(10)
@@ -1719,6 +1735,12 @@ Function BR_OwnerRegConst() As Integer
 	Case "DESIGNER": BR_OwnerRegConst = REG_MAIL_OWNER_ACL_DESIGNER
 	Case Else: BR_OwnerRegConst = REG_MAIL_OWNER_ACL_EDITOR
 	End Select
+End Function
+
+' MailFileDeferred=1: 03 - Register Batch registers the user WITHOUT creating the mail file (the slow part);
+' 07 - Create Mail Files creates it afterwards (template, title, ACL, cluster replicas). Default 0 = as before.
+Function BR_MailDeferred() As Boolean
+	BR_MailDeferred = CfgB("MailFileDeferred", False)
 End Function
 
 Function BR_LevelText(l As Integer) As String
