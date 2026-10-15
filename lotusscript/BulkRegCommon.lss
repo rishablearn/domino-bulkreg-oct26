@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 4.0.1
+' Script Library : BulkRegCommon            Version 4.1.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "4.0.1"
+Public Const BR_VERSION = "4.1.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -103,24 +103,6 @@ Public gSrvLoad List As Long        ' users per home server: already registered 
 Public gSep As String                           ' LOCAL path separator: "\" on Windows, "/" elsewhere (set in BR_Init)
 Public Const BR_DEFAULT_BASE = "C:\BulkReg\"    ' default base folder (manual, Windows client)
 
-' ---------- AutoSync (4.0.0): unattended run as a scheduled agent on a Domino server ----------
-' gAuto      True = unattended: no prompts / message boxes, config path from gAutoCfgPath, Linux or Windows
-'            server allowed. Set only by BulkRegAuto (BA_RunAutoSync). Manual agents never set it.
-' gEmbedded  True while BulkRegAuto calls BR_RunBuildBatch / BR_RunRegisterBatch as steps of ONE AutoSync run:
-'            they skip BR_Init (done), BR_Close, confirmations and prompts and report through the gEmb... variables.
-Public gAuto As Boolean
-Public gEmbedded As Boolean
-Public gAutoCfgPath As String           ' path of bulkreg_auto.ini (set by BulkRegAuto)
-Public gEmbBatchFile As String          ' batch file the embedded Register step processes
-Public gEmbDryRun As Boolean            ' embedded Register step: True = simulate (SHADOW), False = LIVE
-Public gEmbDeadline As Double           ' embedded Register step: stop before the next user when Now (as a number) passes this; 0 = no limit
-Public gEmbError As String              ' embedded step failed: error text ("" = no error)
-' result of the embedded Build step
-Public gBldFileCount As Long, gBldRows As Long, gBldInc As Long, gBldErr As Long, gBldWarn As Long
-Public gBldNoInet As Long, gBldInOpen As Long, gBldLeft As Long
-Public gBldFiles List As String         ' batch number -> full path of the batch file
-' result of the embedded Register step
-Public gRegOK As Long, gRegFail As Long, gRegSkip As Long, gRegStop As String, gRegRows As Long
 Public gBase As String
 Public Const BR_ENV_CFG = "BulkRegConfigPath"   ' remembered in the client notes.ini
 ' columns of a batch file (BATCH-<id>.csv) written by Agent 02, read by Agents 03/04
@@ -169,34 +151,25 @@ Function BR_Init(toolName As String) As Boolean
 	Erase gCfg
 	Randomize
 
-	If gAuto Then
-		' ---- AutoSync: unattended scheduled agent (server). No prompts, config path is given by BulkRegAuto ----
-		cfgPath = gAutoCfgPath
-		If Trim$(CStr(cfgPath)) = "" Then
-			Print "BulkReg AutoSync: no configuration file path. Run refused."
-			Exit Function
-		End If
-	Else
-		' ---- manual agents: supported environment = Windows Domino Administrator client only ----
-		If gSession.IsOnServer Then
-			Print "BulkReg: must be run from the Windows Domino Administrator client (Actions menu), not on a server. Run refused."
-			Exit Function
-		End If
-		If InStr(1, gPlatform, "Windows", 5) = 0 Then
-			Messagebox "BulkReg is supported only in the Domino Administrator client on Windows." & Chr$(10) & _
-			"Detected platform: " & gPlatform, 16, "BulkReg"
-			Exit Function
-		End If
-
-		Set ws = New NotesUIWorkspace
-		lastPath = gSession.GetEnvironmentString(BR_ENV_CFG, True)
-		If lastPath = "" Then lastPath = gBase & "config\bulkreg.ini"
-		cfgPath = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg " & BR_VERSION & " - " & toolName, _
-		"Path to bulkreg.ini:", lastPath)
-		If IsEmpty(cfgPath) Then Exit Function
-		If Trim$(CStr(cfgPath)) = "" Then Exit Function
-		Call gSession.SetEnvironmentVar(BR_ENV_CFG, CStr(cfgPath), True)
+	' ---- manual agents: supported environment = Windows Domino Administrator client only ----
+	If gSession.IsOnServer Then
+		Print "BulkReg: must be run from the Windows Domino Administrator client (Actions menu), not on a server. Run refused."
+		Exit Function
 	End If
+	If InStr(1, gPlatform, "Windows", 5) = 0 Then
+		Messagebox "BulkReg is supported only in the Domino Administrator client on Windows." & Chr$(10) & _
+		"Detected platform: " & gPlatform, 16, "BulkReg"
+		Exit Function
+	End If
+
+	Set ws = New NotesUIWorkspace
+	lastPath = gSession.GetEnvironmentString(BR_ENV_CFG, True)
+	If lastPath = "" Then lastPath = gBase & "config\bulkreg.ini"
+	cfgPath = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg " & BR_VERSION & " - " & toolName, _
+	"Path to bulkreg.ini:", lastPath)
+	If IsEmpty(cfgPath) Then Exit Function
+	If Trim$(CStr(cfgPath)) = "" Then Exit Function
+	Call gSession.SetEnvironmentVar(BR_ENV_CFG, CStr(cfgPath), True)
 
 	If Not BR_LoadConfig(BR_LocalPath(CStr(cfgPath))) Then Exit Function
 	gLogLevel = BR_LevelFromName(CfgS("LogLevel", "INFO"))
@@ -302,14 +275,9 @@ Function BR_CfgFile(k As String, defRel As String) As String
 End Function
 
 ' Message box for the operator (also written to the debug log).
-' AutoSync (gAuto): no message box - the text goes to the debug log and the server console.
 Sub BR_Msg(txt As String, mbType As Integer)
 	If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [MSG  ] " & Replace(txt, Chr$(10), " | "))
-	If gAuto Then
-		Print "BulkReg " & gTool & ": " & Replace(txt, Chr$(10), " | ")
-	Else
-		Messagebox txt, mbType, "BulkReg " & gTool
-	End If
+	Messagebox txt, mbType, "BulkReg " & gTool
 End Sub
 
 Function BR_IIfStr(c As Boolean, a As String, b As String) As String
@@ -326,7 +294,6 @@ Function BR_ToolLabel(toolName As String) As String
 	Case "verify": BR_ToolLabel = "04-Verify"
 	Case "exportbatchreg": BR_ToolLabel = "05-Export"
 	Case "createmail": BR_ToolLabel = "07-CreateMailFiles"
-	Case "autosync": BR_ToolLabel = "07-AutoSync"
 	Case Else: BR_ToolLabel = toolName
 	End Select
 End Function
@@ -337,18 +304,11 @@ Function BR_RunModeLabel(toolName As String) As String
 	Case "register", "createmail": BR_RunModeLabel = BR_IIfStr(CfgB("DryRun", True), "DRYRUN", "LIVE-PRODUCTION")
 	Case "setuplog": BR_RunModeLabel = "SETUP"
 	Case "verify": BR_RunModeLabel = "VERIFY"            ' read-only, except the optional title fix it asks for
-	Case "autosync"                                       ' AutoMode: LIVE registers, SHADOW simulates, OFF does nothing
-		Select Case UCase$(Trim$(CfgS("AutoMode", "SHADOW")))
-		Case "LIVE": BR_RunModeLabel = "LIVE-PRODUCTION"
-		Case "OFF": BR_RunModeLabel = "READ-ONLY"
-		Case Else: BR_RunModeLabel = "DRYRUN"
-		End Select
 	Case Else: BR_RunModeLabel = "READ-ONLY"
 	End Select
 End Function
 
 Sub BR_Close(summary As String)
-	If gEmbedded Then Exit Sub          ' a step inside an AutoSync run: BulkRegAuto closes the run itself
 	On Error Resume Next
 	' run folder: finish RUN_INFO.txt and keep a copy of the batch results / dry-run report
 	If gRunDir <> "" Then
@@ -1565,7 +1525,7 @@ Sub BR_Log(lvl As Integer, msg As String)
 	Dim txt As String
 	If lvl < gLogLevel Then Exit Sub
 	txt = Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [" & BR_LevelName(lvl) & "] " & msg
-	If (Not gAuto) Or lvl >= LVL_WARN Then Print txt      ' status bar / client console (AutoSync: server console only for WARN and ERROR)
+	Print txt                                              ' status bar / client console
 	If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, txt)
 	If Not (gLogDb Is Nothing) Then Call BR_LogEntry(lvl, msg)
 End Sub
@@ -1958,10 +1918,10 @@ Sub BR_LogClose(summary As String)
 	Call gRunDoc.ReplaceItemValue("EndTime", Now)
 	Call gRunDoc.ReplaceItemValue("BatchID", gBatchID)
 	Call gRunDoc.ReplaceItemValue("Summary", summary)
-	If InStr(summary, "ABORTED") > 0 Or Left$(summary, 6) = "HALTED" Then
-		Call gRunDoc.ReplaceItemValue("Status", "ABORTED")        ' HALTED = AutoSync stopped by one of its own safety gates
+	If InStr(summary, "ABORTED") > 0 Then
+		Call gRunDoc.ReplaceItemValue("Status", "ABORTED")
 	ElseIf Left$(summary, 6) = "FAILED" Then
-		Call gRunDoc.ReplaceItemValue("Status", "FAILED")         ' AutoSync run in which registration failed (shown by log view 6 - Problems)
+		Call gRunDoc.ReplaceItemValue("Status", "FAILED")         ' run in which registration failed (shown by log view 6 - Problems)
 	ElseIf InStr(LCase$(summary), "cancel") > 0 Or InStr(summary, "Not approved") > 0 Then
 		Call gRunDoc.ReplaceItemValue("Status", "CANCELLED")
 	Else

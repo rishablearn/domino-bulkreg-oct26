@@ -1,6 +1,6 @@
 '=====================================================================
 ' Agent name : BulkReg\03 - Register Batch
-' Version    : 4.0.1  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 4.0.1)
+' Version    : 4.1.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 4.1.0)
 ' Code       : ALL logic is in the script library BulkRegAgents (BR_RunRegisterBatch).
 '              This agent only calls it, so it never changes between releases.
 '
@@ -13,8 +13,11 @@
 '
 ' What it does (details: BulkRegAgents > BR_RunRegisterBatch):
 '
-' Mail       : creates a Domino mail file for every user on the batch row's
-'              HomeServer at the batch row's MailFile (e.g. mail1\smith.nsf).
+' Mail       : MailFileDeferred=0 - creates a Domino mail file for every user on the
+'              batch row's HomeServer at the batch row's MailFile (e.g. mail1\smith.nsf).
+'              MailFileDeferred=1 - registers WITHOUT the mail file (fast); the Person
+'              document gets MailServer/MailFile and agent 07 - Create Mail Files
+'              creates the file afterwards (title, ACL, cluster replicas).
 ' Replicas   : when the row's ClusterReplicas column lists servers (other members
 '              of the mail cluster) and CreateClusterReplicas=1, an AdminP
 '              "Create Replica" request is posted for each of them right after

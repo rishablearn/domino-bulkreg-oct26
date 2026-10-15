@@ -1,4 +1,4 @@
-// BulkReg Administrator Guide — single source for Word + Web.
+// BulkReg Administrator Guide — single source for the HTML guide (docs/build_html.js).
 // The version is read from the kit's VERSION file, so guide, code and config always carry the same number.
 const fsV = require("fs"), pathV = require("path");
 const KIT_VERSION = (() => {
@@ -46,11 +46,12 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). The initial load and all manual work are done from the **HCL Domino Administrator 14.x client on Windows**; everything runs locally in the Notes client (no server-side agents)."],
-  ["Framework version", "BulkReg " + KIT_VERSION + ": script libraries BulkRegCommon and BulkRegAgents, one-line agents 00–06, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg " + KIT_VERSION + ": script libraries BulkRegCommon and BulkRegAgents, one-line agents 00–07, config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["4.1.0", "**Release 4.1.0.** **Name separator:** `LastNameSeparator=SPACE` (or `BLANK`) puts one blank between the last-name source and the suffix, e.g. `CN=SGT ABC XXZ 11100OPS/O=Demo` (ini values are trimmed, so a blank needs the keyword). **Fast registration:** `MailFileDeferred=1` registers users without creating the mail file; new agent `BulkReg\\07 - Create Mail Files` (`BR_RunCreateMailFiles`) creates the missing files afterwards from `MailTemplate`, sets title and ACL and requests the cluster replicas (`MailCreateMaxPerRun`, honors DryRun). Verify reports `MAILFILE_MISSING` for such users until 07 has run. **Clean-up:** the unused AutoSync hooks (`gAuto`, `gEmbedded`, `gEmb*`, `gBld*`) are removed from both libraries; welcome screen, README, DEPLOY-4.1.0.md and this guide updated. Re-paste both libraries and add agent 07."],
   ["4.0.1", "**Release 4.0.1.** **AutoSync removed:** library BulkRegAuto, agent 07, bulkreg_auto.ini, AUTOSYNC.md and the Linux helper are gone; Part E is deleted. **Unique last name:** LastName = JobTitle + \"-\" + short name, upper case (`ANALYST-JDOE`), only this generated value is stored in the Person item `Location`; JobTitle and Department are never changed. Keys `LastNameSuffixFields`, `LastNameSeparator`, `LastNameUppercase`, `LastNameBackupField`, `LastNameBackupOverwrite`; new checks (no suffix, organization once, common name after registration); `Location` not allowed in server_mapping.csv; registered users are never renamed. See the settings table."],
   ["4.0.0", "**Release 4.0.0.** Added unattended AutoSync (server agent). **Removed again in 4.0.1:** BulkReg runs locally in the Notes client only."],
   ["3.9.9", "**Release 3.9.9.** **Compile fix:** *Variable not declared: ARRAY* in the welcome-screen code of BulkRegAgents (LotusScript has no Array function). Re-paste BulkRegAgents."],
@@ -146,7 +147,7 @@ pb();
 
 // ================================================================ RUN ORDER
 h1("Agent Run Order (read this first)");
-p("BulkReg has **six agents**. Agent **00** is run once by the log database owner (B20a). In every batch **four** are used, always in this order: **01 → 02 → (you review) → 03 dry run → 03 live → 04**. Agent **05 is not part of the process**; it is only for the manual alternative in Appendix A. Run every agent from bulkreg.nsf > **Actions > BulkReg**.");
+p("BulkReg has **six core agents** (00 - 05) plus the optional **07 - Create Mail Files** (needed only with `MailFileDeferred=1`, see step 6 below). Agent **00** is run once by the log database owner (B20a). In every batch **four** are used, always in this order: **01 → 02 → (you review) → 03 dry run → 03 live → 04**. Agent **05 is not part of the process**; it is only for the manual alternative in Appendix A. Run every agent from bulkreg.nsf > **Actions > BulkReg**.");
 code(`FOR EVERY BATCH:
 
  1. Actions > BulkReg > 01 - Preflight Check        (read-only)
@@ -160,6 +161,9 @@ code(`FOR EVERY BATCH:
  5. bulkreg.ini: DryRun=0
  6. Actions > BulkReg > 03 - Register Batch         (LIVE - type the batch ID)
          -> BATCH-<id>_results.csv     (batch is now DONE)
+ 6b. ONLY with MailFileDeferred=1: Actions > BulkReg > 07 - Create Mail Files   (choose the batch)
+         -> BATCH-<id>_mailcreate_<mode>_<run>.csv : MAIL_CREATED for every user ?
+         (the users cannot receive mail until the mail files exist: run 07 right after 03 live)
  7. bulkreg.ini: DryRun=1
  8. Actions > BulkReg > 04 - Verify Registration and Vault   (choose the batch)
          -> BATCH-<id>_verify_<run>.csv : REGISTERED + IN_VAULT + MAILFILE_OK + REPLICAS_OK ?
@@ -523,7 +527,7 @@ tbl(["Key", "Enter", "From"], [
   ["CertifierIDFile", "With UseCA=0: `C:\\BulkReg\\cert\\<file>.id`. With UseCA=1: leave the placeholder or clear it.", "B5 Option 2"],
   ["HomeServers / HomeServerMaxUsers / HomeServerAssignment", "The mail servers that receive the users, e.g. `DominoADMail/Demo,DominoADMail2/Demo`; max users per server (`2500`); `FILL` (shipped: first server up to the max, then the next: 2500 + 2500; `FILLED` also accepted) or `BALANCED` (fewest users first). A mapping rule with `AUTO` as home server uses this pool.", "Worksheet 3"],
   ["ServerOS / ServerDataDir / ServerFileOwner", "`LINUX` (path separator `/`), `/local/notesdata`, and the Linux user:group of Domino for the chown line in the Preflight report", "–"],
-  ["LastNameField / LastNameSuffixFields / LastNameSeparator / LastNameUppercase", "The registered last name is built: `<LastNameField> + <LastNameSeparator> + <suffix>`, then upper case. Shipped: `LastNameField=JobTitle`, `LastNameSuffixFields=ShortName,sAMAccountName` (first usable value; `ShortName` = the validated short name), `LastNameSeparator=-`, `LastNameUppercase=1`. Example: JobTitle `analyst`, short name `jdoe` -> last name `ANALYST-JDOE`, Notes name **ANALYST-JDOE/Demo**. The characters `/ \\ = , +` in the source value are replaced by `-`. ERROR when the source item is empty or no suffix is usable (the name would not be unique).", "analyst + jdoe -> ANALYST-JDOE"],
+  ["LastNameField / LastNameSuffixFields / LastNameSeparator / LastNameUppercase", "The registered last name is built: `<LastNameField> + <LastNameSeparator> + <suffix>`, then upper case. Shipped: `LastNameField=JobTitle`, `LastNameSuffixFields=ShortName,sAMAccountName` (first usable value; `ShortName` = the validated short name), `LastNameSeparator=SPACE` (one blank; `-` or any other text also works; the ini trims values, so a blank must be written as `SPACE` or `BLANK`), `LastNameUppercase=1`. Example: JobTitle `SGT ABC XXZ`, short name `11100OPS` -> last name `SGT ABC XXZ 11100OPS`, Notes name **SGT ABC XXZ 11100OPS/Demo**; with `LastNameSeparator=-` it would be `SGT ABC XXZ-11100OPS`. The characters `/ \\ = , +` in the source value are replaced by `-`. ERROR when the source item is empty or no suffix is usable (the name would not be unique).", "SGT ABC XXZ + 11100OPS -> SGT ABC XXZ 11100OPS"],
   ["LastNameBackupField / LastNameBackupOverwrite", "Person item (text) that receives a copy of the generated last name after the registered name was verified. Shipped: `Location` (not synchronised from AD), overwrite `1` (an existing value is replaced and written to the log; `0` keeps it). Empty field = no backup. Only this generated value is written: `JobTitle`, `Department` and the other source/name items are never changed (a protected item as backup field is refused). `Location` must not be a MatchField in `server_mapping.csv` (the run stops with a message). Users that are already registered keep their name: it is never regenerated, renamed or backed up, and Verify only reads it.", "Location / 1"],
   ["FirstNameField / MiddleNameField", "Person items registered as first name and middle initial. Shipped empty: no first name, the Notes name is the last name only. `FullNameAfter` (Preflight, Build Batch, Register, audit) shows the abbreviated name with the organization once; the run stops (REGISTERED_WRONG_NAME) when the registered common name differs from the generated one or the organization is repeated. An `OrgUnit` equal to the organization is an ERROR.", "empty"],
   ["ShortNameFields", "Person item(s) with the AD samaccountname, first non-empty wins (default `ShortName`). The FullName/cn is never used.", "–"],
@@ -546,7 +550,9 @@ tbl(["Key", "Enter", "From"], [
   ["MailOwnerAccess", "Leave `EDITOR`: the user gets **Editor + Delete documents** in his/her own mail file (Domino's default would be Manager). DESIGNER or MANAGER only if your policy needs it.", "–"],
   ["MailFileTitle", "Leave `{CN}`: each new mail file gets the user's name as its database title (e.g. *Neha Arora*)", "–"],
   ["MailFolderMax", "The number of folders you created in B4, e.g. `5` for mail1–mail5 (mail cluster: users of all home servers together)", "Worksheet 11d"],
-  ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default)", "Worksheet 11b"],
+  ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default). **Required** when `MailFileDeferred=1` or `RegisterCreateMailDb=0`.", "Worksheet 11b"],
+  ["MailFileDeferred", "`1` = 03 registers WITHOUT the mail file (fast); agent 07 creates it afterwards. `0` (default in code) = created during registration.", "1 for large runs"],
+  ["MailCreateMaxPerRun", "Agent 07: maximum mail files created per run (`0` = no limit). `PauseMs` and `MaxConsecutiveErrors` apply too.", "0"],
   ["MailACLManager / MailQuotaSizeLimit", "Who gets **Manager** access to each new mail file: leave **empty** = your admin ID (the operator); or names separated by commas, e.g. `Admin User/Demo,LocalDomainAdmins`. Quota in MB (0 = none).", "Worksheet 11c"],
   ["LogServer / LogDb", "**Required.** The server and file of the central log database from B15, e.g. `DominoAdmin/Demo` and `bulkreg_log.nsf`", "B15"],
   ["DryRun", "Leave `1`", "–"],
@@ -783,7 +789,7 @@ meta("Domino administrator", "Domino Designer", "adds 2 script libraries to bulk
 p("All BulkReg code lives in **two script libraries**. The six agents (B18) contain only one line that calls the library, so they never change between releases.");
 tbl(["Library (type the name exactly)", "Source file in C:\\BulkReg-kit\\lotusscript", "Contains"], [
   ["`BulkRegCommon`", "BulkRegCommon.lss", "Shared functions: configuration, mapping, mail files, cluster replicas, logging, audit, batch files"],
-  ["`BulkRegAgents`", "BulkRegAgents.lss", "The code of the six agents: BR_RunSetupLog, BR_RunPreflight, BR_RunBuildBatch, BR_RunRegisterBatch, BR_RunVerify, BR_RunExport. It uses BulkRegCommon."],
+  ["`BulkRegAgents`", "BulkRegAgents.lss", "The code of the six agents: BR_RunSetupLog, BR_RunPreflight, BR_RunBuildBatch, BR_RunRegisterBatch, BR_RunVerify, BR_RunExport and (optional agent 07) BR_RunCreateMailFiles. It uses BulkRegCommon."],
 ], [2400, 2600, 4360]);
 note("**Paste the whole file.** When you paste LotusScript into the editor, Domino Designer puts each part in its place automatically: `Option` and `Use` lines into **(Options)**, constants, types and variables into **(Declarations)**, and every Sub and Function into its own entry. The `--- part …` comment lines in the files only show where each part begins.");
 warn("Create and save **BulkRegCommon first**. BulkRegAgents contains `Use \"BulkRegCommon\"` and does not compile until BulkRegCommon exists.");
@@ -822,6 +828,7 @@ tbl(["Agent name (type exactly)", "Line in Initialize", "Source file (same conte
   ["`BulkReg\\03 - Register Batch`", "`Call BR_RunRegisterBatch()`", "Agent03_RegisterBatch.lss"],
   ["`BulkReg\\04 - Verify Registration and Vault`", "`Call BR_RunVerify()`", "Agent04_VerifyVaultStatus.lss"],
   ["`BulkReg\\05 - Export to Registration Text File`", "`Call BR_RunExport()`", "Agent05_ExportToBatchRegFile.lss (optional)"],
+  ["`BulkReg\\07 - Create Mail Files`", "`Call BR_RunCreateMailFiles()`", "Agent07_CreateMailFiles.lss (only with MailFileDeferred=1; run after 03 live)"],
 ], [3600, 2800, 2960]);
 p("Do the following for **each** agent in the table:");
 ol(
@@ -847,7 +854,7 @@ note("The agent files contain only these lines plus a description in comments. *
 done("All six agents are listed under Code > Agents with the exact names, trigger 'Action menu selection', target 'None', each contains `Use \"BulkRegAgents\"` and one `Call BR_Run…()` line, and they save without errors.");
 h2("B18a Welcome screen (About This Database document of bulkreg.nsf)");
 meta("Domino administrator", "Domino Designer + Notes client", "adds 1 agent; creates the About This Database document");
-p("Without this step bulkreg.nsf opens on an empty view. The welcome screen shows what BulkReg does, the one-time prerequisites, the seven steps of every batch and the safety rules. In the Notes client it is the **About This Database** document; the option *Open designated Page* is for the web only.");
+p("Without this step bulkreg.nsf opens on an empty view. The welcome screen shows what BulkReg does, the one-time prerequisites, the eight steps of every batch and the safety rules. In the Notes client it is the **About This Database** document; the option *Open designated Page* is for the web only.");
 ol(
   "Create a seventh agent exactly as in B18, named `BulkReg\\06 - Install Welcome Page`, with the content of **Agent06_InstallWelcomePage.lss** (it contains `Call BR_RunInstallWelcome()`). Save it; it must compile. Re-sign the database (B19).",
   "In the Notes client open bulkreg.nsf and run **Actions > BulkReg > 06 - Install Welcome Page** (Designer access required). *Result:* a message with two lines: *About document: OK (1 design note(s) imported)* and *Launch option: OK*.",
@@ -874,7 +881,7 @@ done("bulkreg.nsf is signed with the admin ID that will run it.");
 h2("B20 First start and the security alert");
 ol(
   "In Domino Administrator (or Notes), open `bulkreg.nsf` (**File > Open > HCL Notes Application > Local > bulkreg.nsf**).",
-  "Click **Actions > BulkReg**. *Result:* the six agents appear in the submenu, in number order (00 … 05).",
+  "Click **Actions > BulkReg**. *Result:* the agents appear in the submenu, in number order (00 … 05, and 07 if installed).",
   "Click **01 - Preflight Check**.",
   "If an **Execution Security Alert** appears, read the signer. It must be your admin ID. Choose **Execute the action this one time**, or trust the signer if your ECL policy allows it.",
   "When asked for the **Path to bulkreg.ini**, type `C:\\BulkReg\\config\\bulkreg.ini` and click **OK**. The path is remembered for later runs."
@@ -1111,7 +1118,9 @@ tbl(["Key", "Default", "Meaning"], [
   ["MailExistingFolders", "mail", "Existing mail folder(s), comma separated, checked for duplicate names; never written to"],
   ["MailFileDir", "mail", "Only for MailFolderMode=SINGLE"],
   ["MailFolderMax", "5", "Number of pre-created folders (B4); no folder above it is assigned (0 = no limit)"],
-  ["MailTemplate", "(empty)", "Mail template (empty = registration default)"],
+  ["MailTemplate", "(empty)", "Mail template (empty = registration default; required with MailFileDeferred=1)"],
+  ["MailFileDeferred", "0 (ini template: 1)", "1 = register without mail file, create it with agent 07"],
+  ["MailCreateMaxPerRun", "0", "Agent 07 limit per run (0 = none)"],
   ["MailOwnerAccess", "EDITOR", "Access of the user in his/her own mail file: EDITOR (with Delete documents), DESIGNER or MANAGER. Set at registration and corrected right after it; Verify reports and can correct it. With EDITOR the user cannot change the ACL (Access & Delegation) himself."],
   ["MailFileTitle / MailFileTitleOverwrite", "{CN} / 0", "Database title of each new mail file ({CN} = Neha Arora; also {FirstName} {LastName} {ShortName} {InternetAddress}); set right after registration, before the cluster replicas. 1 = replace a title that is already set."],
   ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Mail file settings (quota in MB). MailACLManager: empty = the operator's admin ID; comma separated names allowed; all of them get Manager access in every new mail file. MailCreateFTIndex also applies to the replicas."],
@@ -1192,7 +1201,7 @@ tbl(["Record", "Content"], [
 ], [3000, 6360]);
 h3("5. Other mail file settings");
 tbl(["Setting", "Effect"], [
-  ["MailTemplate", "Template for new mail files (empty = registration default). Must exist on every home server (B4)."],
+  ["MailTemplate", "Template for new mail files (empty = registration default). Must exist on every home server (B4). Required with MailFileDeferred=1."],
   ["MailACLManager", "Names with Manager access (and Delete documents) in every new mail file; empty = the admin ID running BulkReg. Set after registration and checked by Verify (MailFileNote: ACL_OK / ACL_SET)."],
   ["MailQuotaSizeLimit / MailQuotaWarningThreshold", "Quota and warning threshold in MB (0 = none)"],
   ["MailCreateFTIndex", "Create a full-text index for new mail files"],
@@ -1335,6 +1344,7 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["00 - Set Up Log Database: 'needs Designer or Manager access'", "Run by an operator (Author)", "The database owner runs it (B20a)"],
   ["WARN: mail file renamed", "The last-name file already exists on that server, in the directory or in an open batch", "Normal with SUFFIX. Review the new name, or edit MailFile"],
   ["\"Could not scan <server>\" in the debug log", "No access to the server's database list", "Uniqueness then uses the directory and the direct file check. Fix access and rebuild for full checking."],
+  ["MAILFILE_DEFERRED / MAILFILE_MISSING after a live run", "`MailFileDeferred=1`: the mail file is created by agent 07, not by 03", "Run Actions > BulkReg > 07 - Create Mail Files (batch or all), then Verify. Mail for these users is undeliverable until then"],
   ["MAILFILE_PENDING / MAILFILE_MISSING", "Mail file creation queued (Administration Process) or failed: template missing, no Create databases right, server unreachable", "Check admin4.nsf on the home server, B4 rights and template; re-run Verify"],
   ["REPLICAS_MISSING after several hours", "AdminP request failed: requester or destination server has no Reader access to the mail file, no 'Create new replicas' right, no Connection document, or AdminP not running", "Open admin4.nsf > All Requests by Action, find Create Replica for the user and read the response document; fix B4 (cluster section); create the replicas manually (D3c)"],
   ["REQUEST_FAILED / REQUESTED k/n FAILED", "AdminP request could not be created (RegistrationServer unreachable, no rights to admin4.nsf, unrestricted methods not allowed)", "Check the message; create the replicas manually (D3c); confirm in the pilot (D9)"],
@@ -1432,6 +1442,7 @@ tbl(["Agent (code in BulkRegAgents)", "Reads", "Writes", "Asks for"], [
   ["03 - Register Batch (BR_RunRegisterBatch)", "One batch file, names.nsf", "names.nsf (LIVE), ID files, AdminP Create Replica requests (admin4.nsf), _results/_dryrun, password file, audit", "Config path, batch file, Yes/No, batch ID (LIVE), certifier password (UseCA=0)"],
   ["04 - Verify Registration and Vault (BR_RunVerify)", "A batch file or all users, ID Vault, mail files and their replicas", "_verify.csv, audit", "Config path, batch file or empty"],
   ["05 - Export (optional, BR_RunExport)", "names.nsf", "Text file, audit", "Config path, password Yes/No"],
+  ["07 - Create Mail Files (optional, BR_RunCreateMailFiles)", "A batch file or all users, Person documents, mail template", "Mail files (LIVE), title, ACL, AdminP Create Replica requests, _mailcreate CSV, audit", "Config path, batch file or empty, Yes/No"],
 ], [2300, 2300, 2800, 1960]);
 
 h2("Appendix C – HCL documentation used");

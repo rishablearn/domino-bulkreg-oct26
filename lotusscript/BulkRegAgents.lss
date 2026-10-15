@@ -1,6 +1,6 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 4.0.1
-' Purpose        : The code of the six BulkReg agents. Each agent in bulkreg.nsf
+' Script Library : BulkRegAgents            Version 4.1.0
+' Purpose        : The code of the BulkReg agents (00 - 07). Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
 '                    BulkReg\01 - Preflight Check                -> BR_RunPreflight
@@ -484,12 +484,7 @@ Sub BR_RunBuildBatch()
 	Dim baseID As String, batchNo As Long, rowsIn As Long, maxBatches As Long, bi As Long, bl As String
 	Dim batchFiles List As String, bRows List As Long, bInc List As Long, bErr List As Long, bSrv List As Long, bk As String
 
-	If gEmbedded Then
-		gEmbError = "": gBldFileCount = 0: gBldRows = 0: gBldInc = 0: gBldErr = 0: gBldWarn = 0: gBldNoInet = 0: gBldInOpen = 0: gBldLeft = 0
-		Erase gBldFiles
-	Else
-		If Not BR_Init("BuildBatch") Then Exit Sub                  ' (embedded in AutoSync: BR_Init was done by BulkRegAuto)
-	End If
+	If Not BR_Init("BuildBatch") Then Exit Sub
 	maxBatches = CfgL("BuildMaxBatches", 0)                         ' 0 = build ALL batches in this run
 	batchMax = CfgL("BatchSize", 1000)
 	If batchMax < 1 Then batchMax = 1000
@@ -686,16 +681,6 @@ Sub BR_RunBuildBatch()
 	Call BR_AppendLine(sumFile, "Next: review each " & baseID & "-NN.csv (Include / HomeServer / MailFile / ClusterReplicas / Policy),")
 	Call BR_AppendLine(sumFile, "      then run Actions > BulkReg > 03 - Register Batch once per batch file, starting with -01.")
 
-	If gEmbedded Then
-		' AutoSync step: hand the result to BulkRegAuto (it closes the run and reports)
-		gBldFileCount = batchNo: gBldRows = nRows: gBldInc = nInc: gBldErr = nErr: gBldWarn = nWarn
-		gBldNoInet = nNoInet: gBldInOpen = nInOpen: gBldLeft = nLeft
-		ForAll bfx In batchFiles
-			gBldFiles(ListTag(bfx)) = CStr(bfx)
-		End ForAll
-		BR_Log LVL_INFO, "Build (AutoSync): batches=" & batchNo & " rows=" & nRows & " include=" & nInc & " error=" & nErr & " warn=" & nWarn & " left=" & nLeft & " in_open_batch=" & nInOpen & " no_inet=" & nNoInet
-		Exit Sub
-	End If
 	BR_Close "batches=" & batchNo & " (" & baseID & "-01.." & Format$(batchNo, "00") & ") rows=" & nRows & " include=" & nInc & " error=" & nErr & " left=" & nLeft & " skipped_no_inet=" & BR_IIfStr(skipNoInet, CStr(nNoInet), "0")
 	BR_Msg batchNo & " batch file(s) created: " & baseID & "-01 .. -" & Format$(batchNo, "00") & Chr$(10) & Chr$(10) & _
 	"Rows: " & nRows & "   Include=Y: " & nInc & "   WARN: " & nWarn & "   ERROR (Include=N): " & nErr & Chr$(10) & _
@@ -706,7 +691,6 @@ Sub BR_RunBuildBatch()
 	Exit Sub
 ErrH:
 	BR_Log LVL_ERROR, "Build Batch aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
-	If gEmbedded Then gEmbError = "Build aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
 	BR_Close "ABORTED"
 	BR_Msg "Build Batch aborted: " & Error$, 16
 	Exit Sub
@@ -767,37 +751,27 @@ Sub BR_RunRegisterBatch()
 	Dim nOK As Long, nFail As Long, nSkip As Long, nConsec As Long, res As String, stopReason As String
 	Dim j As Long, summary As String
 
-	If gEmbedded Then
-		' AutoSync step: BR_Init was done by BulkRegAuto; batch file and mode are given, nothing is asked
-		gEmbError = "": gRegOK = 0: gRegFail = 0: gRegSkip = 0: gRegStop = "": gRegRows = 0
-		If gEmbDryRun Then gMode = "DRYRUN" Else gMode = "LIVE"
-	Else
-		If Not BR_Init("Register") Then Exit Sub
-		If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
-	End If
+	If Not BR_Init("Register") Then Exit Sub
+	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
 	maxRows = CfgL("MaxBatchRows", 1000)
 	pauseMs = CfgL("PauseMs", 500)
 	maxConsec = CfgL("MaxConsecutiveErrors", 5)
 	bdir = BR_BatchDir()
 
 	' ---------- choose the batch file ----------
-	If gEmbedded Then
-		bfile = gEmbBatchFile
-	Else
-		Set ws = New NotesUIWorkspace
-		bfile = BR_NewestOpenBatch()
-		If bfile = "" Then
-			BR_Close "No open batch"
-			BR_Msg "There is no open batch file in " & bdir & Chr$(10) & "Run Actions > BulkReg > 02 - Build Batch first.", 48
-			Exit Sub
-		End If
-		ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Register batch (" & gMode & ")", "Batch file to register (reviewed):", bfile)
-		If IsEmpty(ans) Then
-			BR_Close "Cancelled"
-			Exit Sub
-		End If
-		bfile = BR_LocalPath(Trim$(CStr(ans)))
+	Set ws = New NotesUIWorkspace
+	bfile = BR_NewestOpenBatch()
+	If bfile = "" Then
+		BR_Close "No open batch"
+		BR_Msg "There is no open batch file in " & bdir & Chr$(10) & "Run Actions > BulkReg > 02 - Build Batch first.", 48
+		Exit Sub
 	End If
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Register batch (" & gMode & ")", "Batch file to register (reviewed):", bfile)
+	If IsEmpty(ans) Then
+		BR_Close "Cancelled"
+		Exit Sub
+	End If
+	bfile = BR_LocalPath(Trim$(CStr(ans)))
 	If Dir$(bfile) = "" Then Error 6001, "Batch file not found: " & bfile
 	bname = StrRightBack(bfile, gSep)
 	If LCase$(Right$(bname, 4)) <> ".csv" Or Left$(bname, 6) <> "BATCH-" Or InStr(bname, "_") > 0 Then Error 6002, "Not a batch file (expected BATCH-<id>.csv): " & bname
@@ -855,9 +829,7 @@ Sub BR_RunRegisterBatch()
 	Close #fh
 	BR_Log LVL_INFO, "Batch " & gBatchID & " loaded: Include=Y " & n & ", Include=N " & nExcluded & _
 	" | file " & bfile & " | size " & FileLen(bfile) & " bytes | modified " & FileDateTime(bfile)
-	gRegRows = n
 	If n = 0 Then
-		If gEmbedded Then Exit Sub                       ' AutoSync: nothing to register (gRegRows = 0)
 		BR_Close "Batch has no Include=Y rows"
 		BR_Msg gBatchID & " has no rows with Include=Y. Nothing to do.", 48
 		Exit Sub
@@ -870,13 +842,8 @@ Sub BR_RunRegisterBatch()
 	End ForAll
 
 	' ---------- confirmation ----------
-	' AutoSync has no operator: its approval is the set of safety gates in BulkRegAuto (see docs/AUTOSYNC.md)
-	If gEmbedded Then
-		BR_Log LVL_INFO, "Batch " & gBatchID & " approved for " & gMode & " by AutoSync gates (operator " & gOperator & ")"
-	Else
-		If Not BR_ConfirmRun(n, nExcluded, srvText, repText) Then Exit Sub
-		BR_Log LVL_INFO, "Batch " & gBatchID & " approved for " & gMode & " by " & gOperator
-	End If
+	If Not BR_ConfirmRun(n, nExcluded, srvText, repText) Then Exit Sub
+	BR_Log LVL_INFO, "Batch " & gBatchID & " approved for " & gMode & " by " & gOperator
 
 	' ---------- results file ----------
 	If gMode = "LIVE" Then
@@ -903,7 +870,7 @@ Sub BR_RunRegisterBatch()
 		Case Else
 			nFail = nFail + 1: nConsec = nConsec + 1
 		End Select
-		If Not gAuto Then Print "BulkReg " & gMode & " " & gBatchID & ": " & (i + 1) & "/" & n & "  ok=" & nOK & " fail=" & nFail & " skip=" & nSkip
+		Print "BulkReg " & gMode & " " & gBatchID & ": " & (i + 1) & "/" & n & "  ok=" & nOK & " fail=" & nFail & " skip=" & nSkip
 		If gStopRun <> "" Then
 			stopReason = gStopRun
 			BR_Log LVL_ERROR, "Run stopped: " & stopReason
@@ -913,14 +880,6 @@ Sub BR_RunRegisterBatch()
 			stopReason = "Circuit breaker: " & nConsec & " consecutive failures"
 			BR_Log LVL_ERROR, stopReason
 			Exit For
-		End If
-		' AutoSync run-time budget (the Agent Manager would kill the agent at its own limit): stop cleanly between users
-		If gEmbedded And gEmbDeadline > 0 Then
-			If CDbl(Now) > gEmbDeadline And i < n - 1 Then
-				stopReason = "Run-time budget reached (AutoMaxRuntimeMin) - remaining users are offered again by the next run"
-				BR_Log LVL_WARN, stopReason
-				Exit For
-			End If
 		End If
 		If pauseMs > 0 Then Sleep pauseMs / 1000
 	Next
@@ -937,23 +896,15 @@ Sub BR_RunRegisterBatch()
 
 	gCertPwd = ""
 	summary = gMode & " | " & gBatchID & " | rows=" & n & " ok=" & nOK & " failed=" & nFail & " skipped=" & nSkip & " | " & stopReason
-	If gEmbedded Then
-		' AutoSync step: hand the result to BulkRegAuto (it closes the run and reports)
-		gRegOK = nOK: gRegFail = nFail: gRegSkip = nSkip
-		If stopReason <> "All batch rows processed" Then gRegStop = stopReason
-		BR_Log LVL_INFO, "Register (AutoSync): " & summary
-		Exit Sub
-	End If
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Results: " & gResultsFile & Chr$(10) & "Log: " & gDebugFile & _
 	BR_IIfS(gPwFile <> "", Chr$(10) & "Passwords (restricted): " & gPwFile, "") & Chr$(10) & Chr$(10) & _
-	BR_IIfS(gMode = "LIVE", "Batch is now DONE. Cluster replicas are created by AdminP over the next minutes/hours." & Chr$(10) & "Run Actions > BulkReg > 04 - Verify Registration and Vault next (and again later until all replicas are OK).", "Dry run only - the batch is still OPEN. Set DryRun=0 to register it."), _
+	BR_IIfS(gMode = "LIVE", "Batch is now DONE. " & BR_IIfStr(BR_MailDeferred(), "MAIL FILES ARE NOT CREATED YET (MailFileDeferred=1): run Actions > BulkReg > 07 - Create Mail Files now.", "Cluster replicas are created by AdminP over the next minutes/hours.") & Chr$(10) & "Run Actions > BulkReg > 04 - Verify Registration and Vault next (and again later until all replicas are OK).", "Dry run only - the batch is still OPEN. Set DryRun=0 to register it."), _
 	CInt(BR_IIfS(nFail > 0, 48, 64))
 	Exit Sub
 ErrH:
 	gCertPwd = ""
 	BR_Log LVL_ERROR, "Run aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
-	If gEmbedded Then gEmbError = "Register aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
 	BR_Close "ABORTED"
 	BR_Msg "Run aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
 	Exit Sub
@@ -2223,18 +2174,19 @@ Function BR_WelcomeRich() As String
 	h = h & BR_RtH("What this tool does")
 	h = h & BR_RtP("DirSync creates Person documents for Active Directory users, but those users have no Notes ID and no mail file. " & _
 	"BulkReg turns them into full Domino users, in reviewed batches: it creates the Notes ID (deposited in the ID Vault through the policy), " & _
-	"creates the mail file on the home server, requests replicas on the other mail cluster members, and writes every action to the audit log.", "10pt", "normal", "#14142B")
+	"creates the mail file on the home server (during registration, or afterwards with agent 07 for a faster registration), requests replicas on the other mail cluster members, and writes every action to the audit log.", "10pt", "normal", "#14142B")
 	h = h & BR_RtGap()
 	h = h & BR_RtTable("25,25,25,25", BR_RtRow( _
 	BR_RtCard("#ECF3F8", "1  Plan", "#17707F", "Preflight checks everything. Build Batch writes the batch files. Nothing is registered.") & _
 	BR_RtCard("#ECF3F8", "2  Review", "#17707F", "You check the batch file in Excel and set Include to Y or N per user.") & _
 	BR_RtCard("#ECF3F8", "3  Register", "#17707F", "Dry run first, then live on the same file. You type the batch ID to confirm.") & _
-	BR_RtCard("#ECF3F8", "4  Verify", "#17707F", "Checks registration, vault, mail file and replicas for the batch.")))
+	BR_RtCard("#ECF3F8", "4  Mail + Verify", "#17707F", "With MailFileDeferred=1 agent 07 creates the mail files; Verify then checks registration, vault, mail file and replicas.")))
 
 	h = h & BR_RtBox("#F7F7FC", "Before the first batch (one time)", "#17707F",  _
 	"bulkreg.ini and server_mapping.csv are filled in: no <placeholder> left, DryRun=1." & "~" & _
 	"The numbered mail folders (mail1, mail2 ...) exist on every home server and mail cluster member." & "~" & _
 	"The log database bulkreg_log.nsf exists and its owner has run " & a & "00 - Set Up Log Database once." & "~" & _
+	"MailFileDeferred=1 only: MailTemplate (e.g. mail145.ntf) is set and the template exists on every home server." & "~" & _
 	"Start with a pilot batch of 2 users (BatchSize=2) and go through all steps below before the real batches.")
 
 	h = h & BR_RtH("Procedure for every batch")
@@ -2255,16 +2207,19 @@ Function BR_WelcomeRich() As String
 	rw = rw & BR_RtStep("5", "Register for real", "DryRun=0   " & a & "03 - Register Batch", _
 	"Set DryRun=0 in bulkreg.ini, run 03 on the same batch and type the batch ID to confirm. Each batch can be registered live only once.", _
 	"BATCH-<id>_results.csv is written and the batch is DONE. Set DryRun=1 again.")
-	rw = rw & BR_RtStep("6", "Verify", a & "04 - Verify Registration and Vault", _
+	rw = rw & BR_RtStep("6", "Create mail files", "MailFileDeferred=1   " & a & "07 - Create Mail Files", _
+	"Skip this step when MailFileDeferred=0. With 1 the users were registered without a mail file: choose the batch (or leave empty for all) and run 07 right after the live run. It creates the missing files from MailTemplate, sets title and ACL and requests the cluster replicas. Existing mail files are never touched. DryRun=1 only reports. Until it has run, mail for the new users cannot be delivered.", _
+	"MAIL_CREATED for every user in BATCH-<id>_mailcreate_<mode>_<run>.csv.")
+	rw = rw & BR_RtStep("7", "Verify", a & "04 - Verify Registration and Vault", _
 	"Choose the batch. Checks the registration, the ID Vault, the mail file and the replicas. Run it again later until all replicas exist.", _
 	"REGISTERED, IN_VAULT, MAILFILE_OK and REPLICAS_OK for every user.")
-	rw = rw & BR_RtStep("7", "Hand over and clean up", "bulkreg.cmd PurgeSecrets", _
+	rw = rw & BR_RtStep("8", "Hand over and clean up", "bulkreg.cmd PurgeSecrets", _
 	"Hand the initial passwords to the users, then delete the password files. Keep the audit folders. Then start the next batch.", _
 	"No secrets are left in C:\BulkReg\secure.")
 	h = h & BR_RtTable("8,92", rw)
 
 	h = h & BR_RtBox("#FFF8E6", "Safety rules", "#14142B",  _
-	"DryRun=1 is the safe state. Only agent 03 uses it. Switch to 0 just for the live run, then back to 1." & "~" & _
+	"DryRun=1 is the safe state. Agents 03 and 07 use it. Switch to 0 just for the live run, then back to 1." & "~" & _
 	"03 cannot run without a batch file from 02, and it registers only the rows with Include=Y." & "~" & _
 	"Agent 05 - Export to Registration Text File is not part of this procedure." & "~" & _
 	"Batch files, ID files, passwords and audit logs contain personal data or secrets. Keep them in C:\BulkReg, never commit or e-mail them." & "~" & _
@@ -2273,7 +2228,7 @@ Function BR_WelcomeRich() As String
 	h = h & BR_RtTable("33,34,33", BR_RtRow( _
 	BR_RtCard("#ECF3F8", "Settings", "#17707F", "C:\BulkReg\config\bulkreg.ini and C:\BulkReg\config\server_mapping.csv") & _
 	BR_RtCard("#ECF3F8", "Results and audit", "#17707F", "Batch files: C:\BulkReg\batches. One folder per run: C:\BulkReg\audit. Central log: bulkreg_log.nsf") & _
-	BR_RtCard("#ECF3F8", "Full guide", "#17707F", "BulkReg_Admin_Guide (.docx / .html) in the kit: every click, troubleshooting in chapter D.")))
+	BR_RtCard("#ECF3F8", "Full guide", "#17707F", "BulkReg_Admin_Guide.html in the kit: every click, troubleshooting in chapter D.")))
 	h = h & BR_RtP("HCL Software" & dot & "BulkReg " & BR_VERSION & dot & "Internal administration tool. Not for distribution to end users.", "8pt", "normal", "#6B7280")
 	BR_WelcomeRich = h
 End Function
@@ -2320,6 +2275,6 @@ Function BR_LogWelcomeRich() As String
 	h = h & BR_RtBox("#FFF8E6", "Handle with care", "#14142B",  _
 	"This is an audit record. Do not edit or delete documents. Operators have Author access with Create documents and no Delete; only the database owner manages the design." & "~" & _
 	"The documents contain personal data (names, Internet addresses, servers). Share access only with people who need it, and back the database up like any other audit data.")
-	h = h & BR_RtP("HCL Software" & dot & "BulkReg " & BR_VERSION & dot & "Central log database. Written by BulkReg agents 01 - 05; design set up by agent 00.", "8pt", "normal", "#6B7280")
+	h = h & BR_RtP("HCL Software" & dot & "BulkReg " & BR_VERSION & dot & "Central log database. Written by BulkReg agents 01 - 05 and 07; design set up by agent 00.", "8pt", "normal", "#6B7280")
 	BR_LogWelcomeRich = h
 End Function

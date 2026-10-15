@@ -1,10 +1,18 @@
-# BulkReg 4.0.1 – Deployment steps
+# BulkReg 4.1.0 – Deployment steps
 
-Upgrade from 3.6.6 up to 4.0.0. Libraries `BulkRegCommon` and `BulkRegAgents` change, plus the config files. Everything runs locally in the Notes client. The agents are unchanged (only the version comment in their header).
+Upgrade from 3.6.6 up to 4.0.1. Libraries `BulkRegCommon` and `BulkRegAgents` change, plus `bulkreg.ini` and one new agent (`BulkReg\07 - Create Mail Files`). Everything runs locally in the Notes client. Agents 00-06 are unchanged (only the version comment in their header).
+
+**4.1.0 change (name separator, fast registration):**
+
+1. `LastNameSeparator=SPACE` puts one blank between the last-name source and the suffix: JobTitle `SGT ABC XXZ` + short name `11100OPS` -> `CN=SGT ABC XXZ 11100OPS/O=Demo`. The ini trims values, so a blank must be written as `SPACE` (or `BLANK`).
+2. `MailFileDeferred=1` registers users **without** creating the mail file (the slow step). Create the mail files afterwards with the new agent `BulkReg\07 - Create Mail Files` (Shared agent, Target None; paste `lotusscript/Agent07_CreateMailFiles.lss`). `MailTemplate` (e.g. `mail145.ntf`) is then required. Until agent 07 has run, mail for those users cannot be delivered. `MailFileDeferred=0` keeps the old behaviour.
+3. Old AutoSync hooks (`gAuto`, `gEmbedded`, `gEmb*`) were removed from both libraries: re-paste **both** libraries (`BulkRegCommon` first, then `BulkRegAgents`).
+
+Not yet verified in Designer: compile and dry-run on a test copy first.
 
 **4.0.1 change (unique last name):** `LastName` is built as `<LastNameField> + "-" + <ShortName or sAMAccountName>` in upper case, e.g. JobTitle `analyst` + short name `jdoe` -> `ANALYST-JDOE` -> Notes name `ANALYST-JDOE/Demo`. The generated value is copied to the Person item `Location` after the registered name was verified. `JobTitle`, `Department` and the other source items are never changed. New keys (add to your ini from `config/bulkreg.ini`): `LastNameSuffixFields`, `LastNameSeparator`, `LastNameUppercase`, `LastNameBackupField`, `LastNameBackupOverwrite`. `Location` is not allowed as a MatchField in `server_mapping.csv` (the run stops if a rule uses it). Users already registered are never renamed. New ERRORs: no usable suffix, `OrgUnit` equal to the organization (would give `/Demo/Demo`). The run stops (REGISTERED_WRONG_NAME) when the registered common name differs from the generated one.
 
-**AutoSync removed:** 4.0.0 shipped an unattended server agent; it is deleted in 4.0.1. If you installed it, delete the `BulkReg\07 - AutoSync` agent, the `BulkRegAuto` library and `bulkreg_auto.nsf` from the server.
+**AutoSync removed:** 4.0.0 shipped an unattended server agent; it was deleted in 4.0.1. If you installed it, delete the `BulkReg\07 - AutoSync` agent, the `BulkRegAuto` library and `bulkreg_auto.nsf` from the server.
 
 **3.9.3 change:** `HomeServerAssignment=FILL` (first server 2500, then the second); new `OverrideADInternetAddress=0` in `bulkreg.ini`.
 
@@ -76,12 +84,12 @@ InternetDomain=<demo.com>
 
 **c. Short name.** The AD samaccountname maps to the Person item `ShortName` (a text list), so the default `ShortNameFields=ShortName` is correct. BulkReg looks at every value of the list and takes the first one without blanks, `/` or `=` that is not "First Last". If no value qualifies, the user gets an ERROR (`ShortName ... looks like a full name`).
 
-**c2. Registration name (4.0.1).**
+**c2. Registration name.**
 
 ```ini
 LastNameField=JobTitle
 LastNameSuffixFields=ShortName,sAMAccountName
-LastNameSeparator=-
+LastNameSeparator=SPACE
 LastNameUppercase=1
 LastNameBackupField=Location
 LastNameBackupOverwrite=1

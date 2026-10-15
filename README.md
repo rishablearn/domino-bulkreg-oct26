@@ -1,13 +1,18 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 4.0.1 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.docx` (or `.html`), same version as the kit (4.0.1). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+BulkReg 4.1.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.html`, same version as the kit (4.1.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
-## What changed in 3.9.x (still valid in 4.0.1)
-Preflight checks all users (`PreflightScope=ALL`, `_batchplan.txt` shows the split); Build Batch writes all batch files in one run (`BATCH-<run>-01.csv`, `-02.csv` ...); the registration last name is built from `LastNameField` (JobTitle) + `-` + short name and upper-cased (`ANALYST-JDOE`, see 'Unique last name' below); users are filled into the `HomeServers` pool (`HomeServerAssignment=FILL`: first server up to 2500, then the next; mapping rule `AUTO`); the short name comes from the AD samaccountname item (`ShortNameFields`), never the FullName; a missing Internet address is constructed as `<shortname>@<InternetDomain>`; Domino on Linux (`ServerOS=LINUX`, `/local/notesdata`, paths sent as `mail1/smith.nsf`). The audit and batch files carry `FullNameAfter` (the Person name after registration); the Person item `JobTitle` (rank, first, last from AD) is registered as the last name. Details: `CHANGELOG.md`. Upgrade steps: `DEPLOY-4.0.1.md`.
+## What changed in 4.1.0
+- **Name separator:** `LastNameSeparator=SPACE` (or `BLANK`) gives `CN=SGT ABC XXZ 11100OPS/O=Demo` (JobTitle + one blank + short name). A plain blank in bulkreg.ini would be trimmed, hence the keyword.
+- **Fast registration:** `MailFileDeferred=1` registers users **without** creating the mail file; the new agent `BulkReg\07 - Create Mail Files` creates the missing files afterwards from `MailTemplate` (title, ACL, cluster replicas; `MailCreateMaxPerRun`; honors `DryRun`). Run it right after each live batch: until then mail for those users cannot be delivered. Several Notes clients can run 07 on different batch files in parallel. `MailFileDeferred=0` keeps the old behaviour.
+- **Clean-up:** the unused AutoSync hooks were removed from both libraries (re-paste both).
 
-## Unique last name (4.0.1)
-`LastName = <LastNameField> + <LastNameSeparator> + <ShortName | sAMAccountName>`, upper case, e.g. JobTitle `analyst` + short name `jdoe` -> **`ANALYST-JDOE`** -> Notes name `ANALYST-JDOE/Demo` (first name stays empty). Keys in `bulkreg.ini` / `bulkreg_auto.ini`: `LastNameField`, `LastNameSuffixFields` (default `ShortName,sAMAccountName`, empty = no suffix), `LastNameSeparator` (`-`), `LastNameUppercase` (`1`), `LastNameBackupField` (`Location`, empty = off), `LastNameBackupOverwrite` (`1`). After the name is verified the generated value is copied to the Person item `Location`. `FullNameAfter` shows the same value with the organization once. ERRORs: empty source item, no usable suffix, `OrgUnit` equal to the organization. Mail file stays `<shortname>.nsf`. Users registered earlier (e.g. with `LastName=JobTitle`) are never renamed: for a registered Person document the last name is read as it is, and Verify only reads. `Location` is not allowed as a MatchField in `server_mapping.csv`. Not compiled or run against Domino.
+## What changed in 3.9.x (still valid in 4.1.0)
+Preflight checks all users (`PreflightScope=ALL`, `_batchplan.txt` shows the split); Build Batch writes all batch files in one run (`BATCH-<run>-01.csv`, `-02.csv` ...); the registration last name is built from `LastNameField` (JobTitle) + separator + short name and upper-cased (e.g. `SGT ABC XXZ 11100OPS`, see 'Unique last name' below); users are filled into the `HomeServers` pool (`HomeServerAssignment=FILL`: first server up to 2500, then the next; mapping rule `AUTO`); the short name comes from the AD samaccountname item (`ShortNameFields`), never the FullName; a missing Internet address is constructed as `<shortname>@<InternetDomain>`; Domino on Linux (`ServerOS=LINUX`, `/local/notesdata`, paths sent as `mail1/smith.nsf`). The audit and batch files carry `FullNameAfter` (the Person name after registration); the Person item `JobTitle` (rank, first, last from AD) is registered as the last name. Details: `CHANGELOG.md`. Upgrade steps: `DEPLOY-4.0.1.md`.
+
+## Unique last name (since 4.0.1; separator SPACE since 4.1.0)
+`LastName = <LastNameField> + <LastNameSeparator> + <ShortName | sAMAccountName>`, upper case, e.g. JobTitle `analyst` + short name `jdoe` -> **`ANALYST-JDOE`** -> Notes name `ANALYST-JDOE/Demo` (first name stays empty). Keys in `bulkreg.ini`: `LastNameField`, `LastNameSuffixFields` (default `ShortName,sAMAccountName`, empty = no suffix), `LastNameSeparator` (`SPACE` = one blank, or any text such as `-`), `LastNameUppercase` (`1`), `LastNameBackupField` (`Location`, empty = off), `LastNameBackupOverwrite` (`1`). After the name is verified the generated value is copied to the Person item `Location`. `FullNameAfter` shows the same value with the organization once. ERRORs: empty source item, no usable suffix, `OrgUnit` equal to the organization. Mail file stays `<shortname>.nsf`. Users registered earlier (e.g. with `LastName=JobTitle`) are never renamed: for a registered Person document the last name is read as it is, and Verify only reads. `Location` is not allowed as a MatchField in `server_mapping.csv`. Not compiled or run against Domino.
 
 ## Welcome screens (3.9.9)
 bulkreg.nsf and bulkreg_log.nsf open on a branded welcome screen instead of an empty view. In the Notes client this is the **About This Database** document (the "open designated Page" launch option exists for the web only). bulkreg.nsf: create the agent `BulkReg\06 - Install Welcome Page` (`lotusscript/Agent06_InstallWelcomePage.lss`, Shared, Action menu selection, Target None) and run it once from **Actions > BulkReg** (guide B18a). bulkreg_log.nsf: `00 - Set Up Log Database` creates it together with the views (guide B20a). Both also set the launch option *Show About Application document*; if it does not open by itself, set it in Database Properties > Launch tab. The screen is native Notes rich text (tables, fonts, colours); the Notes client does not render pass-through HTML. The agents report the import result, including an error text if the import fails.
@@ -137,6 +142,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 | 7 | `03 - Register Batch` with DryRun=1 | All rows WOULD_REGISTER |
 | 8 | Pilot batch of 2 users (once) | REGISTERED + IN_VAULT |
 | 9 | `03 - Register Batch` with DryRun=0, type the batch ID | Batch DONE |
+| 9b | Only with `MailFileDeferred=1`: `07 - Create Mail Files` (choose the batch) | MAIL_CREATED for every user |
 | 10 | `04 - Verify Registration and Vault` (choose the batch); hand over passwords; `PurgeSecrets` | All IN_VAULT, MAILFILE_OK, REPLICAS_OK. **Repeat 6–10.** |
 
 ## PowerShell helper (optional)
@@ -144,7 +150,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (4.0.1)   ·   CHANGELOG.md   release history
+VERSION      current release (4.1.0)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (the code of the manual agents)
              Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile,
@@ -152,7 +158,7 @@ lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (the code of the manual ag
                                                  (3 + 3 lines each: Use + Call BR_Run...)
 scripts/     windows/bulkreg.ps1 + bulkreg.cmd                 (optional helper)
 tools/       BulkReg_AuditViewer.html                          (optional, offline)
-docs/        BulkReg_Admin_Guide.docx/.html + build sources
+docs/        BulkReg_Admin_Guide.html + build sources (content.js, build_html.js)
 archive/     linux-server-mode/                                (retired, not used)
 ```
 **Audit folders:** every run writes into its own folder `C:\BulkReg\audit\<date>_<time>_<NN-Agent>_<MODE>` - for 03 the MODE is `DRYRUN` or `LIVE-PRODUCTION`, so simulations and production runs are never mixed up. Each folder has a `RUN_INFO.txt`.

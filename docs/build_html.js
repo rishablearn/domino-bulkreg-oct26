@@ -2,7 +2,7 @@ const fs = require("fs");
 const { META, C } = require("./content.js");
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-// same tokenizer as the Word builder: code / bold / italic, left to right
+// inline tokenizer: code / bold / italic, left to right
 const inl = (s) => String(s).split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g).map((t) => {
   if (/^\*\*[^*]+\*\*$/.test(t)) return "<strong>" + esc(t.slice(2, -2)) + "</strong>";
   if (/^`[^`]+`$/.test(t)) return "<code>" + esc(t.slice(1, -1)) + "</code>";
@@ -127,7 +127,7 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
     <ul>${tocHtml}</ul>
   </nav>
   <main id="doc">${html}
-  <footer>${esc(META.title)} – ${esc(META.docType)} · v${esc(META.version)} · ${esc(META.classification)}. The same content is available as a Word document (BulkReg_Admin_Guide.docx) in the project folder.</footer>
+  <footer>${esc(META.title)} – ${esc(META.docType)} · v${esc(META.version)} · ${esc(META.classification)}.</footer>
   </main>
 </div>
 <script>
