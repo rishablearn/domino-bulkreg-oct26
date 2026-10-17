@@ -1,0 +1,36 @@
+'=====================================================================
+' Agent name : BulkReg\09 - Reconcile
+' Version    : 4.2.1  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 4.2.1)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunReconcile).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: open the agent, click in the editor, Ctrl+A, Delete, paste this
+'              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (NOT 'All selected documents' - Designer's default - or Notes asks for a selected document)
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunReconcile):
+'
+' READ-ONLY reconciliation, written to CSV files (ReconcileDir, default <BaseDir>\reconcile\):
+'   RECON_<run>_all.csv           one row per directory user, with Status and recommended Action
+'   RECON_<run>_missing_users.csv users not registered (and why) / users of your expected list not in the directory
+'   RECON_<run>_missing_mail.csv  registered users whose mailbox is missing, incomplete or not recorded
+'   RECON_<run>_orphan_mail.csv   mail files in the numbered mail folders that no Person document uses
+'   RECON_<run>_summary.txt       counts per status
+' Optional input: a CSV of the users that SHOULD exist (column ShortName / InternetAddress / FullName).
+' Also flags Person items (JobTitle, FirstName, ...) with extra blanks. Changes nothing in Domino.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunReconcile()
+End Sub

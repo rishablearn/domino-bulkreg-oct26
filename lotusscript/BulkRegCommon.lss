@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 4.1.0
+' Script Library : BulkRegCommon            Version 4.2.1
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "4.1.0"
+Public Const BR_VERSION = "4.2.1"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -92,6 +92,8 @@ Public gLogDb As NotesDatabase    ' central log database (structured documents, 
 Public gRunDoc As NotesDocument   ' the Run document of this run
 Public gRunTitle As String
 Public gLogWriteErr As Integer
+Public gLogDbLevel As Integer     ' lowest level written as an Entry document to the log database (LogDbLevel, default WARN)
+Public gLogDbAudit As String      ' ALL | CHANGES | PROBLEMS: which audit rows become Audit documents in the log database
 Public gSession As NotesSession
 Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
 Public gBatchID As String        ' batch being built / registered (BATCH-yyyymmdd-hhnnss)
@@ -173,6 +175,11 @@ Function BR_Init(toolName As String) As Boolean
 
 	If Not BR_LoadConfig(BR_LocalPath(CStr(cfgPath))) Then Exit Function
 	gLogLevel = BR_LevelFromName(CfgS("LogLevel", "INFO"))
+	' log database volume control (4.2.0): the local debug file keeps everything LogLevel allows, the log
+	' database only gets WARN/ERROR lines by default and Audit documents for CHANGES and PROBLEMS
+	gLogDbLevel = BR_LevelFromName(CfgS("LogDbLevel", "WARN"))
+	gLogDbAudit = UCase$(Trim$(CfgS("LogDbAudit", "CHANGES")))
+	If gLogDbAudit <> "ALL" And gLogDbAudit <> "PROBLEMS" Then gLogDbAudit = "CHANGES"
 
 	' mail folder settings must describe folders DIRECTLY under the Domino data directory
 	Dim mfErr As String
@@ -293,7 +300,10 @@ Function BR_ToolLabel(toolName As String) As String
 	Case "register": BR_ToolLabel = "03-RegisterBatch"
 	Case "verify": BR_ToolLabel = "04-Verify"
 	Case "exportbatchreg": BR_ToolLabel = "05-Export"
-	Case "createmail": BR_ToolLabel = "07-CreateMailFiles"
+	Case "repairmail": BR_ToolLabel = "08-RepairMailFiles"
+	Case "reconcile": BR_ToolLabel = "09-Reconcile"
+	Case "auditmaint": BR_ToolLabel = "10-AuditMaintenance"
+	Case "batchmgr": BR_ToolLabel = "11-BatchManager"
 	Case Else: BR_ToolLabel = toolName
 	End Select
 End Function
@@ -301,7 +311,7 @@ End Function
 ' Mode label: only 03 - Register Batch changes Domino, so only it is DRYRUN or LIVE-PRODUCTION
 Function BR_RunModeLabel(toolName As String) As String
 	Select Case LCase$(toolName)
-	Case "register", "createmail": BR_RunModeLabel = BR_IIfStr(CfgB("DryRun", True), "DRYRUN", "LIVE-PRODUCTION")
+	Case "register", "repairmail", "auditmaint": BR_RunModeLabel = BR_IIfStr(CfgB("DryRun", True), "DRYRUN", "LIVE-PRODUCTION")
 	Case "setuplog": BR_RunModeLabel = "SETUP"
 	Case "verify": BR_RunModeLabel = "VERIFY"            ' read-only, except the optional title fix it asks for
 	Case Else: BR_RunModeLabel = "READ-ONLY"
@@ -777,8 +787,9 @@ Function BR_BuildLastName(doc As NotesDocument, u As BRUser) As String
 	If sfx <> "" Then
 		If LCase$(Right$(src, Len(sep & sfx))) <> LCase$(sep & sfx) Then s = src & sep & sfx
 	End If
+	s = BR_NormSpaces(s)                            ' one blank between the words, whatever AD delivered
 	If CfgB("LastNameUppercase", True) Then s = UCase$(s)
-	u.LastNameSuffix = sfx                         ' "" = no usable suffix (Validate reports an ERROR)
+	u.LastNameSuffix = sfx                        ' "" = no usable suffix (Validate reports an ERROR)
 	BR_BuildLastName = s
 End Function
 
@@ -1293,7 +1304,7 @@ Function BR_CheckMailFolderConfig() As String
 	If Trim$(CfgS("MailTemplate", "")) <> "" Then
 		If LCase$(Right$(Trim$(CfgS("MailTemplate", "")), 4)) <> ".ntf" Then e = e & "MailTemplate='" & CfgS("MailTemplate", "") & "' must be a template file ending in .ntf (e.g. mail145.ntf), not .nsf." & Chr$(10)
 	End If
-	If BR_MailDeferred() And Trim$(CfgS("MailTemplate", "")) = "" Then e = e & "MailFileDeferred=1 needs MailTemplate (e.g. mail145.ntf): agent 07 - Create Mail Files creates the mail files from it." & Chr$(10)
+	If BR_MailDeferred() And Trim$(CfgS("MailTemplate", "")) = "" Then e = e & "MailFileDeferred=1 needs MailTemplate (e.g. mail145.ntf): agent 08 - Repair Missing Mail Files creates the mail files from it." & Chr$(10)
 	If InStr(CfgS("InternetDomain", ""), "<") > 0 Then e = e & "InternetDomain still contains a <placeholder>. Use e.g. InternetDomain=demo.com (or leave it empty to disable address construction)." & Chr$(10)
 	If UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "LINUX" And UCase$(Trim$(CfgS("ServerOS", "LINUX"))) <> "WINDOWS" Then e = e & "ServerOS must be LINUX or WINDOWS." & Chr$(10)
 	If InStr(CfgS("ServerOSMap", ""), "<") > 0 Then e = e & "ServerOSMap still contains a <placeholder>. Use e.g. ServerOSMap=DominoADMail/Demo:LINUX,DominoADMail2/Demo:WINDOWS or leave it empty." & Chr$(10)
@@ -1350,9 +1361,14 @@ Function BR_MailFoldersNeeded(server As String, users As Long, names List As Str
 End Function
 
 ' Mail files already referenced by Person documents (MailServer + MailFile)
-Sub BR_ScanDirectoryMail(db As NotesDatabase, names List As String)
+' 4.2.1: also counts every Person document's mail file towards the FOLDER FILL (counts) when that path is not
+' counted yet. With MailFileDeferred=1 the mail files of just-registered users do not exist until 08 has
+' created them, so the server scan alone under-counted mail1/mail2 and a new batch could overfill a folder.
+' (BR_ScanOneServer skips a path that is already counted here - nothing is counted twice.)
+Sub BR_ScanDirectoryMail(db As NotesDatabase, names List As String, counts List As Long)
 	On Error GoTo ErrH
 	Dim col As NotesDocumentCollection, doc As NotesDocument, sk As String, fp As String, fbase As String
+	Dim fpn As String, pfolder As String
 	Set col = db.Search(|Form = "Person" & MailFile != ""|, Nothing, 0)
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
@@ -1364,6 +1380,19 @@ Sub BR_ScanDirectoryMail(db As NotesDatabase, names List As String)
 		If Right$(fbase, 4) = ".nsf" Then fbase = Left$(fbase, Len(fbase) - 4)
 		If sk <> "" And fbase <> "" Then
 			If Not IsElement(names(sk & "!!" & fbase)) Then names(sk & "!!" & fbase) = "Person doc " & BR_Item(doc, "FullName")
+		End If
+		' folder fill: this Person's mail file counts once per path, whether or not the file exists yet
+		If sk <> "" Then
+			fpn = LCase$(BR_MailPathNorm(BR_Item(doc, "MailFile")))
+			If InStr(fpn, "\") > 0 Then
+				pfolder = StrLeftBack(fpn, "\")
+				If BR_IsMailFolder(pfolder) Then
+					If Not IsElement(names(sk & "!!path:" & fpn)) Then
+						names(sk & "!!path:" & fpn) = "1"
+						If IsElement(counts(sk & "!!" & pfolder)) Then counts(sk & "!!" & pfolder) = counts(sk & "!!" & pfolder) + 1 Else counts(sk & "!!" & pfolder) = 1
+					End If
+				End If
+			End If
 		End If
 		' load of the home server pool: users already living in the NEW mail folders (mail1, mail2 ...)
 		If BR_Item(doc, "MailServer") <> "" And InStr(fp, "\") > 0 Then
@@ -1447,6 +1476,88 @@ ErrH:
 	Exit Function
 End Function
 
+' Mail file path as the directory holds it, normalised: backslashes, and ".nsf" added when the Person
+' document left the extension off (mail\jsmith). "" stays "".
+Function BR_MailPathNorm(p As String) As String
+	Dim s As String, ext As String
+	s = BR_Path(Trim$(p))
+	If s = "" Then Exit Function
+	ext = LCase$(Right$(s, 4))
+	If ext <> ".nsf" And ext <> ".ntf" Then s = s & ".nsf"
+	BR_MailPathNorm = s
+End Function
+
+'---------------------------------------------------------------------
+' FAST MAIL FILE INVENTORY (4.2.0)
+'   BR_MailFileExists opens the database: one remote call per user (5000 users = 5000 calls).
+'   The inventory reads the directory listing of a server ONCE and answers every "does it exist" from memory.
+'   inv List As String:  "<server abbreviated, lower>!!<path, lower, backslash>" = "1"
+'                        "srv!!<server>" = number of databases found (key present = server was read)
+'   The listing only shows databases the running ID may see; a file reported missing here is confirmed with
+'   one direct open (BR_MailFileExists) before anything is created or reported as missing.
+'---------------------------------------------------------------------
+Sub BR_MailInventory(server As String, inv List As String)
+	On Error GoTo ErrH
+	Dim sk As String, dbdir As NotesDbDirectory, d As NotesDatabase, n As Long
+	sk = LCase$(BR_SrvAbbr(server))
+	If sk = "" Then Exit Sub
+	If IsElement(inv("srv!!" & sk)) Then Exit Sub
+	inv("srv!!" & sk) = "0"
+	BR_Log LVL_INFO, "Reading the database list of " & server & " ..."
+	Set dbdir = gSession.GetDbDirectory(server)
+	Set d = dbdir.GetFirstDatabase(DATABASE)
+	Do While Not (d Is Nothing)
+		inv(sk & "!!" & LCase$(BR_Path(CStr(d.FilePath)))) = "1"
+		n = n + 1
+		Set d = dbdir.GetNextDatabase()
+	Loop
+	inv("srv!!" & sk) = CStr(n)
+	BR_Log LVL_INFO, "  " & n & " databases on " & server
+	Exit Sub
+ErrH:
+	BR_Log LVL_WARN, "Could not read the database list of " & server & " (" & Error$ & ") - falling back to one open per file"
+	Exit Sub
+End Sub
+
+' True when the inventory of <server> was read and holds at least one database
+Function BR_InvLoaded(server As String, inv List As String) As Boolean
+	Dim k As String
+	k = "srv!!" & LCase$(BR_SrvAbbr(server))
+	If IsElement(inv(k)) Then BR_InvLoaded = (CLng(inv(k)) > 0)
+End Function
+
+' Existence from the inventory (call BR_MailInventory first; check BR_InvLoaded before trusting a False)
+Function BR_InvHas(server As String, path As String, inv List As String) As Boolean
+	Dim k As String
+	k = LCase$(BR_SrvAbbr(server)) & "!!" & LCase$(BR_Path(path))
+	BR_InvHas = IsElement(inv(k))
+End Function
+
+' Is an EXISTING mail file complete? OK, NO_DESIGN (no ($Inbox) view: copy interrupted / design missing),
+' NOT_FOUND or ERROR(...). "EMPTY" is appended to NO_DESIGN when it holds no documents at all.
+' Heuristic: every Domino mail template has the ($Inbox) view.
+Function BR_MailHealth(server As String, path As String) As String
+	On Error GoTo ErrH
+	Dim db As NotesDatabase, v As NotesView, n As Long
+	Set db = gSession.GetDatabase(server, BR_SrvPathFor(server, path), False)
+	If Not db.IsOpen Then Call db.Open("", "")
+	If Not db.IsOpen Then
+		BR_MailHealth = "NOT_FOUND"
+		Exit Function
+	End If
+	Set v = db.GetView("($Inbox)")
+	If v Is Nothing Then
+		n = db.AllDocuments.Count
+		BR_MailHealth = "NO_DESIGN" & BR_IIfStr(n = 0, " EMPTY", " (" & n & " documents)")
+	Else
+		BR_MailHealth = "OK"
+	End If
+	Exit Function
+ErrH:
+	BR_MailHealth = "ERROR(" & Error$ & ")"
+	Exit Function
+End Function
+
 ' Basic data-quality validation; returns "" when OK, otherwise issues list
 Function BR_Validate(u As BRUser) As String
 	Dim s As String
@@ -1527,7 +1638,11 @@ Sub BR_Log(lvl As Integer, msg As String)
 	txt = Format$(Now, "yyyy-mm-dd hh:nn:ss") & " [" & BR_LevelName(lvl) & "] " & msg
 	Print txt                                              ' status bar / client console
 	If gDebugFile <> "" Then Call BR_AppendLine(gDebugFile, txt)
-	If Not (gLogDb Is Nothing) Then Call BR_LogEntry(lvl, msg)
+	' the log database only gets lines from LogDbLevel up (default WARN): one document per INFO line made it grow
+	' by thousands of documents per batch; the local debug file above still has every line
+	If Not (gLogDb Is Nothing) Then
+		If lvl >= gLogDbLevel Then Call BR_LogEntry(lvl, msg)
+	End If
 End Sub
 
 ' Open-append-close per line so the audit trail survives a crash
@@ -1573,7 +1688,7 @@ Function BR_CommonName(u As BRUser) As String
 	Dim s As String
 	s = u.FirstName
 	If u.MiddleInitial <> "" Then s = s & " " & u.MiddleInitial
-	BR_CommonName = Trim$(s & " " & u.LastName)
+	BR_CommonName = BR_NormSpaces(s & " " & u.LastName)
 End Function
 
 ' Expected hierarchy after the common name: "/Demo" or "/Sales/Demo"
@@ -1593,7 +1708,10 @@ Function BR_CnProblem(actual As String, u As BRUser) As String
 	Dim nn As NotesName
 	If Trim$(actual) = "" Then Exit Function
 	Set nn = New NotesName(actual)
-	If LCase$(nn.Common) <> LCase$(BR_CommonName(u)) Then BR_CnProblem = "Common name '" & nn.Common & "' differs from the generated name '" & BR_CommonName(u) & "'"
+	' Blanks (extra, leading, trailing, non-breaking, tab) and upper/lower case are NOT a difference (4.2.0):
+	' only a different name is reported. What the caller does with it: CnMismatchAction=WARN (default) records
+	' it and goes on, STOP halts the run (the pre-4.2.0 behaviour).
+	If BR_NormKey(nn.Common) <> BR_NormKey(BR_CommonName(u)) Then BR_CnProblem = "Common name '" & nn.Common & "' differs from the generated name '" & BR_CommonName(u) & "'"
 End Function
 
 Function BR_NameProblem(actual As String, u As BRUser) As String
@@ -1627,7 +1745,7 @@ Function BR_MailTitle(u As BRUser) As String
 	Dim t As String, cn As String, nn As NotesName
 	If u.FullNameAfter <> "" Then
 		Set nn = New NotesName(u.FullNameAfter)
-		cn = nn.Common
+		cn = BR_NormSpaces(nn.Common)             ' one blank between the words, also for an AD-style name
 	Else
 		cn = BR_CommonName(u)
 	End If
@@ -1874,6 +1992,40 @@ ErrH:
 	Exit Sub
 End Sub
 
+' ERROR / WARN / INFO of an audit result (shown in the Level column of the log views)
+Function BR_AuditLevel(result As String) As String
+	If InStr(result, "FAIL") > 0 Or result = "ERROR" Or InStr(result, "WRONG") > 0 Or InStr(result, "MISSING") > 0 Then
+		BR_AuditLevel = "ERROR"
+	ElseIf InStr(result, "SKIP") > 0 Or InStr(result, "PENDING") > 0 Or result = "WARN" Or result = "NOT_PROCESSED" Or InStr(result, "INCOMPLETE") > 0 Or InStr(result, "NAME_DIFF") > 0 Then
+		BR_AuditLevel = "WARN"
+	Else
+		BR_AuditLevel = "INFO"
+	End If
+End Function
+
+' Does this audit row become an Audit document in the log database? (LogDbAudit in bulkreg.ini)
+'   ALL      every row (the pre-4.2.0 behaviour)
+'   CHANGES  (default) every row of the actions that change Domino (REGISTER, CREATE_MAIL, REPAIR_MAIL, EXPORT),
+'            plus rows of the read-only actions (PREFLIGHT, BUILD, VERIFY, RECONCILE) that are not plain OK/INFO
+'   PROBLEMS only ERROR / WARN rows
+' The local audit CSV of the run always gets EVERY row - nothing is lost, only the shared database stays small.
+Function BR_LogAuditWanted(action As String, result As String) As Boolean
+	Dim lvl As String
+	If gLogDbAudit = "ALL" Then
+		BR_LogAuditWanted = True
+		Exit Function
+	End If
+	lvl = BR_AuditLevel(result)
+	If lvl <> "INFO" Then
+		BR_LogAuditWanted = True
+	ElseIf gLogDbAudit = "CHANGES" Then
+		Select Case UCase$(action)
+		Case "REGISTER", "CREATE_MAIL", "REPAIR_MAIL", "EXPORT", "STATUS"
+			BR_LogAuditWanted = True
+		End Select
+	End If
+End Function
+
 ' One audit row -> Audit document with every audit column as a field
 Sub BR_LogAudit(u As BRUser, mode As String, action As String, result As String, dur As Double, msg As String)
 	On Error GoTo ErrH
@@ -1883,7 +2035,7 @@ Sub BR_LogAudit(u As BRUser, mode As String, action As String, result As String,
 	Call d.ReplaceItemValue("Mode", mode)
 	Call d.ReplaceItemValue("Action", action)
 	Call d.ReplaceItemValue("Result", result)
-	Call d.ReplaceItemValue("Level", BR_IIfStr(InStr(result, "FAIL") > 0 Or result = "ERROR", "ERROR", BR_IIfStr(InStr(result, "SKIP") > 0 Or InStr(result, "PENDING") > 0 Or result = "WARN" Or result = "NOT_PROCESSED", "WARN", "INFO")))
+	Call d.ReplaceItemValue("Level", BR_AuditLevel(result))
 	Call d.ReplaceItemValue("DurationSec", dur)
 	Call d.ReplaceItemValue("FullName", BR_IIfStr(u.FullNameAfter <> "", u.FullNameAfter, u.FullNameBefore))
 	Call d.ReplaceItemValue("FullNameBefore", u.FullNameBefore)
@@ -1981,7 +2133,9 @@ Sub BR_Audit(u As BRUser, mode As String, action As String, result As String, du
 	Call BR_AppendLine(gAuditFile, r)
 	If gResultsFile <> "" Then Call BR_AppendLine(gResultsFile, r)
 	' same row as a structured Audit document in the central log database
-	If Not (gLogDb Is Nothing) Then Call BR_LogAudit(u, mode, action, result, dur, msg)
+	If Not (gLogDb Is Nothing) Then
+		If BR_LogAuditWanted(action, result) Then Call BR_LogAudit(u, mode, action, result, dur, msg)
+	End If
 	Exit Sub
 ErrH:
 	Print "BulkReg: audit write failed: " & Error$
@@ -2033,8 +2187,71 @@ ErrH:
 End Function
 
 ' Removes characters that break the registration text file / names
+' (4.2.0: also normalises blanks - AD values with double, leading/trailing, tab or non-breaking spaces)
 Function BR_Clean(s As String) As String
-	BR_Clean = Trim$(Replace(Replace(Replace(s, ";", " "), Chr$(13), ""), Chr$(10), ""))
+	BR_Clean = BR_NormSpaces(Replace(s, ";", " "))
+End Function
+
+' Exactly ONE plain blank between the words, none at the start or end:
+'   "FLT  LT ABC   XYZ 1000ops " -> "FLT LT ABC XYZ 1000ops"
+' Tab, CR, LF, non-breaking space (160), en/em/thin spaces (8192-8202) and the ideographic space count as
+' blanks; zero-width characters (8203, 65279) are dropped. This is what stops "Common name differs from the
+' generated name": Domino and Active Directory do not treat extra blanks the same way.
+Function BR_NormSpaces(s As String) As String
+	Dim i As Long, ch As String, c As Long, r As String, prevSp As Boolean
+	For i = 1 To Len(s)
+		ch = Mid$(s, i, 1)
+		c = Uni(ch)
+		If c = 8203 Or c = 65279 Then
+			' zero-width: dropped
+		Else
+			If c = 9 Or c = 10 Or c = 13 Or c = 160 Or c = 12288 Or (c >= 8192 And c <= 8202) Then ch = " "
+			If ch = " " Then
+				If Not prevSp Then r = r & " "
+				prevSp = True
+			Else
+				r = r & ch
+				prevSp = False
+			End If
+		End If
+	Next
+	BR_NormSpaces = Trim$(r)
+End Function
+
+' Comparison key of a name: lower case, ALL blanks removed ("FLT LT  ABC" = "flt lt abc" = "FLTLTABC")
+Function BR_NormKey(s As String) As String
+	BR_NormKey = LCase$(Replace(BR_NormSpaces(s), " ", ""))
+End Function
+
+' The FullName value of a Person document that IS the registered name. DirSync gives the Person document its
+' own FullName (the AD cn, e.g. "FLT LT  VINAY TALWAR 99202OPS" with two blanks); after registration the
+' item can hold that value as well as the new name, and the FIRST value is not necessarily the registered one.
+' Picks the value whose common name equals the generated common name exactly, then one that differs only in
+' blanks/case, else the first value. Used for the vault check, the mail file ACL owner and the audit.
+Function BR_RegisteredName(doc As NotesDocument, u As BRUser) As String
+	Dim vals As Variant, i As Integer, nn As NotesName, want As String, firstV As String, loose As String
+	On Error GoTo ErrH
+	If Not doc.HasItem("FullName") Then Exit Function
+	vals = doc.GetItemValue("FullName")
+	want = BR_CommonName(u)
+	For i = 0 To UBound(vals)
+		If Trim$(CStr(vals(i))) <> "" Then
+			If firstV = "" Then firstV = Trim$(CStr(vals(i)))
+			Set nn = New NotesName(CStr(vals(i)))
+			If nn.Common = want Then
+				BR_RegisteredName = Trim$(CStr(vals(i)))
+				Exit Function
+			End If
+			If loose = "" Then
+				If BR_NormKey(nn.Common) = BR_NormKey(want) Then loose = Trim$(CStr(vals(i)))
+			End If
+		End If
+	Next
+	If loose <> "" Then BR_RegisteredName = loose Else BR_RegisteredName = firstV
+	Exit Function
+ErrH:
+	BR_RegisteredName = firstV
+	Exit Function
 End Function
 
 ' Normalises a folder for the current OS and guarantees a trailing separator
@@ -2134,6 +2351,52 @@ Function BR_BatchDir() As String
 	BR_BatchDir = BR_CfgDir("BatchDir", "batches")
 End Function
 
+' 4.2.0: a LIVE run in chunks writes <BatchID>_inprogress.flag when it starts and removes it only when
+' EVERY row was processed. A batch that has a _results.csv but still has the flag was stopped half way
+' (circuit breaker, STOP.txt, crash, closed client): it is NOT done, it stays open and 03 resumes it -
+' users already registered are skipped by the idempotency check, the rest are registered.
+Function BR_BatchFlagFile(batchID As String) As String
+	BR_BatchFlagFile = BR_BatchDir() & batchID & "_inprogress.flag"
+End Function
+
+' DONE = results file exists AND no in-progress flag
+Function BR_BatchIsDone(batchID As String) As Boolean
+	If Dir$(BR_BatchDir() & batchID & "_results.csv") = "" Then Exit Function
+	BR_BatchIsDone = (Dir$(BR_BatchFlagFile(batchID)) = "")
+End Function
+
+' Control file for a clean stop between two chunks: create <BatchDir>\STOP.txt (empty file is enough).
+' Returns the full path.
+Function BR_StopFile() As String
+	BR_StopFile = BR_BatchDir() & "STOP.txt"
+End Function
+
+' Called after every chunk of a chunked run (03 register, 08 repair).
+'   i        number of items done so far        total  items in the run       chunk  items per chunk
+'   tChunk   Timer value when the chunk started (reset here)   pauseSec  pause between chunks (adapted here)
+' Writes one progress line, adapts the pause (slow chunk -> pause grows up to 120 s, fast chunk -> back to the
+' configured value), honours STOP.txt, then sleeps. Returns a stop reason or "" to go on.
+Function BR_ChunkEnd(label As String, i As Long, total As Long, chunk As Long, tChunk As Double, pauseSec As Long, basePause As Long, nOK As Long, nFail As Long) As String
+	Dim secs As Double, perUser As Double, slowSec As Long
+	secs = BR_Elapsed(tChunk)
+	If chunk > 0 Then perUser = secs / chunk
+	slowSec = CfgL("ChunkSlowSec", 20)                 ' average seconds per item above which the pause grows
+	If slowSec > 0 And perUser > slowSec Then
+		pauseSec = pauseSec * 2
+		If pauseSec < 5 Then pauseSec = 5
+		If pauseSec > 120 Then pauseSec = 120
+	ElseIf pauseSec > basePause Then
+		pauseSec = basePause
+	End If
+	BR_Log LVL_INFO, label & " chunk done: " & i & "/" & total & " | ok=" & nOK & " fail=" & nFail & " | " & Format$(secs, "0.0") & " s (" & Format$(perUser, "0.0") & " s per item) | next pause " & pauseSec & " s"
+	If Dir$(BR_StopFile()) <> "" Then
+		BR_ChunkEnd = "STOP.txt found in " & BR_BatchDir() & " - run stopped cleanly after chunk at item " & i & " (delete STOP.txt, run again to resume)"
+		Exit Function
+	End If
+	If i < total And pauseSec > 0 Then Sleep pauseSec
+	tChunk = Timer
+End Function
+
 ' Splits one CSV line; handles "quoted" fields, doubled quotes and the
 ' delimiter inside quotes. Returns a 0-based string array.
 Function BR_CsvSplit(lineTxt As String, delim As String) As Variant
@@ -2195,7 +2458,7 @@ Sub BR_OpenBatchNoteIDs(ids List As String, names List As String, counts List As
 	On Error GoTo ErrH
 	Dim d As String, f As String, files List As String, fh As Integer, txt As String
 	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
-	Dim sk As String, mfp As String, fbase As String, folder As String
+	Dim sk As String, mfp As String, fbase As String, folder As String, doneIds List As String
 	d = BR_BatchDir()
 	f = Dir$(d & "BATCH-*.csv")
 	Do While f <> ""
@@ -2203,7 +2466,11 @@ Sub BR_OpenBatchNoteIDs(ids List As String, names List As String, counts List As
 		f = Dir$()
 	Loop
 	ForAll bf In files
-		If Dir$(d & Left$(bf, Len(bf) - 4) & "_results.csv") = "" Then
+		If Not BR_BatchIsDone(Left$(bf, Len(bf) - 4)) Then
+			' a batch stopped half way: its rows that are REGISTERED already are not open work and not extra load
+			' (they are counted as users in the new mail folders by BR_ScanDirectoryMail)
+			Erase doneIds
+			Call BR_ResultsDoneIds(d & Left$(bf, Len(bf) - 4) & "_results.csv", doneIds)
 			fh = FreeFile()
 			Open d & bf For Input As #fh Charset = "UTF-8"
 			isFirst = True
@@ -2214,7 +2481,7 @@ Sub BR_OpenBatchNoteIDs(ids List As String, names List As String, counts List As
 					isFirst = False
 				ElseIf Trim$(txt) <> "" Then
 					parts = BR_CsvSplit(txt, delim)
-					If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
+					If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" And Not IsElement(doneIds(BR_CsvGet(parts, cols, "NoteID"))) Then
 						ids(BR_CsvGet(parts, cols, "NoteID")) = CStr(bf)
 						Call BR_AddLoad(BR_CsvGet(parts, cols, "HomeServer"))      ' counts against HomeServerMaxUsers
 						' reserve this open batch's mail file name and folder slot
@@ -2246,6 +2513,35 @@ ErrH:
 	Exit Sub
 End Sub
 
+' NoteIDs whose result in a results file is REGISTERED* (registered, even if a follow-up is pending).
+' The file may be missing (batch never run) - then nothing is added.
+Sub BR_ResultsDoneIds(resFile As String, doneIds List As String)
+	On Error GoTo ErrH
+	Dim fh As Integer, txt As String, cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
+	If Dir$(resFile) = "" Then Exit Sub
+	fh = FreeFile()
+	Open resFile For Input As #fh Charset = "UTF-8"
+	isFirst = True
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		If isFirst Then
+			Call BR_CsvHeader(txt, delim, cols)
+			isFirst = False
+		ElseIf Trim$(txt) <> "" Then
+			parts = BR_CsvSplit(txt, delim)
+			If Left$(UCase$(BR_CsvGet(parts, cols, "Result")), 10) = "REGISTERED" And UCase$(BR_CsvGet(parts, cols, "Action")) = "REGISTER" Then
+				doneIds(BR_CsvGet(parts, cols, "NoteID")) = "1"
+			End If
+		End If
+	Loop
+	Close #fh
+	Exit Sub
+ErrH:
+	On Error Resume Next
+	Close #fh
+	Exit Sub
+End Sub
+
 ' Newest OPEN batch file (full path) or "" if none
 Function BR_NewestOpenBatch() As String
 	Dim d As String, f As String, best As String, files List As String
@@ -2256,8 +2552,8 @@ Function BR_NewestOpenBatch() As String
 		f = Dir$()
 	Loop
 	ForAll bf In files
-		If Dir$(d & Left$(bf, Len(bf) - 4) & "_results.csv") = "" Then
-			If best = "" Or bf < best Then best = bf     ' OLDEST open batch first: -01 before -02
+		If Not BR_BatchIsDone(Left$(bf, Len(bf) - 4)) Then
+			If best = "" Or bf < best Then best = bf     ' OLDEST open batch first: -01 before -02 (a batch stopped half way is resumed first)
 		End If
 	End ForAll
 	If best <> "" Then BR_NewestOpenBatch = d & best

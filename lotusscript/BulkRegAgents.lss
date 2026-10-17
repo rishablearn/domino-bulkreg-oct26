@@ -1,6 +1,6 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 4.1.0
-' Purpose        : The code of the BulkReg agents (00 - 07). Each agent in bulkreg.nsf
+' Script Library : BulkRegAgents            Version 4.2.1
+' Purpose        : The code of the BulkReg agents (00 - 11). Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
 '                    BulkReg\01 - Preflight Check                -> BR_RunPreflight
@@ -9,6 +9,9 @@
 '                    BulkReg\04 - Verify Registration and Vault  -> BR_RunVerify
 '                    BulkReg\05 - Export to Registration Text File -> BR_RunExport
 '                    BulkReg\06 - Install Welcome Page           -> BR_RunInstallWelcome (one time, design)
+'                    BulkReg\08 - Repair Missing Mail Files      -> BR_RunRepairMail (replaces 07 - Create Mail Files)
+'                    BulkReg\09 - Reconcile                      -> BR_RunReconcile (CSV reports, read-only)
+'                    BulkReg\10 - Audit Log Maintenance          -> BR_RunAuditMaint (archive + purge, DryRun aware)
 '                  So a new release only replaces the two libraries; the agents
 '                  never have to be pasted again.
 ' Uses           : BulkRegCommon (create and save that library FIRST)
@@ -35,6 +38,9 @@ Dim gPwFile As String
 Dim gMode As String
 Dim gSrvOK List As String      ' home-server reachability cache
 Dim gStopRun As String          ' set by BR_RegisterOne when the whole run must stop (e.g. wrong Notes name)
+Dim gChunkInfo As String        ' text for the confirmation dialog of 03: chunk size, number of chunks, pause
+Dim gTmplDb As NotesDatabase    ' 08 - Repair Missing Mail Files: the mail template database, opened once and reused
+Dim gTmplKey As String          ' "<server>!!<template>" of gTmplDb
 Dim gVNameBad As Long, gVTitleBad As Long, gVTitles List As String, gVAclBad As Long, gVAcls List As String
 Dim gRtPlain As Boolean         ' welcome screens: True = plain fallback layout without tables
 Dim gVUnreg As Long, gVInV As Long, gVNotV As Long, gVErr As Long, gVGone As Long, gVMailBad As Long, gVRepBad As Long
@@ -209,7 +215,7 @@ Sub BR_RunPreflight()
 	BR_Log LVL_INFO, "--- Candidate checks (objectGUID present, not yet registered) ---"
 	BR_Log LVL_INFO, "BatchSize=" & batchSize & " | detailed check: " & BR_IIfStr(scopeAll, "ALL candidates (PreflightScope=ALL)", "batch no. " & chkBatch & " (users " & ((chkBatch - 1) * batchSize + 1) & " - " & (chkBatch * batchSize) & " of the candidate list)") & BR_IIfStr(srvFilter <> "", " | BatchServerFilter=" & srvFilter, "")
 	Call BR_OpenBatchNoteIDs(openIds, mfNames, mfCounts)     ' users in OPEN batches are not candidates; they count towards server capacity
-	Call BR_ScanDirectoryMail(db, mfNames)                   ' users already registered into the new mail folders count towards capacity
+	Call BR_ScanDirectoryMail(db, mfNames, mfCounts)         ' users already registered into the new mail folders count towards capacity and folder fill
 	ForAll ld In gSrvLoad
 		loadBefore(ListTag(ld)) = ld
 	End ForAll
@@ -504,7 +510,7 @@ Sub BR_RunBuildBatch()
 	Set db = BR_OpenDirectory()
 	' mail file names already in use: open batches, Person documents, files on servers (scanned per server)
 	Call BR_OpenBatchNoteIDs(openIds, mfNames, mfCounts)
-	Call BR_ScanDirectoryMail(db, mfNames)
+	Call BR_ScanDirectoryMail(db, mfNames, mfCounts)
 	Set usersView = db.GetView("($Users)")
 	Set col = BR_GetCandidates(db, True)
 
@@ -731,7 +737,8 @@ End Function
 '              the Person doc; Certificate re-checked (idempotent);
 '              MaxConsecutiveErrors circuit-breaker; per-user error isolation.
 '
-' Output     : LIVE   <BatchDir>\BATCH-<id>_results.csv  (closes the batch)
+' Output     : LIVE   <BatchDir>\BATCH-<id>_results.csv  (closes the batch when every row was processed;
+'              a run stopped half way leaves <id>_inprogress.flag and the batch stays OPEN -> run 03 again to resume)
 '              DRYRUN <BatchDir>\BATCH-<id>_dryrun_<run>.csv (batch stays open)
 '              plus the usual audit CSV and debug log in AuditDir.
 '=====================================================================
@@ -744,12 +751,14 @@ Sub BR_RunRegisterBatch()
 	Dim db As NotesDatabase, u As BRUser
 	Dim bfile As String, bname As String, bdir As String, fh As Integer, txt As String
 	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
-	Dim nid() As String, gid() As String, hs() As String, ou() As String, po() As String, gr() As String, vs() As String, un() As String, mf() As String, mn() As String, cr() As String
+	Dim nid() As String, gid() As String, hs() As String, ou() As String, po() As String, gr() As String, vs() As String, un() As String, mf() As String, mn() As String, cr() As String, na() As String, fn() As String
 	Dim repText As String, repSeen List As String
 	Dim n As Long, i As Long, seen List As String, srvCount List As Long, srvText As String, hk As String
 	Dim nExcluded As Long, maxRows As Long, pauseMs As Long, maxConsec As Long
 	Dim nOK As Long, nFail As Long, nSkip As Long, nConsec As Long, res As String, stopReason As String
 	Dim j As Long, summary As String
+	Dim chunk As Long, nChunks As Long, done As Long, tChunk As Double, pauseSec As Long, basePause As Long
+	Dim isResume As Boolean, flagFile As String
 
 	If Not BR_Init("Register") Then Exit Sub
 	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
@@ -776,7 +785,17 @@ Sub BR_RunRegisterBatch()
 	bname = StrRightBack(bfile, gSep)
 	If LCase$(Right$(bname, 4)) <> ".csv" Or Left$(bname, 6) <> "BATCH-" Or InStr(bname, "_") > 0 Then Error 6002, "Not a batch file (expected BATCH-<id>.csv): " & bname
 	gBatchID = Left$(bname, Len(bname) - 4)
-	If Dir$(bdir & gBatchID & "_results.csv") <> "" Then Error 6003, gBatchID & " is already DONE (" & gBatchID & "_results.csv exists). Build a new batch."
+	If BR_BatchIsDone(gBatchID) Then Error 6003, gBatchID & " is already DONE (" & gBatchID & "_results.csv exists). Build a new batch."
+	' 4.2.0: a results file WITHOUT the batch being DONE = an earlier chunked run stopped half way -> resume it
+	isResume = (Dir$(bdir & gBatchID & "_results.csv") <> "")
+	flagFile = BR_BatchFlagFile(gBatchID)
+	' 4.2.1: a flag younger than StaleRunMinutes means another client may still be registering this batch
+	If gMode = "LIVE" And Dir$(flagFile) <> "" Then
+		If DateDiff("n", FileDateTime(flagFile), Now) < CfgL("StaleRunMinutes", 30) Then
+			If Messagebox("The batch " & gBatchID & " shows activity " & DateDiff("n", FileDateTime(flagFile), Now) & " minute(s) ago (flag file). Another client may still be running it." & Chr$(10) & Chr$(10) & "Two runs on one batch can register users twice. Continue only if the other client is closed or hung. Continue?", 4 + 32, "BulkReg - possible active run") <> 6 Then Error 6008, "Cancelled: possible active run of " & gBatchID & ". Use 11 - Batch Manager to review."
+		End If
+	End If
+	If Dir$(BR_StopFile()) <> "" Then Error 6007, "STOP.txt exists in " & bdir & " - delete it to run again (it is the clean-stop signal for chunked runs)."
 
 	' ---------- load the approved rows ----------
 	fh = FreeFile()
@@ -799,12 +818,16 @@ Sub BR_RunRegisterBatch()
 					Error 6005, "NoteID " & BR_CsvGet(parts, cols, "NoteID") & " is listed twice in the batch file"
 				End If
 				seen(BR_CsvGet(parts, cols, "NoteID")) = "1"
-				ReDim Preserve nid(n) As String, gid(n) As String, hs(n) As String, ou(n) As String, po(n) As String, gr(n) As String, vs(n) As String, un(n) As String, mf(n) As String, mn(n) As String, cr(n) As String
+				ReDim Preserve nid(n) As String, gid(n) As String, hs(n) As String, ou(n) As String, po(n) As String, gr(n) As String, vs(n) As String, un(n) As String, mf(n) As String, mn(n) As String, cr(n) As String, na(n) As String, fn(n) As String
 				nid(n) = BR_CsvGet(parts, cols, "NoteID")
 				gid(n) = BR_CsvGet(parts, cols, "objectGUID")
 				un(n) = BR_CsvGet(parts, cols, "UNID")
 				mf(n) = BR_CsvGet(parts, cols, "MailFile")
 				mn(n) = BR_CsvGet(parts, cols, "MailFileNote")
+				' the reviewed name: FullNameAfter (or NotesName) of the batch row takes precedence over a regenerated one
+				na(n) = BR_CsvGet(parts, cols, "FullNameAfter")
+				If na(n) = "" Then na(n) = BR_CsvGet(parts, cols, "NotesName")
+				fn(n) = BR_CsvGet(parts, cols, "FirstName")
 				hs(n) = BR_CsvGet(parts, cols, "HomeServer")
 				ou(n) = BR_CsvGet(parts, cols, "OrgUnit")
 				po(n) = BR_CsvGet(parts, cols, "Policy")
@@ -841,6 +864,17 @@ Sub BR_RunRegisterBatch()
 		BR_Log LVL_INFO, "  home server " & ListTag(c) & " : " & c
 	End ForAll
 
+	' ---------- chunks (4.2.0): the batch is registered in slices so the servers, the registration process and
+	' this client get a breather between them; the number of chunks follows from the number of approved rows ----------
+	chunk = CfgL("RegisterChunkSize", 10)
+	If chunk < 1 Or chunk > n Then chunk = n                   ' 0 = one single chunk (behaviour before 4.2.0)
+	nChunks = (n + chunk - 1) \ chunk
+	basePause = CfgL("ChunkPauseSec", 5)
+	If basePause < 0 Or gMode <> "LIVE" Then basePause = 0      ' no pause in a dry run: nothing is changed, nothing to protect
+	pauseSec = basePause
+	gChunkInfo = n & " users in " & nChunks & " chunk(s) of " & chunk & ", pause " & basePause & " s between chunks (grows when a chunk is slow)" & BR_IIfStr(isResume, " | RESUMING a stopped run: registered users are skipped", "")
+	BR_Log LVL_INFO, "Chunk plan: " & gChunkInfo
+
 	' ---------- confirmation ----------
 	If Not BR_ConfirmRun(n, nExcluded, srvText, repText) Then Exit Sub
 	BR_Log LVL_INFO, "Batch " & gBatchID & " approved for " & gMode & " by " & gOperator
@@ -851,7 +885,8 @@ Sub BR_RunRegisterBatch()
 	Else
 		gResultsFile = bdir & gBatchID & "_dryrun_" & gRunID & ".csv"
 	End If
-	Call BR_AppendLine(gResultsFile, Uchr$(&HFEFF) & BR_AuditHeader())
+	If Not (isResume And gMode = "LIVE") Then Call BR_AppendLine(gResultsFile, Uchr$(&HFEFF) & BR_AuditHeader())
+	If gMode = "LIVE" Then Call BR_AppendLine(flagFile, "BulkReg " & BR_VERSION & " run " & gRunID & " started " & Format$(Now, "yyyy-mm-dd hh:nn:ss") & " by " & gOperator & BR_IIfStr(isResume, " (resume)", "") & " - delete this flag only if the batch must be treated as DONE")
 	If gMode = "LIVE" And CfgB("WritePasswordFile", True) Then
 		gPwFile = BR_CfgDir("PasswordDir", "secure") & "BulkReg_InitialPasswords_" & gBatchID & "_" & gRunID & ".csv"
 		Call BR_AppendLine(gPwFile, Uchr$(&HFEFF) & "BatchID,FullName,InternetAddress,IDFile,InitialPassword")
@@ -860,8 +895,10 @@ Sub BR_RunRegisterBatch()
 
 	' ---------- register the approved rows ----------
 	Set db = BR_OpenDirectory()
+	tChunk = Timer
 	For i = 0 To n - 1
-		res = BR_RegisterOne(db, nid(i), un(i), gid(i), hs(i), mf(i), mn(i), ou(i), po(i), gr(i), vs(i), cr(i))
+		res = BR_RegisterOne(db, nid(i), un(i), gid(i), hs(i), mf(i), mn(i), ou(i), po(i), gr(i), vs(i), cr(i), na(i), fn(i))
+		If gMode = "LIVE" Then Call BR_AppendLine(flagFile, "heartbeat " & Format$(Now, "yyyy-mm-dd hh:nn:ss") & " " & (i + 1) & "/" & n)   ' last-activity time for the stale-run check
 		Select Case Left$(res, 2)
 		Case "OK"
 			nOK = nOK + 1: nConsec = 0
@@ -882,24 +919,47 @@ Sub BR_RunRegisterBatch()
 			Exit For
 		End If
 		If pauseMs > 0 Then Sleep pauseMs / 1000
+		' ---- end of a chunk: progress line, adaptive pause, STOP.txt check, fresh directory handle ----
+		done = i + 1
+		If chunk < n And done < n And (done Mod chunk) = 0 Then
+			stopReason = BR_ChunkEnd("Register " & gBatchID, done, n, chunk, tChunk, pauseSec, basePause, nOK, nFail)
+			If stopReason <> "" Then
+				BR_Log LVL_WARN, stopReason
+				Exit For
+			End If
+			Set db = BR_OpenDirectory()
+		End If
 	Next
-	' rows not reached (circuit breaker) are recorded so the results file is complete
+	' rows not reached (circuit breaker / STOP.txt)
 	If i < n - 1 Then
-		For j = i + 1 To n - 1
-			Call BR_ClearUser(u)
-			u.NoteID = nid(j): u.GUID = gid(j): u.HomeServer = hs(j): u.OrgUnit = ou(j): u.Policy = po(j)
-			u.MailFile = mf(j): u.ClusterReplicas = BR_IIfStr(cr(j) = "*auto", "", cr(j))
-			Call BR_Audit(u, gMode, "REGISTER", "NOT_PROCESSED", 0, stopReason & " - will be offered again by the next 02 - Build Batch")
-		Next
+		If gMode = "LIVE" Then
+			' LIVE: the in-progress flag keeps the batch open; the next run of 03 resumes it (no duplicate result rows)
+			BR_Log LVL_WARN, (n - 1 - i) & " row(s) not processed - batch " & gBatchID & " stays OPEN (in-progress flag). Run 03 - Register Batch again to resume."
+		Else
+			For j = i + 1 To n - 1
+				Call BR_ClearUser(u)
+				u.NoteID = nid(j): u.GUID = gid(j): u.HomeServer = hs(j): u.OrgUnit = ou(j): u.Policy = po(j)
+				u.MailFile = mf(j): u.ClusterReplicas = BR_IIfStr(cr(j) = "*auto", "", cr(j))
+				Call BR_Audit(u, gMode, "REGISTER", "NOT_PROCESSED", 0, stopReason)
+			Next
+		End If
 	End If
-	If stopReason = "" Then stopReason = "All batch rows processed"
+	If stopReason = "" Then
+		stopReason = "All batch rows processed"
+		If gMode = "LIVE" Then
+			On Error Resume Next
+			Kill flagFile                      ' our own in-progress marker: every row was processed, the batch is DONE now
+			Err = 0
+			On Error GoTo ErrH
+		End If
+	End If
 
 	gCertPwd = ""
 	summary = gMode & " | " & gBatchID & " | rows=" & n & " ok=" & nOK & " failed=" & nFail & " skipped=" & nSkip & " | " & stopReason
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Results: " & gResultsFile & Chr$(10) & "Log: " & gDebugFile & _
 	BR_IIfS(gPwFile <> "", Chr$(10) & "Passwords (restricted): " & gPwFile, "") & Chr$(10) & Chr$(10) & _
-	BR_IIfS(gMode = "LIVE", "Batch is now DONE. " & BR_IIfStr(BR_MailDeferred(), "MAIL FILES ARE NOT CREATED YET (MailFileDeferred=1): run Actions > BulkReg > 07 - Create Mail Files now.", "Cluster replicas are created by AdminP over the next minutes/hours.") & Chr$(10) & "Run Actions > BulkReg > 04 - Verify Registration and Vault next (and again later until all replicas are OK).", "Dry run only - the batch is still OPEN. Set DryRun=0 to register it."), _
+	BR_IIfS(gMode = "LIVE", BR_IIfStr(Dir$(flagFile) <> "", "Run STOPPED before the end - batch " & gBatchID & " is still OPEN. Fix the cause (see the log), delete STOP.txt if you used it, then run 03 - Register Batch again: it resumes with the users not registered yet. (11 - Batch Manager shows what is registered; a hung client: close it first.)" & Chr$(10), "Batch is now DONE. ") & BR_IIfStr(BR_MailDeferred(), "MAIL FILES ARE NOT CREATED YET (MailFileDeferred=1): run Actions > BulkReg > 08 - Repair Missing Mail Files now.", "Cluster replicas are created by AdminP over the next minutes/hours.") & Chr$(10) & "Run Actions > BulkReg > 04 - Verify Registration and Vault next (and again later until all replicas are OK).", "Dry run only - the batch is still OPEN. Set DryRun=0 to register it."), _
 	CInt(BR_IIfS(nFail > 0, 48, 64))
 	Exit Sub
 ErrH:
@@ -921,6 +981,7 @@ Function BR_ConfirmRun(n As Long, nExcluded As Long, srvText As String, repText 
 	"Mode: " & BR_IIfStr(gMode = "LIVE", "LIVE - users WILL be registered (Notes ID, mail file, ID Vault)", "DRY RUN (DryRun=1) - simulation only, NOTHING will be changed") & Chr$(10) & _
 	"Batch: " & gBatchID & Chr$(10) & _
 	"Users to register (Include=Y): " & n & "    excluded (Include=N): " & nExcluded & Chr$(10) & _
+	"Chunking: " & gChunkInfo & Chr$(10) & _
 	"Per home server:" & Chr$(10) & srvText & _
 	"Cluster replicas of the mail files (" & BR_IIfStr(CfgB("CreateClusterReplicas", True), "requested via AdminP", "NOT requested: CreateClusterReplicas=0") & "):" & Chr$(10) & repText & _
 	"Registration server: " & CfgS("RegistrationServer", "") & Chr$(10) & _
@@ -958,12 +1019,12 @@ End Function
 ' Values come from the reviewed batch file. Every outcome writes an audit
 ' row (and a results row). Errors never stop the batch.
 '---------------------------------------------------------------------
-Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGuid As String, bHome As String, bMailFile As String, bMailNote As String, bOU As String, bPolicy As String, bGroups As String, bVault As String, bReplicas As String) As String
+Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, bGuid As String, bHome As String, bMailFile As String, bMailNote As String, bOU As String, bPolicy As String, bGroups As String, bVault As String, bReplicas As String, bNameAfter As String, bFirst As String) As String
 	Dim doc As NotesDocument, reg As NotesRegistration, u As BRUser
 	Dim t0 As Double, issues As String, userPwd As String, mailFile As String
 	Dim stage As String, emsg As String, homeCanon As String, nn As NotesName
 	Dim foundOn As String, rl As Variant, ri As Integer, repOK As Boolean, nameProb As String, titleRes As String, aclRes As String, bkRes As String
-	Dim paramDump As String
+	Dim paramDump As String, cnProb As String, nameNote As String
 	t0 = Timer
 	On Error GoTo ErrH
 
@@ -1003,6 +1064,16 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	End If
 	u.MapRule = "batch " & gBatchID
 
+	' the reviewed name of the batch file (FullNameAfter) TAKES PRECEDENCE over the name regenerated from the
+	' Person document: the user is created exactly as shown in the batch the operator approved
+	nameNote = BR_ApplyBatchName(u, bNameAfter, bFirst)
+	If Left$(nameNote, 6) = "ERROR:" Then
+		Call BR_Audit(u, gMode, "REGISTER", "FAILED_VALIDATION", BR_Elapsed(t0), nameNote)
+		BR_Log LVL_ERROR, "VALIDATION " & u.FullNameBefore & " : " & nameNote
+		BR_RegisterOne = "FAIL:name"
+		Exit Function
+	End If
+
 	' no Internet address: SKIPPED and flagged (SkipNoInternetAddress=1), never registered by mistake
 	If u.InternetAddress = "" And CfgB("SkipNoInternetAddress", True) Then
 		Call BR_Audit(u, gMode, "REGISTER", BR_RESULT_NO_INET, BR_Elapsed(t0), BR_SKIP_NO_INET)
@@ -1020,7 +1091,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	End If
 
 	stage = "validate"
-	issues = BR_Validate(u)
+	issues = BR_Validate(u) & nameNote
 	If InStr(issues, "ERROR:") = 0 Then
 		If Not BR_HomeServerOK(u.HomeServer, gSrvOK) Then
 			issues = issues & "ERROR:HomeServer " & u.HomeServer & " unreachable; "
@@ -1070,7 +1141,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 			u.ReplicaStatus = "OFF (CreateClusterReplicas=0)"
 		End If
 		u.FullNameAfter = BR_ExpectedName(u)               ' the name the user WOULD get, e.g. Neha Arora/Demo
-		Call BR_Audit(u, gMode, "REGISTER", "WOULD_REGISTER", BR_Elapsed(t0), "Notes name: " & u.FullNameAfter & " | mail file title: " & BR_MailTitle(u) & BR_IIfStr(BR_MailDeferred(), " | mail file creation DEFERRED (agent 07)", "") & " " & issues)
+		Call BR_Audit(u, gMode, "REGISTER", "WOULD_REGISTER", BR_Elapsed(t0), "Notes name: " & u.FullNameAfter & " | mail file title: " & BR_MailTitle(u) & BR_IIfStr(BR_MailDeferred(), " | mail file creation DEFERRED (agent 08)", "") & " " & issues)
 		BR_Log LVL_INFO, "DRYRUN would register " & u.FullNameBefore & " as " & u.FullNameAfter & " -> " & u.HomeServer & " (" & u.Policy & ")"
 		BR_RegisterOne = "OK:dryrun"
 		Exit Function
@@ -1089,7 +1160,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	End If
 	' ---- Domino mail file: always created on the user's home server ----
 	' 0 = BulkReg creates the mail file itself after the registration (needs MailTemplate)
-	' MailFileDeferred=1 = no mail file now at all (fast registration); agent 07 creates it later
+	' MailFileDeferred=1 = no mail file now at all (fast registration); agent 08 creates it later
 	reg.CreateMailDb = CfgB("RegisterCreateMailDb", True) And Not BR_MailDeferred()
 	reg.MailSystem = REG_MAILSYSTEM_NOTES                ' HCL default, set explicitly: DirSync users had Other Internet Mail
 	If CfgS("MailTemplate", "") <> "" Then reg.MailTemplateName = CfgS("MailTemplate", "")
@@ -1136,17 +1207,35 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	stage = "RegisterNewUser"
 	Call reg.RegisterNewUser(u.LastName, u.IDFile, homeCanon, u.FirstName, u.MiddleInitial, _
 	gCertPwd, "", "BulkReg " & gRunID & " objectGUID=" & u.GUID, mailFile, "", userPwd, NOTES_DESKTOP_CLIENT)
+	' the ID exists now: record its initial password AT ONCE (4.2.1). A hang or a closed client in the mail /
+	' vault / replica steps below used to lose it - the user would then need a vault password reset.
+	If gPwFile <> "" Then Call BR_AppendLine(gPwFile, Q(gBatchID) & "," & Q(BR_ExpectedName(u)) & "," & Q(u.InternetAddress) & "," & Q(u.IDFile) & "," & Q(userPwd))
 
 	' ---------- verify ----------
 	stage = "verify"
 	Delete doc
 	Set doc = db.GetDocumentByID(u.NoteID)
 	If doc Is Nothing Then Error 4001, "Person document not found after registration"
-	u.FullNameAfter = BR_Item(doc, "FullName")
+	u.FullNameAfter = BR_RegisteredName(doc, u)          ' the registered name, not necessarily the first FullName value (see BR_RegisteredName)
 	u.MailSystemAfter = BR_Item(doc, "MailSystem")
 	If Not BR_IsRegistered(doc) Then Error 4002, "RegisterNewUser returned but Person doc has no Certificate"
 	' the Notes name must be the generated CN + OU/Org (organization once) - stop the whole run at the first wrong name
-	nameProb = BR_CnProblem(u.FullNameAfter, u)
+	' 4.2.0: blanks and case are not a difference (BR_CnProblem). A genuinely different common name is a WARN
+	' by default (CnMismatchAction=WARN: the user IS registered, the audit row says NAME_DIFF and the run goes
+	' on); CnMismatchAction=STOP restores the old behaviour (stop the whole run). A wrong ORGANIZATION / OU
+	' (BR_NameProblem) still stops the run: it would repeat for every following user.
+	cnProb = BR_CnProblem(u.FullNameAfter, u)
+	If cnProb <> "" Then
+		If UCase$(Trim$(CfgS("CnMismatchAction", "WARN"))) = "STOP" Then
+			nameProb = cnProb
+		Else
+			issues = issues & "WARN:NAME_DIFF " & cnProb & "; "
+			BR_Log LVL_WARN, "NAME_DIFF " & cnProb & " (user kept, run continues)"
+		End If
+	Else
+		Set nn = New NotesName(u.FullNameAfter)
+		If nn.Common <> BR_CommonName(u) Then issues = issues & "NOTE:common name '" & nn.Common & "' differs from '" & BR_CommonName(u) & "' only in blanks/case; "
+	End If
 	If nameProb = "" Then nameProb = BR_NameProblem(u.FullNameAfter, u)
 	If nameProb <> "" Then
 		gStopRun = "Wrong Notes name created - run stopped so no further users get it: " & nameProb & ". Check CertifierName and OrgUnit (guide D6)."
@@ -1169,7 +1258,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	If Not CfgB("RegisterCreateMailDb", True) Or BR_MailDeferred() Then
 		If BR_MailDeferred() Then
 			' MailFileDeferred=1: the Person document gets the mail file pointer now, the file itself is created later by 07
-			u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & "MAIL_DEFERRED (create with 07 - Create Mail Files)"
+			u.MailFileNote = u.MailFileNote & BR_IIfStr(u.MailFileNote <> "", "; ", "") & "MAIL_DEFERRED (create with 08 - Repair Missing Mail Files)"
 			BR_Log LVL_INFO, "Mail file " & u.HomeServer & "!!" & u.MailFile & " : creation deferred"
 		Else
 			stage = "createmail"
@@ -1190,7 +1279,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	stage = "mailfile"
 	BR_Log LVL_INFO, "Mail: system '" & u.MailSystemBefore & "' -> '" & u.MailSystemAfter & "', MailFile in Person doc: " & BR_Item(doc, "MailFile")
 	If BR_MailDeferred() Then
-		u.MailFileStatus = "MAILFILE_DEFERRED"     ' by design: 07 - Create Mail Files creates it (title, ACL, replicas)
+		u.MailFileStatus = "MAILFILE_DEFERRED"     ' by design: 08 - Repair Missing Mail Files creates it (title, ACL, replicas)
 	ElseIf BR_MailFileExists(u.HomeServer, u.MailFile) Then
 		u.MailFileStatus = "MAILFILE_OK"
 		' database title of the mail file (e.g. "Neha Arora") - set BEFORE the replicas are requested
@@ -1212,7 +1301,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	ElseIf Not CfgB("CreateClusterReplicas", True) Then
 		u.ReplicaStatus = "NOT_REQUESTED (CreateClusterReplicas=0)"
 	ElseIf u.MailFileStatus = "MAILFILE_DEFERRED" Then
-		u.ReplicaStatus = "DEFERRED (requested by 07 - Create Mail Files)"
+		u.ReplicaStatus = "DEFERRED (requested by 08 - Repair Missing Mail Files)"
 	ElseIf u.MailFileStatus <> "MAILFILE_OK" Then
 		u.ReplicaStatus = "NOT_REQUESTED (mail file not yet on home server - create the replicas manually, guide C7)"
 	Else
@@ -1222,10 +1311,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	stage = "vault"
 	If CfgB("VaultCheckAfterReg", True) Then u.VaultStatus = BR_VaultStatus(u.FullNameAfter, u.VaultServer) Else u.VaultStatus = "NOT_CHECKED"
 
-	If gPwFile <> "" Then
-		Call BR_AppendLine(gPwFile, Q(gBatchID) & "," & Q(u.FullNameAfter) & "," & Q(u.InternetAddress) & "," & Q(u.IDFile) & "," & Q(userPwd))
-	End If
-	userPwd = ""
+	userPwd = ""                                        ' (the password row was written right after RegisterNewUser)
 
 	' replicas are fine when none are needed, switched off, or all requests were posted
 	If u.ReplicaStatus = "NONE" Or InStr(u.ReplicaStatus, "CreateClusterReplicas=0") > 0 Or Left$(u.ReplicaStatus, 8) = "DEFERRED" Then
@@ -1234,7 +1320,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 		repOK = True
 	End If
 	If (u.VaultStatus = "IN_VAULT" Or u.VaultStatus = "NOT_CHECKED") And (u.MailFileStatus = "MAILFILE_OK" Or u.MailFileStatus = "MAILFILE_DEFERRED") And repOK Then
-		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED", BR_Elapsed(t0), issues & BR_IIfStr(u.MailFileStatus = "MAILFILE_DEFERRED", " Mail file NOT created yet - run 07 - Create Mail Files.", ""))
+		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED", BR_Elapsed(t0), issues & BR_IIfStr(u.MailFileStatus = "MAILFILE_DEFERRED", " Mail file NOT created yet - run 08 - Repair Missing Mail Files.", ""))
 		BR_Log LVL_INFO, "OK " & u.FullNameAfter & " vault=" & u.VaultStatus & " (" & Format$(BR_Elapsed(t0), "0.0") & "s)"
 	Else
 		Call BR_Audit(u, gMode, "REGISTER", "REGISTERED_PENDING", BR_Elapsed(t0), issues & " Vault: " & u.VaultStatus & " Mail file: " & u.MailFileStatus & " Replicas: " & u.ReplicaStatus & " - re-check with Agent 04")
@@ -1253,6 +1339,46 @@ ErrH:
 	Exit Function
 End Function
 
+' The name of the batch row takes precedence (4.2.1). bNameAfter = column FullNameAfter (or NotesName) of the
+' REVIEWED batch file, e.g. "FLT LT VINAY TALWAR 99202OPS/Demo"; bFirst = its FirstName column.
+'   - blanks are normalised (one blank between the words), the case is kept as reviewed
+'   - the common name becomes the registered name: First = the FirstName column when the name starts with it,
+'     otherwise empty; Last = the rest. (With FirstNameField empty the whole common name is the last name.)
+'   - the organization / OU part must match certifier + OrgUnit (UseCA=1), else ERROR (registration cannot
+'     override the certifier): fix the batch row or OrgUnit
+' Returns "" (nothing to apply: empty column), "NOTE:..." (applied) or "ERROR:..." (user is not registered).
+Function BR_ApplyBatchName(u As BRUser, bNameAfter As String, bFirst As String) As String
+	Dim nn As NotesName, nm As String, cn As String, fh As String, regen As String, sfx As String, abbr As String
+	nm = BR_NormSpaces(bNameAfter)
+	If nm = "" Then Exit Function
+	regen = BR_CommonName(u)
+	Set nn = New NotesName(nm)
+	cn = BR_NormSpaces(nn.Common)
+	If InStr(nm, "/") > 0 And CfgB("UseCA", True) Then
+		abbr = BR_Abbr(nm)
+		sfx = BR_ExpectedSuffix(u.OrgUnit)
+		If LCase$(Right$(abbr, Len(sfx))) <> LCase$(sfx) Then
+			BR_ApplyBatchName = "ERROR:FullNameAfter '" & abbr & "' of the batch file does not end with '" & sfx & "' (certifier " & BR_CertifierForReg() & BR_IIf(u.OrgUnit <> "", ", OrgUnit " & u.OrgUnit, "") & ") - correct the batch row or OrgUnit; "
+			Exit Function
+		End If
+	End If
+	If cn = "" Then
+		BR_ApplyBatchName = "ERROR:FullNameAfter '" & bNameAfter & "' of the batch file has no common name; "
+		Exit Function
+	End If
+	fh = BR_Clean(bFirst)
+	If fh <> "" And LCase$(Left$(cn, Len(fh) + 1)) = LCase$(fh) & " " Then
+		u.FirstName = Left$(cn, Len(fh))
+		u.LastName = Mid$(cn, Len(fh) + 2)
+	Else
+		u.FirstName = ""
+		u.LastName = cn
+	End If
+	u.MiddleInitial = ""
+	u.LastNameSuffix = "(batch)"                  ' the suffix rule applied when the batch was built; Validate must not re-check it
+	If cn <> regen Then BR_ApplyBatchName = "NOTE:name taken from the batch file '" & cn & "' (regenerated would be '" & regen & "'); "
+End Function
+
 ' Creates the mail file from the mail template on the home server (RegisterCreateMailDb=0).
 ' Returns MAIL_CREATED or MAIL_CREATE_ERROR(...)
 Function BR_CreateMailFile(server As String, path As String, tmplName As String, title As String) As String
@@ -1268,7 +1394,7 @@ Function BR_CreateMailFile(server As String, path As String, tmplName As String,
 		BR_CreateMailFile = "MAIL_CREATE_ERROR(template " & tmplName & " not found on " & server & ")"
 		Exit Function
 	End If
-	Set mdb = tmpl.CreateFromTemplate(server, BR_SrvPathFor(server, path), True)
+	Set mdb = tmpl.CreateFromTemplate(server, BR_SrvPathFor(server, path), CfgB("MailInheritTemplate", True))
 	If title <> "" Then mdb.Title = title
 	BR_CreateMailFile = "MAIL_CREATED"
 	Exit Function
@@ -1426,13 +1552,14 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 		Exit Sub
 	End If
 	Call BR_ReadUser(doc, u)
-	u.FullNameAfter = u.FullNameBefore
+	u.FullNameAfter = BR_RegisteredName(doc, u)          ' the registered name, not simply the first FullName value
+	If u.FullNameAfter = "" Then u.FullNameAfter = u.FullNameBefore
 	u.MailSystemAfter = u.MailSystemBefore
 	If Not BR_IsRegistered(doc) Then
 		res = "UNREGISTERED": gVUnreg = gVUnreg + 1
 		u.VaultStatus = "N/A"
 	Else
-		u.VaultStatus = BR_VaultStatus(u.FullNameBefore, u.VaultServer)
+		u.VaultStatus = BR_VaultStatus(u.FullNameAfter, u.VaultServer)
 		' mail file named in the Person document must exist on the user's mail server
 		u.MailFile = BR_Item(doc, "MailFile")
 		If u.MailFile = "" Then
@@ -1444,7 +1571,7 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 		End If
 		If u.MailFileStatus <> "MAILFILE_OK" Then gVMailBad = gVMailBad + 1
 		' Notes name hierarchy and mail file title
-		nmProb = BR_NameProblem(u.FullNameBefore, u)
+		nmProb = BR_NameProblem(u.FullNameAfter, u)
 		If nmProb <> "" Then gVNameBad = gVNameBad + 1
 		If u.MailFileStatus = "MAILFILE_OK" Then
 			tRes = BR_MailTitleFix(BR_Item(doc, "MailServer"), u.MailFile, BR_MailTitle(u), False, False)
@@ -1452,10 +1579,10 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 				gVTitleBad = gVTitleBad + 1
 				gVTitles(BR_Item(doc, "MailServer") & "!!" & u.MailFile) = BR_MailTitle(u)
 			End If
-			aRes = BR_MailAclFix(BR_Item(doc, "MailServer"), u.MailFile, u.FullNameBefore, False)
+			aRes = BR_MailAclFix(BR_Item(doc, "MailServer"), u.MailFile, u.FullNameAfter, False)
 			If Left$(aRes, 11) = "ACL_MISSING" Then
 				gVAclBad = gVAclBad + 1
-				gVAcls(BR_Item(doc, "MailServer") & "!!" & u.MailFile) = u.FullNameBefore      ' owner, used by the fix below
+				gVAcls(BR_Item(doc, "MailServer") & "!!" & u.MailFile) = u.FullNameAfter      ' owner, used by the fix below
 			End If
 		End If
 		' cluster replicas of the mail file
@@ -1477,7 +1604,7 @@ Sub BR_VerifyDoc(doc As NotesDocument, nid As String, rep As String)
 	End If
 	Call BR_Audit(u, "VERIFY", "STATUS", res, BR_Elapsed(t0), BR_IIfStr(res = "UNREGISTERED" And u.InternetAddress = "", "no InternetAddress - " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), "skipped until the address exists in AD", "will be registered without address"), "") & _
 	BR_IIfStr(nmProb <> "", " WRONG NAME: " & nmProb, "") & BR_IIfStr(tRes <> "", " mail file " & tRes, "") & BR_IIfStr(aRes <> "", " " & aRes, "") & _
-	BR_IIfStr(u.MailFileStatus <> "" And u.MailFileStatus <> "MAILFILE_OK", " MAIL FILE NOT FOUND: Person doc MailServer='" & BR_Item(doc, "MailServer") & "' MailFile='" & u.MailFile & "' (tried as '" & BR_SrvPathFor(BR_Item(doc, "MailServer"), u.MailFile) & "'). " & BR_IIfStr(BR_MailDeferred(), "MailFileDeferred=1: run 07 - Create Mail Files, then re-run Verify.", "The mail file is created by AdminP on the mail server after registration: check admin4.nsf / the server console for 'Create Mail File' errors, then re-run Verify."), ""))
+	BR_IIfStr(u.MailFileStatus <> "" And u.MailFileStatus <> "MAILFILE_OK", " MAIL FILE NOT FOUND: Person doc MailServer='" & BR_Item(doc, "MailServer") & "' MailFile='" & u.MailFile & "' (tried as '" & BR_SrvPathFor(BR_Item(doc, "MailServer"), u.MailFile) & "'). " & BR_IIfStr(BR_MailDeferred(), "MailFileDeferred=1: run 08 - Repair Missing Mail Files, then re-run Verify.", "The mail file is created by AdminP on the mail server after registration: check admin4.nsf / the server console for 'Create Mail File' errors, then re-run Verify."), ""))
 	BR_Log LVL_DEBUG, res & " " & u.FullNameBefore & " vault=" & u.VaultStatus & " mail=" & u.MailFileStatus & " replicas=" & u.ReplicaStatus
 End Sub
 
@@ -1494,65 +1621,100 @@ Function BR_LatestBatch() As String
 End Function
 
 '=====================================================================
-' BR_RunCreateMailFiles  -  runs agent BulkReg\07 - Create Mail Files
-'   The agent itself only contains:  Call BR_RunCreateMailFiles()
+' BR_RunRepairMail  -  runs agent BulkReg\08 - Repair Missing Mail Files
+'   The agent itself only contains:  Call BR_RunRepairMail()
+'   (replaces BulkReg\07 - Create Mail Files, which is retired in 4.2.0)
 '
-' Second phase of the fast registration (MailFileDeferred=1): 03 - Register Batch registers the user and
-' points the Person document at the mail file but does NOT create it. This agent creates the missing mail
-' files from MailTemplate on each user's mail server, then sets the title, the ACL (MailACLManager + owner)
-' and requests the cluster replicas - the same steps 03 does when the mail file is created inline.
+' Finds REGISTERED users (Person document has a Certificate) whose mail file is
+'   - missing        : the Person document names MailServer + MailFile, but no such database exists  -> created
+'   - incomplete     : the database exists but has no ($Inbox) view (copy interrupted) -> reported; an EMPTY
+'                      shell is removed and created again only with RepairRemoveEmptyShells=1 (LIVE, numbered
+'                      mail folders only); a file that holds documents is NEVER touched
+'   - without title / ACL (RepairCheckExisting=2) -> title and ACL are corrected
+' It works from the Domino Directory, NOT from batch files: it also repairs users whose batch file or
+' results file is gone, and users registered by an earlier release or a run that was interrupted.
 '
-' Scope (asked at start): a batch file (only its Include=Y users) or blank = every registered DirSync user.
-' Only users whose Person document names a mail file that does NOT exist yet are touched; existing mail
-' files are never changed (idempotent - run it as often as needed). Honors DryRun (1 = report only).
-' Run it right after each 03 - Register Batch: until the mail file exists, mail for that user cannot be
-' delivered. It can run in a second Notes client while the next batch is being registered.
+' How it is fast (4.2.0):
+'   - one database list per mail server instead of one open per user (BR_MailInventory)
+'   - the mail template is opened once and reused for every file (BR_CreateMailFileFast)
+'   - only users that need work are processed; healthy users cost nothing
+'   - work is done in chunks of MailRepairChunkSize (default 10) with a pause between chunks that grows when
+'     the server is slow (ChunkSlowSec); create <BatchDir>\STOP.txt to stop cleanly after the current chunk
+'   - scope by mail SERVER: run a second Notes client on the other server at the same time
+'
+' Scope (asked at start): empty = every registered DirSync user | a mail server name | a BATCH-<id>.csv path.
+' Honors DryRun (1 = report only, nothing created, removed or changed). LIVE: type REPAIR to confirm.
+' Safe to re-run: existing healthy mail files are never touched.
+' Report: <BatchDir>\<scope>_mailrepair_<mode>_<run>.csv + the audit folder of the run + the log database.
 '=====================================================================
-Sub BR_RunCreateMailFiles()
+Sub BR_RunRepairMail()
 	On Error GoTo ErrH
 	gMode = "": gStopRun = ""
+	Set gTmplDb = Nothing: gTmplKey = ""
 	Dim ws As NotesUIWorkspace, ans As Variant
 	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
-	Dim scopeFile As String, bname As String, fh As Integer, txt As String
-	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, nid As String, rep As String
-	Dim total As Long, nMade As Long, nExist As Long, nFail As Long, nSkip As Long, nConsec As Long
-	Dim maxConsec As Long, pauseMs As Long, maxPer As Long, res As String, summary As String, stopReason As String
+	Dim scope As String, scopeFile As String, scopeSrv As String, bname As String, scopeLabel As String
+	Dim inv List As String, ids List As String
+	Dim wNid() As String, wKind() As String, nW As Long, capW As Long
+	Dim nScanned As Long, nNoMail As Long, nHealthy As Long, nPlanC As Long, nPlanK As Long
+	Dim fh As Integer, txt As String, cols List As Integer, delim As String, parts As Variant, isFirst As Boolean
+	Dim k As String, nidTxt As String, unidTxt As String, u As BRUser, ok As Boolean
+	Dim i As Long, done As Long, nMade As Long, nExist As Long, nFix As Long, nSkip As Long, nFail As Long, nConsec As Long
+	Dim maxConsec As Long, pauseMs As Long, maxPer As Long, chunk As Long, basePause As Long, pauseSec As Long, tChunk As Double
+	Dim lastMark As Long, workDone As Long, checkExisting As Long
+	Dim res As String, summary As String, stopReason As String
 
-	If Not BR_Init("CreateMail") Then Exit Sub
+	If Not BR_Init("RepairMail") Then Exit Sub
 	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
 	maxConsec = CfgL("MaxConsecutiveErrors", 5)
 	pauseMs = CfgL("PauseMs", 500)
 	maxPer = CfgL("MailCreateMaxPerRun", 0)            ' 0 = no limit
+	chunk = CfgL("MailRepairChunkSize", 10)            ' 0 = no chunking
+	basePause = CfgL("ChunkPauseSec", 5)
+	If basePause < 0 Then basePause = 0
+	pauseSec = basePause
+	checkExisting = CfgL("RepairCheckExisting", 1)     ' 0 = only create missing files | 1 = + completeness check | 2 = + title and ACL
 	If Trim$(CfgS("MailTemplate", "")) = "" Then
 		BR_Close "MailTemplate missing"
 		BR_Msg "MailTemplate (e.g. mail145.ntf) is required in bulkreg.ini to create mail files.", 16
 		Exit Sub
 	End If
+	If Dir$(BR_StopFile()) <> "" Then
+		BR_Close "STOP.txt present"
+		BR_Msg "STOP.txt exists in " & BR_BatchDir() & ". Delete it to run again.", 48
+		Exit Sub
+	End If
 
+	' ---------- scope ----------
 	Set ws = New NotesUIWorkspace
-	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Create mail files (" & gMode & ")", _
-	"Create the missing mail files of ONE batch: enter the batch file path." & Chr$(10) & _
-	"All registered DirSync users: leave empty.", BR_LatestBatch())
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Repair missing mail files (" & gMode & ")", _
+	"Scope. Leave EMPTY for all registered DirSync users on all mail servers, or enter:" & Chr$(10) & _
+	"  - a mail server name: only users on that server (run a second client on the other server in parallel)" & Chr$(10) & _
+	"  - the path of a BATCH-<id>.csv: only the users of that batch", "")
 	If IsEmpty(ans) Then
 		BR_Close "Cancelled"
 		Exit Sub
 	End If
-	scopeFile = BR_LocalPath(Trim$(CStr(ans)))
-	If CInt(ws.Prompt(PROMPT_YESNO, "BulkReg - " & gMode, "Mode: " & BR_IIfStr(gMode = "LIVE", "LIVE - mail files WILL be created (template " & CfgS("MailTemplate", "") & ")", "DRY RUN (DryRun=1) - report only, NOTHING is created") & Chr$(10) & _
-	"Scope: " & BR_IIfStr(scopeFile = "", "all registered DirSync users", scopeFile) & Chr$(10) & _
-	"Limit per run: " & BR_IIfStr(maxPer > 0, CStr(maxPer), "none") & Chr$(10) & Chr$(10) & "Continue?")) <> 1 Then
-		BR_Close "Cancelled by operator"
-		Exit Sub
-	End If
-	gResultsFile = BR_BatchDir() & BR_IIfStr(scopeFile = "", "ALL", Left$(StrRightBack(scopeFile, gSep), Len(StrRightBack(scopeFile, gSep)) - 4)) & "_mailcreate_" & gMode & "_" & gRunID & ".csv"
-	Call BR_AppendLine(gResultsFile, Uchr$(&HFEFF) & BR_AuditHeader())
-	Set db = BR_OpenDirectory()
-
-	If scopeFile <> "" Then
+	scope = Trim$(CStr(ans))
+	If LCase$(Right$(scope, 4)) = ".csv" Then
+		scopeFile = BR_LocalPath(scope)
 		If Dir$(scopeFile) = "" Then Error 8001, "Batch file not found: " & scopeFile
 		bname = StrRightBack(scopeFile, gSep)
 		If Left$(bname, 6) <> "BATCH-" Or InStr(bname, "_") > 0 Then Error 8002, "Choose the batch file itself (BATCH-<id>.csv): " & bname
 		gBatchID = Left$(bname, Len(bname) - 4)
+		scopeLabel = gBatchID
+	ElseIf scope <> "" Then
+		scopeSrv = BR_SrvAbbr(scope)
+		scopeLabel = "SRV-" & BR_SafeName(scopeSrv)
+	Else
+		scopeLabel = "ALL"
+	End If
+
+	gResultsFile = BR_BatchDir() & scopeLabel & "_mailrepair_" & gMode & "_" & gRunID & ".csv"
+	Call BR_AppendLine(gResultsFile, Uchr$(&HFEFF) & BR_AuditHeader())
+
+	' ---------- batch scope: the NoteIDs / UNIDs of the Include=Y rows ----------
+	If scopeFile <> "" Then
 		fh = FreeFile()
 		Open scopeFile For Input As #fh Charset = "UTF-8"
 		isFirst = True
@@ -1564,124 +1726,301 @@ Sub BR_RunCreateMailFiles()
 			ElseIf Trim$(txt) <> "" Then
 				parts = BR_CsvSplit(txt, delim)
 				If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
-					nid = BR_CsvGet(parts, cols, "NoteID")
-					If IsElement(cols("clusterreplicas")) Then rep = BR_CsvGet(parts, cols, "ClusterReplicas") Else rep = "*auto"
-					total = total + 1
-					Set doc = Nothing
-					On Error Resume Next
-					Set doc = db.GetDocumentByID(nid)
-					Err = 0
-					On Error GoTo ErrH
-					res = BR_CreateMailOne(doc, nid, rep)
-					stopReason = BR_MailTally(res, nMade, nExist, nSkip, nFail, nConsec, maxConsec, maxPer, pauseMs)
-					If stopReason <> "" Then Exit Do
+					nidTxt = BR_CsvGet(parts, cols, "NoteID")
+					unidTxt = BR_CsvGet(parts, cols, "UNID")
+					If nidTxt <> "" Then ids("n" & UCase$(nidTxt)) = "1"
+					If unidTxt <> "" Then ids("u" & UCase$(unidTxt)) = "1"
 				End If
 			End If
 		Loop
 		Close #fh
-	Else
-		Set col = BR_GetCandidates(db, False)
-		Set doc = col.GetFirstDocument()
-		Do While Not (doc Is Nothing)
-			total = total + 1
-			res = BR_CreateMailOne(doc, CStr(doc.NoteID), "*auto")
-			stopReason = BR_MailTally(res, nMade, nExist, nSkip, nFail, nConsec, maxConsec, maxPer, pauseMs)
-			If stopReason <> "" Then Exit Do
-			Set doc = col.GetNextDocument(doc)
-		Loop
 	End If
-	If stopReason = "" Then stopReason = "All users in scope processed"
-	summary = gMode & " | " & BR_IIfStr(gBatchID = "", "All DirSync users", gBatchID) & " | checked=" & total & " created/would create=" & nMade & " already existed=" & nExist & " failed=" & nFail & " skipped=" & nSkip & " | " & stopReason
+
+	' ---------- plan (read only): who needs work ----------
+	Set db = BR_OpenDirectory()
+	Set col = BR_GetCandidates(db, False)
+	Set doc = col.GetFirstDocument()
+	Do While Not (doc Is Nothing)
+		nScanned = nScanned + 1
+		ok = True
+		If scopeFile <> "" Then
+			ok = IsElement(ids("n" & UCase$(CStr(doc.NoteID)))) Or IsElement(ids("u" & UCase$(CStr(doc.UniversalID))))
+		End If
+		If ok Then
+			k = BR_RepairClass(doc, scopeSrv, inv, checkExisting)
+			Select Case k
+			Case "N"
+				nNoMail = nNoMail + 1
+				Call BR_LightUser(doc, u)
+				u.MailFileStatus = "NO_MAILFILE_IN_PERSON_DOC"
+				Call BR_Audit(u, gMode, "REPAIR_MAIL", "SKIPPED", 0, "Registered, but the Person document has no MailServer/MailFile - nothing to create. Set both items (agent 09 - Reconcile lists these users).")
+			Case "C", "U", "K"
+				If nW >= capW Then
+					capW = capW + 500
+					ReDim Preserve wNid(capW) As String, wKind(capW) As String
+				End If
+				wNid(nW) = CStr(doc.NoteID)
+				wKind(nW) = k
+				nW = nW + 1
+				If k = "K" Then nPlanK = nPlanK + 1 Else nPlanC = nPlanC + 1
+			Case Else
+				' registered, mail file exists, no check requested - or out of scope
+			End Select
+		End If
+		Set doc = col.GetNextDocument(doc)
+	Loop
+	nHealthy = nScanned - nW - nNoMail
+	BR_Log LVL_INFO, "Plan: scanned " & nScanned & " | to create/confirm " & nPlanC & " | to check " & nPlanK & " | no mail item " & nNoMail & " | scope " & scopeLabel
+	If nW = 0 Then
+		summary = gMode & " | " & scopeLabel & " | scanned=" & nScanned & " | nothing to create or check | no mail item in Person doc=" & nNoMail
+		BR_Close summary
+		BR_Msg summary, 64
+		Exit Sub
+	End If
+
+	' ---------- confirmation ----------
+	If gMode = "DRYRUN" Then
+		If CInt(ws.Prompt(PROMPT_YESNO, "BulkReg - Repair mail files (DRYRUN)", "DRY RUN (DryRun=1) - report only, NOTHING is created, removed or changed" & Chr$(10) & _
+		"Scope: " & scopeLabel & Chr$(10) & "Mail files missing or unconfirmed: " & nPlanC & Chr$(10) & "Existing files to check: " & nPlanK & Chr$(10) & _
+		"Registered users without MailFile item: " & nNoMail & Chr$(10) & Chr$(10) & "Continue?")) <> 1 Then
+			BR_Close "Cancelled by operator"
+			Exit Sub
+		End If
+	Else
+		ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Repair mail files (LIVE)", _
+		"LIVE: up to " & nPlanC & " mail files WILL be created from " & CfgS("MailTemplate", "") & "." & Chr$(10) & _
+		"Existing files to check: " & nPlanK & BR_IIfStr(CfgB("RepairRemoveEmptyShells", False), "  (EMPTY shells in the numbered mail folders will be removed and recreated)", "  (no existing file is changed beyond title/ACL)") & Chr$(10) & _
+		"Chunks of " & BR_IIfStr(chunk > 0, CStr(chunk), "all") & ", pause " & basePause & " s. Create " & BR_StopFile() & " to stop cleanly." & Chr$(10) & Chr$(10) & _
+		"Type REPAIR to approve:", "")
+		If IsEmpty(ans) Then ans = ""
+		If CStr(ans) <> "REPAIR" Then
+			BR_Log LVL_WARN, "LIVE repair not approved - aborted"
+			BR_Close "Not approved"
+			Exit Sub
+		End If
+	End If
+
+	' ---------- work, in chunks ----------
+	tChunk = Timer
+	For i = 0 To nW - 1
+		Set doc = Nothing
+		On Error Resume Next
+		Set doc = db.GetDocumentByID(wNid(i))
+		Err = 0
+		On Error GoTo ErrH
+		res = BR_RepairOne(doc, wNid(i), wKind(i), checkExisting)
+		Select Case Left$(res, 2)
+		Case "OK": nMade = nMade + 1: nConsec = 0
+		Case "EX": nExist = nExist + 1: nConsec = 0
+		Case "FX": nFix = nFix + 1: nConsec = 0
+		Case "SK": nSkip = nSkip + 1
+		Case Else: nFail = nFail + 1: nConsec = nConsec + 1
+		End Select
+		Print "BulkReg " & gMode & " repair: " & (i + 1) & "/" & nW & "  created=" & nMade & " fixed=" & nFix & " fail=" & nFail & " skip=" & nSkip
+		If nConsec >= maxConsec Then
+			stopReason = "Circuit breaker: " & nConsec & " consecutive failures"
+			BR_Log LVL_ERROR, stopReason
+			Exit For
+		End If
+		If maxPer > 0 And nMade >= maxPer Then
+			stopReason = "MailCreateMaxPerRun (" & maxPer & ") reached - run again for the rest"
+			BR_Log LVL_INFO, stopReason
+			Exit For
+		End If
+		If gMode = "LIVE" And pauseMs > 0 And Left$(res, 2) = "OK" Then Sleep pauseMs / 1000
+		' chunk = a number of files actually created/fixed (checking healthy files costs the server nothing)
+		workDone = nMade + nFix
+		If gMode = "LIVE" And chunk > 0 And (workDone - lastMark) >= chunk Then
+			lastMark = workDone
+			done = i + 1
+			stopReason = BR_ChunkEnd("Repair mail", done, nW, chunk, tChunk, pauseSec, basePause, nMade, nFail)
+			If stopReason <> "" Then
+				BR_Log LVL_WARN, stopReason
+				Exit For
+			End If
+			Set db = BR_OpenDirectory()
+		End If
+	Next
+	If stopReason = "" Then stopReason = "All planned users processed"
+	summary = gMode & " | " & scopeLabel & " | scanned=" & nScanned & " planned=" & nW & " created/would create=" & nMade & " existing OK=" & nExist & " fixed=" & nFix & " skipped=" & nSkip & " failed=" & nFail & " no mail item=" & nNoMail & " | " & stopReason
+	Set gTmplDb = Nothing
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & gResultsFile & Chr$(10) & "Log: " & gDebugFile & Chr$(10) & Chr$(10) & _
-	BR_IIfStr(gMode = "LIVE", "Cluster replicas are created by AdminP over the next minutes/hours. Run 04 - Verify Registration and Vault next.", "Dry run only. Set DryRun=0 to create the mail files."), _
+	BR_IIfStr(gMode = "LIVE", "Cluster replicas are created by AdminP over the next minutes/hours. Run 09 - Reconcile to confirm that nothing is missing, then 04 - Verify.", "Dry run only. Set DryRun=0 to create the mail files."), _
 	CInt(BR_IIfStr(nFail > 0, "48", "64"))
 	Exit Sub
 
 ErrH:
-	BR_Log LVL_ERROR, "Create mail files aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	On Error Resume Next
+	Close #fh
+	Set gTmplDb = Nothing
+	BR_Log LVL_ERROR, "Repair mail files aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
 	BR_Close "ABORTED"
-	BR_Msg "Create mail files aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
+	BR_Msg "Repair mail files aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
 	Exit Sub
 End Sub
 
-' Counts one result of BR_CreateMailOne (counters are passed by reference) and returns a stop reason,
-' or "" to continue. Pauses between created mail files.
-Function BR_MailTally(res As String, nMade As Long, nExist As Long, nSkip As Long, nFail As Long, nConsec As Long, maxConsec As Long, maxPer As Long, pauseMs As Long) As String
-	Select Case Left$(res, 2)
-	Case "OK": nMade = nMade + 1: nConsec = 0
-	Case "EX": nExist = nExist + 1: nConsec = 0
-	Case "SK": nSkip = nSkip + 1
-	Case Else: nFail = nFail + 1: nConsec = nConsec + 1
-	End Select
-	If nConsec >= maxConsec Then
-		BR_MailTally = "Circuit breaker: " & nConsec & " consecutive failures"
-		BR_Log LVL_ERROR, BR_MailTally
-	ElseIf maxPer > 0 And nMade >= maxPer Then
-		BR_MailTally = "MailCreateMaxPerRun (" & maxPer & ") reached - run again for the rest"
-		BR_Log LVL_INFO, BR_MailTally
-	ElseIf pauseMs > 0 And Left$(res, 2) = "OK" Then
-		Sleep pauseMs / 1000
+' What does this Person document need?
+'   ""  nothing / out of scope     "N"  registered but no MailServer/MailFile item
+'   "C"  mail file missing per the server's database list (confirmed by one open before creating)
+'   "U"  no database list for that server: decide per file with one open
+'   "K"  mail file exists and RepairCheckExisting asks for a completeness check
+Function BR_RepairClass(doc As NotesDocument, scopeSrv As String, inv List As String, checkExisting As Long) As String
+	Dim srv As String, mf As String
+	If Not BR_IsRegistered(doc) Then Exit Function
+	srv = BR_SrvAbbr(BR_Item(doc, "MailServer"))
+	mf = BR_MailPathNorm(BR_Item(doc, "MailFile"))
+	If srv = "" Or mf = "" Then
+		If scopeSrv = "" Then BR_RepairClass = "N"
+		Exit Function
+	End If
+	If scopeSrv <> "" Then
+		If Not BR_SameServer(srv, scopeSrv) Then Exit Function
+	End If
+	Call BR_MailInventory(srv, inv)
+	If BR_InvLoaded(srv, inv) Then
+		If BR_InvHas(srv, mf, inv) Then
+			If checkExisting > 0 Then BR_RepairClass = "K"
+		Else
+			BR_RepairClass = "C"
+		End If
+	Else
+		BR_RepairClass = "U"
 	End If
 End Function
 
-' One user. Returns OK... (created / would create), EXISTS, SKIP... or FAIL...
-Function BR_CreateMailOne(doc As NotesDocument, nid As String, rep As String) As String
+' The fields of a Person document that audit rows and mail titles need - without the mapping / mail-folder
+' allocation of BR_ReadUser (a registered user keeps the name and mail file it has).
+Sub BR_LightUser(doc As NotesDocument, u As BRUser)
+	Call BR_ClearUser(u)
+	u.NoteID = doc.NoteID
+	u.UNID = doc.UniversalID
+	u.GUID = BR_Item(doc, "objectGUID")
+	u.FullNameBefore = BR_Item(doc, "FullName")
+	u.FirstName = BR_Clean(BR_Item(doc, "FirstName"))
+	u.LastName = BR_Clean(BR_Item(doc, "LastName"))
+	u.FullNameAfter = BR_RegisteredName(doc, u)          ' ACL owner / mail title need the registered name
+	If u.FullNameAfter = "" Then u.FullNameAfter = u.FullNameBefore
+	u.ShortName = BR_PickShortName(doc)
+	u.InternetAddress = BR_Clean(BR_Item(doc, "InternetAddress"))
+	u.HomeServer = BR_SrvAbbr(BR_Item(doc, "MailServer"))
+	u.MailFile = BR_MailPathNorm(BR_Item(doc, "MailFile"))
+	u.MapRule = "directory"
+End Sub
+
+' One user. Returns OK... (created / would create), EXISTS, FX (fixed), SKIP... or FAIL...
+' Never deletes a mail file that holds documents; never overwrites an existing file.
+Function BR_RepairOne(doc As NotesDocument, nid As String, kind As String, checkExisting As Long) As String
 	Dim u As BRUser, t0 As Double, srv As String, cr As String, tRes As String, aRes As String, note As String
+	Dim health As String, sdb As NotesDatabase, existed As Boolean, fixed As Boolean
 	t0 = Timer
 	On Error GoTo ErrH
 	If doc Is Nothing Then
 		u.NoteID = nid
-		Call BR_Audit(u, gMode, "CREATE_MAIL", "NOT_FOUND", BR_Elapsed(t0), "Person document no longer exists")
-		BR_CreateMailOne = "SKIP:gone"
+		Call BR_Audit(u, gMode, "REPAIR_MAIL", "NOT_FOUND", BR_Elapsed(t0), "Person document no longer exists")
+		BR_RepairOne = "SKIP:gone"
 		Exit Function
 	End If
-	Call BR_ReadUser(doc, u)
-	u.FullNameAfter = u.FullNameBefore
-	If Not BR_IsRegistered(doc) Then
-		Call BR_Audit(u, gMode, "CREATE_MAIL", "SKIPPED", BR_Elapsed(t0), "Not registered yet")
-		BR_CreateMailOne = "SKIP:unregistered"
-		Exit Function
-	End If
-	' the Person document is authoritative: 03 wrote MailServer + MailFile there
-	u.MailFile = BR_Path(BR_Item(doc, "MailFile"))
-	srv = BR_SrvAbbr(BR_Item(doc, "MailServer"))
-	u.HomeServer = srv
+	Call BR_LightUser(doc, u)
+	srv = u.HomeServer
 	If u.MailFile = "" Or srv = "" Then
 		u.MailFileStatus = "NO_MAILFILE_IN_PERSON_DOC"
-		Call BR_Audit(u, gMode, "CREATE_MAIL", "SKIPPED", BR_Elapsed(t0), "Person document has no MailServer/MailFile")
-		BR_CreateMailOne = "SKIP:nomail"
+		Call BR_Audit(u, gMode, "REPAIR_MAIL", "SKIPPED", BR_Elapsed(t0), "Person document has no MailServer/MailFile")
+		BR_RepairOne = "SKIP:nomail"
 		Exit Function
 	End If
-	If BR_MailFileExists(srv, u.MailFile) Then
-		u.MailFileStatus = "MAILFILE_OK"
-		Call BR_Audit(u, gMode, "CREATE_MAIL", "MAIL_EXISTS", BR_Elapsed(t0), "Mail file already exists - not touched")
-		BR_CreateMailOne = "EXISTS"
+	If Not BR_IsRegistered(doc) Then
+		Call BR_Audit(u, gMode, "REPAIR_MAIL", "SKIPPED", BR_Elapsed(t0), "Not registered yet")
+		BR_RepairOne = "SKIP:unregistered"
 		Exit Function
 	End If
-	If rep = "*auto" Then cr = BR_ReplicaServers(srv, u.ReplicaSpec) Else cr = BR_SrvList(rep, srv)
+
+	' does it exist? "K" says so already; "C"/"U" are confirmed with ONE open (the database list only shows what this ID may see)
+	If kind = "K" Then existed = True Else existed = BR_MailFileExists(srv, u.MailFile)
+
+	If existed Then
+		If checkExisting < 1 Then
+			u.MailFileStatus = "MAILFILE_OK"
+			Call BR_Audit(u, gMode, "REPAIR_MAIL", "MAIL_EXISTS_OK", BR_Elapsed(t0), "Mail file exists - not touched")
+			BR_RepairOne = "EXISTS"
+			Exit Function
+		End If
+		health = BR_MailHealth(srv, u.MailFile)
+		If health = "OK" Then
+			u.MailFileStatus = "MAILFILE_OK"
+			If checkExisting >= 2 Then
+				' title and ACL: corrected in LIVE, only reported in a dry run
+				aRes = BR_MailAclFix(srv, u.MailFile, u.FullNameAfter, gMode = "LIVE")
+				tRes = BR_MailTitleFix(srv, u.MailFile, BR_MailTitle(u), gMode = "LIVE", CfgB("MailFileTitleOverwrite", False))
+				note = aRes & "; " & tRes
+				fixed = (Left$(aRes, 7) = "ACL_SET" Or tRes = "TITLE_SET")
+				If fixed Then
+					Call BR_Audit(u, gMode, "REPAIR_MAIL", "ACL_TITLE_FIXED", BR_Elapsed(t0), note)
+					BR_RepairOne = "FX"
+					Exit Function
+				End If
+				If InStr(aRes, "ACL_MISSING") > 0 Or tRes = "TITLE_EMPTY" Then
+					Call BR_Audit(u, gMode, "REPAIR_MAIL", "WOULD_FIX_ACL_TITLE", BR_Elapsed(t0), note)
+					BR_RepairOne = "FX"
+					Exit Function
+				End If
+				If Left$(aRes, 9) = "ACL_ERROR" Or Left$(tRes, 11) = "TITLE_ERROR" Then
+					Call BR_Audit(u, gMode, "REPAIR_MAIL", "CHECK_WARNING", BR_Elapsed(t0), note)
+					BR_RepairOne = "SKIP:check"
+					Exit Function
+				End If
+			End If
+			Call BR_Audit(u, gMode, "REPAIR_MAIL", "MAIL_EXISTS_OK", BR_Elapsed(t0), "Mail file complete - not touched")
+			BR_RepairOne = "EXISTS"
+			Exit Function
+		End If
+		If Left$(health, 9) = "NO_DESIGN" Then
+			u.MailFileStatus = "MAILFILE_INCOMPLETE"
+			' only an EMPTY shell in a BulkReg numbered mail folder may be removed, and only when switched on and LIVE
+			If InStr(health, "EMPTY") > 0 And CfgB("RepairRemoveEmptyShells", False) And gMode = "LIVE" And BR_IsNewMailFolder(StrLeftBack(u.MailFile, "\")) Then
+				Set sdb = gSession.GetDatabase(srv, BR_SrvPathFor(srv, u.MailFile), False)
+				If Not sdb.IsOpen Then Call sdb.Open("", "")
+				Call sdb.Remove()
+				existed = False
+				note = "EMPTY_SHELL removed (" & health & "); "
+				BR_Log LVL_WARN, "Removed empty mail file shell " & srv & "!!" & u.MailFile
+			Else
+				Call BR_Audit(u, gMode, "REPAIR_MAIL", "INCOMPLETE_NO_DESIGN", BR_Elapsed(t0), "Mail file exists but has no ($Inbox) view: " & health & ". NOTHING was changed." & _
+				BR_IIfStr(InStr(health, "EMPTY") > 0, " It is an empty shell: remove it on the server, or set RepairRemoveEmptyShells=1 and run 08 again.", " It holds documents: replace its design from " & CfgS("MailTemplate", "") & " in Domino Administrator (never recreate it)."))
+				BR_Log LVL_WARN, "Mail file incomplete " & srv & "!!" & u.MailFile & " : " & health
+				BR_RepairOne = "SKIP:incomplete"
+				Exit Function
+			End If
+		ElseIf health <> "NOT_FOUND" Then
+			Call BR_Audit(u, gMode, "REPAIR_MAIL", "FAILED", BR_Elapsed(t0), "Completeness check failed: " & health)
+			BR_RepairOne = "FAIL:check"
+			Exit Function
+		Else
+			existed = False                         ' vanished between plan and processing: create it
+		End If
+	End If
+
+	' ---- the mail file does not exist: create it ----
+	cr = BR_ReplicaServers(srv, "")
 	u.ClusterReplicas = cr
 	u.MailFileStatus = "MAILFILE_MISSING"
 	If gMode = "DRYRUN" Then
 		u.ReplicaStatus = BR_IIfStr(cr = "", "NONE", "WOULD_REQUEST " & BR_ListCount(cr) & " (" & cr & ")")
-		Call BR_Audit(u, gMode, "CREATE_MAIL", "WOULD_CREATE", BR_Elapsed(t0), "Would create " & srv & "!!" & u.MailFile & " from " & CfgS("MailTemplate", "") & ", title '" & BR_MailTitle(u) & "'")
-		BR_CreateMailOne = "OK:dryrun"
+		Call BR_Audit(u, gMode, "REPAIR_MAIL", "WOULD_CREATE", BR_Elapsed(t0), "Would create " & srv & "!!" & u.MailFile & " from " & CfgS("MailTemplate", "") & ", title '" & BR_MailTitle(u) & "'")
+		BR_RepairOne = "OK:dryrun"
 		Exit Function
 	End If
 
-	' ---- LIVE ----
-	tRes = BR_CreateMailFile(srv, u.MailFile, CfgS("MailTemplate", ""), BR_MailTitle(u))
+	tRes = BR_CreateMailFileFast(srv, u.MailFile, CfgS("MailTemplate", ""), BR_MailTitle(u))
 	If Left$(tRes, 12) <> "MAIL_CREATED" Then
 		u.ReplicaStatus = "NOT_REQUESTED (mail file not created)"
-		Call BR_Audit(u, gMode, "CREATE_MAIL", "FAILED", BR_Elapsed(t0), tRes)
+		Call BR_Audit(u, gMode, "REPAIR_MAIL", "FAILED", BR_Elapsed(t0), note & tRes)
 		BR_Log LVL_ERROR, "Mail file " & srv & "!!" & u.MailFile & " : " & tRes
-		BR_CreateMailOne = "FAIL:create"
+		BR_RepairOne = "FAIL:create"
 		Exit Function
 	End If
 	u.MailFileStatus = "MAILFILE_OK"
-	note = tRes
-	tRes = BR_MailTitleFix(srv, u.MailFile, BR_MailTitle(u), True, CfgB("MailFileTitleOverwrite", False))
-	note = note & "; " & tRes
+	note = note & tRes                                  ' title was set while creating
 	' managers + owner BEFORE the replicas (they copy the ACL)
 	aRes = BR_MailAclFix(srv, u.MailFile, u.FullNameAfter, True)
 	note = note & "; " & aRes
@@ -1694,21 +2033,654 @@ Function BR_CreateMailOne(doc As NotesDocument, nid As String, rep As String) As
 		u.ReplicaStatus = BR_RequestReplicas(u)
 	End If
 	u.MailFileNote = note
-	If Left$(aRes, 9) = "ACL_ERROR" Or Left$(tRes, 11) = "TITLE_ERROR" Or InStr(u.ReplicaStatus, "FAILED") > 0 Then
-		Call BR_Audit(u, gMode, "CREATE_MAIL", "CREATED_PENDING", BR_Elapsed(t0), note & " | replicas: " & u.ReplicaStatus & " - fix with 04 - Verify")
+	If Left$(aRes, 9) = "ACL_ERROR" Or InStr(u.ReplicaStatus, "FAILED") > 0 Then
+		Call BR_Audit(u, gMode, "REPAIR_MAIL", "CREATED_PENDING", BR_Elapsed(t0), note & " | replicas: " & u.ReplicaStatus & " - fix with 04 - Verify")
 		BR_Log LVL_WARN, "Mail file created with follow-up needed: " & u.MailFile & " : " & note & " | " & u.ReplicaStatus
 	Else
-		Call BR_Audit(u, gMode, "CREATE_MAIL", "MAIL_CREATED", BR_Elapsed(t0), note & " (" & Format$(BR_Elapsed(t0), "0.0") & "s)")
+		Call BR_Audit(u, gMode, "REPAIR_MAIL", "MAIL_CREATED", BR_Elapsed(t0), note & " (" & Format$(BR_Elapsed(t0), "0.0") & "s)")
 		BR_Log LVL_INFO, "Mail file created " & srv & "!!" & u.MailFile & " (" & Format$(BR_Elapsed(t0), "0.0") & "s)"
 	End If
-	BR_CreateMailOne = "OK"
+	BR_RepairOne = "OK"
 	Exit Function
 ErrH:
-	Call BR_Audit(u, gMode, "CREATE_MAIL", "FAILED", BR_Elapsed(t0), "err=" & Err & " " & Error$ & " (line " & Erl & ")")
-	BR_Log LVL_ERROR, "Create mail FAILED " & u.FullNameBefore & " : " & Error$ & " (line " & Erl & ")"
-	BR_CreateMailOne = "FAIL:error"
+	Call BR_Audit(u, gMode, "REPAIR_MAIL", "FAILED", BR_Elapsed(t0), "err=" & Err & " " & Error$ & " (line " & Erl & ")")
+	BR_Log LVL_ERROR, "Repair mail FAILED " & u.FullNameBefore & " : " & Error$ & " (line " & Erl & ")"
+	BR_RepairOne = "FAIL:error"
 	Exit Function
 End Function
+
+' Creates the mail file from the template. The template database is opened ONCE per server/template and
+' reused (gTmplDb). The existence check is the caller's job (BR_RepairOne confirmed it moments ago).
+' MailInheritTemplate=1 (default) = the file inherits its design from the template, as registration does.
+' Returns MAIL_CREATED or MAIL_CREATE_ERROR(...)
+Function BR_CreateMailFileFast(server As String, path As String, tmplName As String, title As String) As String
+	On Error GoTo ErrH
+	Dim mdb As NotesDatabase, k As String
+	k = LCase$(server & "!!" & tmplName)
+	If gTmplDb Is Nothing Or gTmplKey <> k Then
+		Set gTmplDb = gSession.GetDatabase(server, tmplName, False)
+		If Not gTmplDb.IsOpen Then Call gTmplDb.Open("", "")
+		If Not gTmplDb.IsOpen Then
+			Set gTmplDb = Nothing
+			gTmplKey = ""
+			BR_CreateMailFileFast = "MAIL_CREATE_ERROR(template " & tmplName & " not found on " & server & ")"
+			Exit Function
+		End If
+		gTmplKey = k
+	End If
+	Set mdb = gTmplDb.CreateFromTemplate(server, BR_SrvPathFor(server, path), CfgB("MailInheritTemplate", True))
+	If title <> "" Then mdb.Title = title
+	BR_CreateMailFileFast = "MAIL_CREATED"
+	Exit Function
+ErrH:
+	BR_CreateMailFileFast = "MAIL_CREATE_ERROR(" & Error$ & " err " & Err & ")"
+	Exit Function
+End Function
+
+' A string safe in a file name (server names: DominoADMail/Demo -> DominoADMail-Demo)
+Function BR_SafeName(s As String) As String
+	Dim i As Integer, c As String, r As String
+	For i = 1 To Len(s)
+		c = Mid$(s, i, 1)
+		If c Like "[A-Za-z0-9_.-]" Then r = r & c Else r = r & "-"
+	Next
+	BR_SafeName = r
+End Function
+
+'=====================================================================
+' BR_RunReconcile  -  runs agent BulkReg\09 - Reconcile
+'   The agent itself only contains:  Call BR_RunReconcile()
+'   READ-ONLY: changes nothing in Domino, only writes CSV files.
+'
+' Compares the Domino Directory, the mail servers and the batch files and answers:
+'   1. MISSING USERS      DirSync users that are not registered (and why: open batch, batch DONE but no
+'                         certificate, no Internet address, in no batch) - plus, when you give an
+'                         expected-users list (CSV with a ShortName, InternetAddress or FullName column),
+'                         the users of that list that are not in the directory at all
+'   2. MAILBOX MISSING    registered users whose mail file is missing (or incomplete with
+'                         ReconcileCheckHealth=1) or whose Person document has no mail file item
+'   3. ORPHAN MAIL FILES  mail files in the numbered mail folders that no Person document points at
+'   4. NAME SPACING       Person items (JobTitle, FirstName, LastName, FullName) with extra, leading,
+'                         trailing or non-breaking blanks - the cause of "Common name differs"
+' Files, in ReconcileDir (default <BaseDir>\reconcile\; the run folder when that is not writable):
+'   RECON_<run>_all.csv            one row per directory user (open it in Excel, filter on Status)
+'   RECON_<run>_missing_users.csv  not registered / not in the directory
+'   RECON_<run>_missing_mail.csv   registered, mailbox missing / incomplete / not recorded
+'   RECON_<run>_orphan_mail.csv    mail files with no user
+'   RECON_<run>_summary.txt        counts per status
+' Mail existence comes from ONE database list per server (fast); a file missing per the list is confirmed
+' with one direct open (ReconcileConfirmMissing=1, default) so a list the ID cannot fully see never
+' produces false "missing" rows.
+'=====================================================================
+Sub BR_RunReconcile()
+	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace, ans As Variant
+	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
+	Dim inv List As String, refd List As String, cnt List As Long, batchOf List As String
+	Dim xlKeys List As String, xlOrig List As String, xlSeen List As String
+	Dim outDir As String, pfx As String, xlFile As String, xlCol As String
+	Dim fhAll As Integer, fhUsr As Integer, fhMail As Integer, fhOrph As Integer, fh As Integer
+	Dim txt As String, cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, hdr As String
+	Dim nTotal As Long, nXl As Long, nXlMissing As Long
+	Dim stat As String, action As String, srv As String, mf As String, onSrv As String, health As String, bt As String
+	Dim reg As Boolean, sp As String, ixl As String, matched As Boolean, v As Variant, j As Integer, row As String
+	Dim confirmMissing As Boolean, checkHealth As Boolean, skipInet As Boolean, inet As String, fullN As String, shortN As String
+	Dim nid As String, srvAll As String, lst As Variant, p As Long, summary As String, sumTxt As String
+	Dim tg As String, rl As Variant, rj As Integer
+
+	If Not BR_Init("Reconcile") Then Exit Sub
+	confirmMissing = CfgB("ReconcileConfirmMissing", True)
+	checkHealth = CfgB("ReconcileCheckHealth", False)
+	skipInet = CfgB("SkipNoInternetAddress", True)
+	' ---------- where the files go ----------
+	outDir = BR_CfgDir("ReconcileDir", "reconcile")
+	On Error Resume Next
+	MkDir Left$(outDir, Len(outDir) - 1)
+	Err = 0
+	On Error GoTo ErrH
+	If Not BR_DirWritable(outDir) Then
+		BR_Log LVL_WARN, "ReconcileDir " & outDir & " is not writable - using the run folder " & gRunDir
+		outDir = gRunDir
+	End If
+	pfx = outDir & "RECON_" & gRunID
+
+	' ---------- optional expected-users list ----------
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Reconcile", _
+	"OPTIONAL: path of a CSV with the users that SHOULD exist (e.g. the list of 1000 users)." & Chr$(10) & _
+	"It needs a column ShortName (or sAMAccountName, InternetAddress, FullName, Name). Leave EMPTY to reconcile the directory, the batches and the mail servers only.", CfgS("ReconcileExpectedList", ""))
+	If IsEmpty(ans) Then
+		BR_Close "Cancelled"
+		Exit Sub
+	End If
+	xlFile = Trim$(CStr(ans))
+	If xlFile <> "" Then
+		xlFile = BR_LocalPath(xlFile)
+		If Dir$(xlFile) = "" Then Error 9001, "Expected-users list not found: " & xlFile
+		fh = FreeFile()
+		Open xlFile For Input As #fh Charset = "UTF-8"
+		isFirst = True
+		Do Until EOF(fh)
+			Line Input #fh, txt
+			If isFirst Then
+				Call BR_CsvHeader(txt, delim, cols)
+				xlCol = ""
+				If IsElement(cols("shortname")) Then
+					xlCol = "ShortName"
+				ElseIf IsElement(cols("samaccountname")) Then
+					xlCol = "sAMAccountName"
+				ElseIf IsElement(cols("internetaddress")) Then
+					xlCol = "InternetAddress"
+				ElseIf IsElement(cols("fullname")) Then
+					xlCol = "FullName"
+				ElseIf IsElement(cols("name")) Then
+					xlCol = "Name"
+				End If
+				If xlCol = "" Then
+					Close #fh
+					Error 9002, "The expected-users list needs a column ShortName, sAMAccountName, InternetAddress, FullName or Name"
+				End If
+				isFirst = False
+			ElseIf Trim$(txt) <> "" Then
+				parts = BR_CsvSplit(txt, delim)
+				ixl = BR_CsvGet(parts, cols, xlCol)
+				If ixl <> "" Then
+					If Not IsElement(xlKeys(BR_NormKey(ixl))) Then
+						xlKeys(BR_NormKey(ixl)) = "0"
+						xlOrig(BR_NormKey(ixl)) = ixl
+						nXl = nXl + 1
+					End If
+				End If
+			End If
+		Loop
+		Close #fh
+		BR_Log LVL_INFO, "Expected-users list: " & nXl & " distinct values (column " & xlCol & ")"
+	End If
+
+	' ---------- batch membership: NoteID -> latest batch file and its state ----------
+	Call BR_ReconBatchMap(batchOf)
+
+	' ---------- mail inventories (one database list per server) ----------
+	srvAll = BR_SrvList(CfgS("HomeServers", "") & "," & CfgS("MailClusterServers", "") & "," & CfgS("DefaultHomeServer", ""), "")
+	If srvAll <> "" Then
+		lst = Split(srvAll, ",")
+		For j = 0 To UBound(lst)
+			If Trim$(CStr(lst(j))) <> "" And InStr(CStr(lst(j)), "<") = 0 Then Call BR_MailInventory(Trim$(CStr(lst(j))), inv)
+		Next
+	End If
+
+	' ---------- output files ----------
+	hdr = "NoteID,FullName,ShortName,InternetAddress,Registered,Status,Action,MailServer,MailFile,MailFileOnServer,MailHealth,Batch,SpacingItems,InExpectedList"
+	fhAll = BR_CsvOpen(pfx & "_all.csv", hdr)
+	fhUsr = BR_CsvOpen(pfx & "_missing_users.csv", hdr)
+	fhMail = BR_CsvOpen(pfx & "_missing_mail.csv", hdr)
+
+	' ---------- every directory user ----------
+	Set db = BR_OpenDirectory()
+	Set col = BR_GetCandidates(db, False)
+	Set doc = col.GetFirstDocument()
+	Do While Not (doc Is Nothing)
+		nTotal = nTotal + 1
+		nid = CStr(doc.NoteID)
+		reg = BR_IsRegistered(doc)
+		fullN = BR_Item(doc, "FullName")
+		shortN = BR_PickShortName(doc)
+		inet = BR_Clean(BR_Item(doc, "InternetAddress"))
+		srv = BR_SrvAbbr(BR_Item(doc, "MailServer"))
+		mf = BR_MailPathNorm(BR_Item(doc, "MailFile"))
+		sp = BR_SpacingItems(doc)
+		bt = ""
+		If IsElement(batchOf("n" & UCase$(nid))) Then bt = batchOf("n" & UCase$(nid))
+		onSrv = "": health = ""
+		matched = False
+		' expected-list match: any ShortName value, the Internet address or any FullName value
+		If nXl > 0 Then matched = BR_ReconMatch(doc, xlKeys)
+		If reg Then
+			If srv = "" Or mf = "" Then
+				stat = "REGISTERED_NO_MAILFILE_ITEM"
+				action = "Person document has no MailServer/MailFile: set them (08 cannot guess a path)"
+			Else
+				Call BR_MailInventory(srv, inv)
+				If BR_InvLoaded(srv, inv) Then
+					If BR_InvHas(srv, mf, inv) Then
+						onSrv = "Y"
+					ElseIf confirmMissing Then
+						If BR_MailFileExists(srv, mf) Then onSrv = "Y" Else onSrv = "N"
+					Else
+						onSrv = "N"
+					End If
+				Else
+					If BR_MailFileExists(srv, mf) Then onSrv = "Y" Else onSrv = "N"
+				End If
+				refd(LCase$(BR_SrvAbbr(srv)) & "!!" & LCase$(BR_Path(mf))) = "1"
+				rl = Split(BR_ReplicaServers(srv, ""), ",")            ' cluster replicas of a referenced file are not orphans
+				For rj = 0 To UBound(rl)
+					If Trim$(CStr(rl(rj))) <> "" Then refd(LCase$(BR_SrvAbbr(CStr(rl(rj)))) & "!!" & LCase$(BR_Path(mf))) = "1"
+				Next
+				If onSrv = "N" Then
+					stat = "REGISTERED_MAIL_MISSING"
+					action = "Run 08 - Repair Missing Mail Files"
+				Else
+					stat = "OK"
+					action = ""
+					If checkHealth Then
+						health = BR_MailHealth(srv, mf)
+						If health <> "OK" Then
+							stat = "REGISTERED_MAIL_INCOMPLETE"
+							action = "Run 08 (reports it); an empty shell can be removed (RepairRemoveEmptyShells=1)"
+						End If
+					End If
+				End If
+			End If
+		Else
+			If bt <> "" And InStr(bt, "(DONE)") > 0 Then
+				stat = "NOT_REGISTERED_BATCH_DONE"
+				action = "Batch says DONE but the Person has no certificate: check the batch results/log, then 02 - Build Batch again"
+			ElseIf bt <> "" Then
+				stat = "NOT_REGISTERED_IN_OPEN_BATCH"
+				action = "Run 03 - Register Batch on " & bt
+			ElseIf inet = "" And skipInet Then
+				stat = "NOT_REGISTERED_NO_INET"
+				action = "No Internet address and none can be built: fix in AD / DirSync"
+			Else
+				stat = "NOT_REGISTERED"
+				action = "In no batch: run 01 - Preflight, 02 - Build Batch"
+			End If
+		End If
+		If sp <> "" And stat = "OK" Then action = "Spacing in " & sp & " (cosmetic after 4.2.0)"
+		row = Q(nid) & "," & Q(fullN) & "," & Q(shortN) & "," & Q(inet) & "," & Q(BR_IIfStr(reg, "Y", "N")) & "," & Q(stat) & "," & Q(action) & "," & Q(srv) & "," & Q(mf) & "," & Q(onSrv) & "," & Q(health) & "," & Q(bt) & "," & Q(sp) & "," & Q(BR_IIfStr(nXl = 0, "", BR_IIfStr(matched, "Y", "N")))
+		Print #fhAll, row
+		If InStr(stat, "NOT_REGISTERED") = 1 Then Print #fhUsr, row
+		If InStr(stat, "REGISTERED_MAIL_") = 1 Or stat = "REGISTERED_NO_MAILFILE_ITEM" Then Print #fhMail, row
+		If IsElement(cnt(stat)) Then cnt(stat) = cnt(stat) + 1 Else cnt(stat) = 1
+		If sp <> "" Then
+			If IsElement(cnt("(name spacing)")) Then cnt("(name spacing)") = cnt("(name spacing)") + 1 Else cnt("(name spacing)") = 1
+		End If
+		If nTotal Mod 500 = 0 Then Print "BulkReg Reconcile: " & nTotal & " users read"
+		Set doc = col.GetNextDocument(doc)
+	Loop
+
+	' ---------- expected users that are not in the directory ----------
+	If nXl > 0 Then
+		ForAll xv In xlKeys
+			If xv = "0" Then
+				nXlMissing = nXlMissing + 1
+				Print #fhUsr, Q("") & "," & Q(xlOrig(ListTag(xv))) & "," & Q("") & "," & Q("") & "," & Q("N") & "," & Q("NOT_IN_DIRECTORY") & "," & Q("In the expected list but no Person document matches: not synced from AD yet (DirSync) or a different spelling") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("N")
+			End If
+		End ForAll
+		If nXlMissing > 0 Then cnt("NOT_IN_DIRECTORY") = nXlMissing
+	End If
+	Close #fhAll
+	Close #fhUsr
+	Close #fhMail
+
+	' ---------- orphan mail files: in a numbered mail folder, no Person document points at them ----------
+	fhOrph = BR_CsvOpen(pfx & "_orphan_mail.csv", "MailServer,MailFile")
+	ForAll iv In inv
+		tg = ListTag(iv)
+		If Left$(tg, 5) <> "srv!!" Then
+			p = InStr(tg, "!!")
+			If p > 0 Then
+				mf = Mid$(tg, p + 2)
+				If LCase$(Right$(mf, 4)) = ".nsf" And InStr(mf, "\") > 0 Then
+					If BR_IsNewMailFolder(StrLeftBack(mf, "\")) Then
+						If Not IsElement(refd(tg)) Then
+							Print #fhOrph, Q(Left$(tg, p - 1)) & "," & Q(mf)
+							If IsElement(cnt("ORPHAN_MAIL_FILE")) Then cnt("ORPHAN_MAIL_FILE") = cnt("ORPHAN_MAIL_FILE") + 1 Else cnt("ORPHAN_MAIL_FILE") = 1
+						End If
+					End If
+				End If
+			End If
+		End If
+	End ForAll
+	Close #fhOrph
+
+	' ---------- summary ----------
+	sumTxt = "BulkReg " & BR_VERSION & " reconciliation " & gRunID & Chr$(13) & Chr$(10) & "Directory users read: " & nTotal & Chr$(13) & Chr$(10)
+	If nXl > 0 Then sumTxt = sumTxt & "Expected list: " & nXl & " values, not found in the directory: " & nXlMissing & Chr$(13) & Chr$(10)
+	ForAll cv In cnt
+		sumTxt = sumTxt & Right$("      " & CStr(cv), 7) & "  " & ListTag(cv) & Chr$(13) & Chr$(10)
+	End ForAll
+	sumTxt = sumTxt & Chr$(13) & Chr$(10) & "Files: " & pfx & "_all.csv | _missing_users.csv | _missing_mail.csv | _orphan_mail.csv" & Chr$(13) & Chr$(10)
+	Call BR_AppendLine(pfx & "_summary.txt", sumTxt)
+	BR_Log LVL_INFO, Replace(sumTxt, Chr$(13) & Chr$(10), " | ")
+	summary = "RECONCILE | users=" & nTotal & " ok=" & BR_ListLongText(cnt, "OK") & " mail missing=" & BR_ListLongText(cnt, "REGISTERED_MAIL_MISSING") & " no mail item=" & BR_ListLongText(cnt, "REGISTERED_NO_MAILFILE_ITEM") & " not registered=" & (nTotal - BR_RegisteredCount(cnt)) & " orphan mail files=" & BR_ListLongText(cnt, "ORPHAN_MAIL_FILE")
+	BR_Close summary
+	BR_Msg sumTxt & Chr$(10) & "Files are in " & outDir, 64
+	Exit Sub
+ErrH:
+	On Error Resume Next
+	Close #fhAll
+	Close #fhUsr
+	Close #fhMail
+	Close #fhOrph
+	Close #fh
+	BR_Log LVL_ERROR, "Reconcile aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Reconcile aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
+	Exit Sub
+End Sub
+
+' Number of directory users that ARE registered, from the per-status counters
+Function BR_RegisteredCount(cnt List As Long) As Long
+	Dim n As Long
+	ForAll c In cnt
+		If Left$(ListTag(c), 10) = "REGISTERED" Or ListTag(c) = "OK" Then n = n + c
+	End ForAll
+	BR_RegisteredCount = n
+End Function
+
+' Opens a new UTF-8 CSV for output and writes BOM + header. Returns the file number.
+Function BR_CsvOpen(path As String, header As String) As Integer
+	Dim fh As Integer
+	fh = FreeFile()
+	Open path For Output As #fh Charset = "UTF-8"
+	Print #fh, Uchr$(&HFEFF) & header
+	BR_CsvOpen = fh
+End Function
+
+' NoteID (upper case, "n" prefix) -> "BATCH-<id> (DONE)" or "BATCH-<id> (OPEN)" for every Include=Y row of every
+' batch file (the newest file wins when a user is in several)
+Sub BR_ReconBatchMap(batchOf List As String)
+	On Error GoTo ErrH
+	Dim d As String, f As String, files List As String, fh As Integer, txt As String, tag As String
+	Dim cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, bid As String, nk As String
+	d = BR_BatchDir()
+	f = Dir$(d & "BATCH-*.csv")
+	Do While f <> ""
+		If InStr(f, "_") = 0 Then files(f) = f
+		f = Dir$()
+	Loop
+	ForAll bf In files
+		bid = Left$(CStr(bf), Len(CStr(bf)) - 4)
+		tag = bid & BR_IIfStr(BR_BatchIsDone(bid), " (DONE)", " (OPEN)")
+		fh = FreeFile()
+		Open d & bf For Input As #fh Charset = "UTF-8"
+		isFirst = True
+		Do Until EOF(fh)
+			Line Input #fh, txt
+			If isFirst Then
+				Call BR_CsvHeader(txt, delim, cols)
+				isFirst = False
+			ElseIf Trim$(txt) <> "" Then
+				parts = BR_CsvSplit(txt, delim)
+				If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
+					nk = "n" & UCase$(BR_CsvGet(parts, cols, "NoteID"))
+					If Not IsElement(batchOf(nk)) Then
+						batchOf(nk) = tag
+					ElseIf StrLeft(batchOf(nk), " (") < bid Then
+						batchOf(nk) = tag                   ' the newest batch file wins
+					End If
+				End If
+			End If
+		Loop
+		Close #fh
+	End ForAll
+	Exit Sub
+ErrH:
+	BR_Log LVL_WARN, "Could not read all batch files in " & d & ": " & Error$
+	On Error Resume Next
+	Close #fh
+	Exit Sub
+End Sub
+
+' Blank problems per Person item: names the items whose first value has extra / leading / trailing /
+' non-breaking blanks (JobTitle is the source of the last name; the others show up in the Notes name)
+Function BR_SpacingItems(doc As NotesDocument) As String
+	Dim lst As Variant, i As Integer, nm As String, vals As Variant, raw As String, out As String
+	lst = Split("JobTitle,FirstName,LastName,FullName,Department", ",")
+	For i = 0 To UBound(lst)
+		nm = CStr(lst(i))
+		If doc.HasItem(nm) Then
+			vals = doc.GetItemValue(nm)
+			If IsArray(vals) Then raw = CStr(vals(0)) Else raw = CStr(vals)
+			If raw <> "" Then
+				If raw <> BR_NormSpaces(raw) Then out = out & BR_IIfStr(out = "", "", " ") & nm
+			End If
+		End If
+	Next
+	BR_SpacingItems = out
+End Function
+
+' True when a ShortName value, the Internet address or a FullName value of the Person document is in the
+' expected-users list; marks the list entry as found ("1")
+Function BR_ReconMatch(doc As NotesDocument, xlKeys List As String) As Boolean
+	Dim lst As Variant, i As Integer, j As Integer, vals As Variant, k As String
+	lst = Split("ShortName,sAMAccountName,InternetAddress,FullName", ",")
+	For i = 0 To UBound(lst)
+		If doc.HasItem(CStr(lst(i))) Then
+			vals = doc.GetItemValue(CStr(lst(i)))
+			If IsArray(vals) Then
+				For j = 0 To UBound(vals)
+					k = BR_NormKey(CStr(vals(j)))
+					If k <> "" Then
+						If IsElement(xlKeys(k)) Then
+							xlKeys(k) = "1"
+							BR_ReconMatch = True
+						End If
+					End If
+				Next
+			End If
+		End If
+	Next
+End Function
+
+'=====================================================================
+' BR_RunAuditMaint  -  runs agent BulkReg\10 - Audit Log Maintenance
+'   The agent itself only contains:  Call BR_RunAuditMaint()
+'
+' The audit trail grows with every run. 4.2.0 slows the growth at the source (LogDbLevel, LogDbAudit in
+' bulkreg.ini: the log database no longer gets one document per INFO line and per read-only audit row).
+' This agent deals with what already exists, in two places:
+'
+'   A. Central log database (LogServer!!LogDb): documents older than the retention period are
+'      first EXPORTED to CSV files in AuditArchiveDir (default <BaseDir>\audit\archive\), the written
+'      row count is checked against the document count, and only then are those documents deleted
+'        Entry documents (one per log line)   older than LogEntryRetentionDays   (default 30)
+'        Audit documents (one per user/action) and Run documents older than LogAuditRetentionDays (default 365)
+'   B. Local run folders in AuditDir older than AuditFolderRetentionDays (default 90): only the bulky
+'      *_debug.log files are deleted; the audit CSV and RUN_INFO.txt of every run stay.
+'
+' DryRun=1 (default): counts what would be archived/deleted, changes nothing, writes no files.
+' LIVE: needs Editor access with "Delete documents" in the log database (the database owner / an
+' administrator - operators have Author access and cannot delete); type PURGE to approve.
+' The retention periods are defaults, NOT a compliance decision: agree them with the audit/compliance
+' owner before the first LIVE run, and copy the archive folder to your approved retention store.
+' Afterwards compact the log database on the server (e.g. load compact <LogDb> -B) to give the space back.
+'=====================================================================
+Sub BR_RunAuditMaint()
+	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace, ans As Variant
+	Dim entryDays As Long, auditDays As Long, folderDays As Long
+	Dim arcDir As String, canDelete As Boolean, live As Boolean
+	Dim fEntry As String, fAudit As String
+	Dim nEntry As Long, nAudit As Long, nEntryDel As Long, nAuditDel As Long, nFiles As Long, nFolders As Long, bytes As Double
+	Dim msg As String, summary As String, lvl As Integer
+
+	If Not BR_Init("AuditMaint") Then Exit Sub
+	live = Not CfgB("DryRun", True)
+	entryDays = CfgL("LogEntryRetentionDays", 30)
+	auditDays = CfgL("LogAuditRetentionDays", 365)
+	folderDays = CfgL("AuditFolderRetentionDays", 90)
+	If entryDays < 7 Then entryDays = 7                 ' safety floor: never purge the last week
+	If auditDays < 30 Then auditDays = 30
+	If folderDays < 7 Then folderDays = 7
+	arcDir = BR_CfgDir("AuditArchiveDir", "audit" & gSep & "archive")
+	On Error Resume Next
+	MkDir Left$(arcDir, Len(arcDir) - 1)
+	Err = 0
+	On Error GoTo ErrH
+	If live And Not BR_DirWritable(arcDir) Then Error 9101, "Archive folder is missing or not writable: " & arcDir
+
+	lvl = gLogDb.CurrentAccessLevel                    ' copied to a typed variable first (a property cannot go straight into BR_LevelText)
+	canDelete = (lvl >= ACLLEVEL_EDITOR)
+	' ---------- what exists (read only) ----------
+	nEntry = BR_CountLogDocs("Entry", entryDays)
+	nAudit = BR_CountLogDocs("Audit", auditDays) + BR_CountLogDocs("Run", auditDays)
+	Call BR_AuditFolderScan(folderDays, False, nFiles, nFolders, bytes)
+	msg = "Log database " & gLogDb.Server & "!!" & gLogDb.FilePath & ": " & gLogDb.AllDocuments.Count & " documents in total." & Chr$(10) & _
+	"  Entry documents older than " & entryDays & " days : " & nEntry & Chr$(10) & _
+	"  Audit + Run documents older than " & auditDays & " days : " & nAudit & Chr$(10) & _
+	"Local run folders older than " & folderDays & " days: " & nFolders & " (debug logs: " & nFiles & " files, " & Format$(bytes / 1048576#, "0.0") & " MB)" & Chr$(10) & _
+	"Archive folder: " & arcDir
+	BR_Log LVL_INFO, Replace(msg, Chr$(10), " | ")
+
+	If Not live Then
+		summary = "DRYRUN | would archive+delete entries=" & nEntry & " audit/run=" & nAudit & " | debug logs=" & nFiles & " files " & Format$(bytes / 1048576#, "0.0") & " MB | nothing changed"
+		BR_Close summary
+		BR_Msg msg & Chr$(10) & Chr$(10) & "DRY RUN (DryRun=1): nothing was archived, deleted or changed. Set DryRun=0 to run it for real.", 64
+		Exit Sub
+	End If
+	If Not canDelete Then
+		BR_Close "No delete access"
+		BR_Msg msg & Chr$(10) & Chr$(10) & "Your ID has only " & BR_LevelText(lvl) & " access to the log database. Purging needs Editor with Delete documents (the database owner). Nothing was changed.", 48
+		Exit Sub
+	End If
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Audit log maintenance (LIVE)", msg & Chr$(10) & Chr$(10) & _
+	"The log documents are EXPORTED to CSV first and deleted only after the export is verified." & Chr$(10) & _
+	"Have the retention periods been agreed with the audit/compliance owner?" & Chr$(10) & "Type PURGE to approve:", "")
+	If IsEmpty(ans) Then ans = ""
+	If CStr(ans) <> "PURGE" Then
+		BR_Log LVL_WARN, "Purge not approved - aborted"
+		BR_Close "Not approved"
+		Exit Sub
+	End If
+
+	' ---------- A. archive, verify, delete ----------
+	nEntryDel = BR_ArchivePurge("Entry", entryDays, arcDir, "entries")
+	nAuditDel = BR_ArchivePurge("Audit", auditDays, arcDir, "audit") + BR_ArchivePurge("Run", auditDays, arcDir, "runs")
+	' ---------- B. local debug logs ----------
+	Call BR_AuditFolderScan(folderDays, True, nFiles, nFolders, bytes)
+
+	summary = "LIVE | archived+deleted entries=" & nEntryDel & " audit/run=" & nAuditDel & " | debug logs deleted=" & nFiles & " (" & Format$(bytes / 1048576#, "0.0") & " MB) | archive " & arcDir
+	BR_Close summary
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Now compact the log database on the server (e.g. load compact " & CfgS("LogDb", "") & " -B) to release the space, and copy the archive folder to your approved retention store.", 64
+	Exit Sub
+ErrH:
+	BR_Log LVL_ERROR, "Audit maintenance aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Audit maintenance aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
+	Exit Sub
+End Sub
+
+' Selection formula for log documents of one DocType older than <days> (the Day item is yyyy-mm-dd text)
+Function BR_LogOldFormula(docType As String, days As Long) As String
+	BR_LogOldFormula = |Form = "BRLogEntry" & DocType = "| & docType & |" & Day < "| & Format$(Today - days, "yyyy-mm-dd") & |"|
+End Function
+
+' Number of log documents of a DocType older than <days> (read only)
+Function BR_CountLogDocs(docType As String, days As Long) As Long
+	Dim col As NotesDocumentCollection
+	Set col = gLogDb.Search(BR_LogOldFormula(docType, days), Nothing, 0)
+	BR_CountLogDocs = col.Count
+End Function
+
+' Exports (in slices of 5000) and then deletes the log documents of one DocType older than <days>.
+' The slice is deleted ONLY when exactly as many rows were written as documents were selected.
+' Returns the number of documents deleted.
+Function BR_ArchivePurge(docType As String, days As Long, arcDir As String, label As String) As Long
+	Dim col As NotesDocumentCollection, doc As NotesDocument, f As String, fh As Integer, n As Long, written As Long
+	Dim total As Long, slice As Integer, newFile As Boolean, hdr As String
+	f = arcDir & "bulkreg_log_" & label & "_before_" & Format$(Today - days, "yyyy-mm-dd") & "_run" & gRunID & ".csv"
+	hdr = BR_ArchiveHeader(docType)
+	Do
+		slice = slice + 1
+		If slice > 2000 Then Exit Do                      ' safety stop
+		Set col = gLogDb.Search(BR_LogOldFormula(docType, days), Nothing, 5000)
+		n = col.Count
+		If n = 0 Then Exit Do
+		newFile = (Dir$(f) = "")
+		fh = FreeFile()
+		Open f For Append As #fh Charset = "UTF-8"
+		If newFile Then Print #fh, Uchr$(&HFEFF) & hdr
+		written = 0
+		Set doc = col.GetFirstDocument()
+		Do While Not (doc Is Nothing)
+			Print #fh, BR_ArchiveRow(doc, docType)
+			written = written + 1
+			Set doc = col.GetNextDocument(doc)
+		Loop
+		Close #fh
+		If written <> n Then
+			BR_Log LVL_ERROR, "Archive check failed for " & docType & ": selected " & n & ", written " & written & " - NOTHING deleted, stopping"
+			Exit Do
+		End If
+		Call col.RemoveAll(True)                           ' deleted only after the verified export
+		total = total + n
+		BR_Log LVL_INFO, "Archived and deleted " & n & " " & docType & " documents (total " & total & ") -> " & f
+	Loop
+	BR_ArchivePurge = total
+End Function
+
+Function BR_ArchiveHeader(docType As String) As String
+	Select Case docType
+	Case "Entry": BR_ArchiveHeader = "Day,TimeText,RunID,Tool,Operator,RunMode,BatchID,Level,Message"
+	Case "Run": BR_ArchiveHeader = "Day,TimeText,RunID,Tool,Operator,RunMode,BatchID,Status,StartTime,EndTime,Summary"
+	Case Else: BR_ArchiveHeader = "Day,TimeText,RunID,Tool,Operator,RunMode,Mode,Action,Result,Level,FullName,FullNameBefore,FullNameAfter,InternetAddress,ShortName,NoteIDPerson,objectGUID,HomeServer,MailFile,MailFileStatus,VaultStatus,ReplicaStatus,BatchID,Message"
+	End Select
+End Function
+
+Function BR_ArchiveRow(doc As NotesDocument, docType As String) As String
+	Dim r As String
+	r = Q(BR_Item(doc, "Day")) & "," & Q(BR_Item(doc, "TimeText")) & "," & Q(BR_Item(doc, "RunID")) & "," & Q(BR_Item(doc, "Tool")) & "," & Q(BR_Item(doc, "Operator")) & "," & Q(BR_Item(doc, "RunMode")) & ","
+	Select Case docType
+	Case "Entry"
+		r = r & Q(BR_Item(doc, "BatchID")) & "," & Q(BR_Item(doc, "Level")) & "," & Q(BR_Item(doc, "Message"))
+	Case "Run"
+		r = r & Q(BR_Item(doc, "BatchID")) & "," & Q(BR_Item(doc, "Status")) & "," & Q(BR_Item(doc, "StartTime")) & "," & Q(BR_Item(doc, "EndTime")) & "," & Q(BR_Item(doc, "Summary"))
+	Case Else
+		r = r & Q(BR_Item(doc, "Mode")) & "," & Q(BR_Item(doc, "Action")) & "," & Q(BR_Item(doc, "Result")) & "," & Q(BR_Item(doc, "Level")) & "," & _
+		Q(BR_Item(doc, "FullName")) & "," & Q(BR_Item(doc, "FullNameBefore")) & "," & Q(BR_Item(doc, "FullNameAfter")) & "," & Q(BR_Item(doc, "InternetAddress")) & "," & Q(BR_Item(doc, "ShortName")) & "," & _
+		Q(BR_Item(doc, "NoteIDPerson")) & "," & Q(BR_Item(doc, "objectGUID")) & "," & Q(BR_Item(doc, "HomeServer")) & "," & Q(BR_Item(doc, "MailFile")) & "," & Q(BR_Item(doc, "MailFileStatus")) & "," & _
+		Q(BR_Item(doc, "VaultStatus")) & "," & Q(BR_Item(doc, "ReplicaStatus")) & "," & Q(BR_Item(doc, "BatchID")) & "," & Q(BR_Item(doc, "Message"))
+	End Select
+	BR_ArchiveRow = r
+End Function
+
+' Local run folders (<yyyy-mm-dd>_<hhnnss>_<agent>_<mode>) older than <days>: counts the *_debug.log files and,
+' with doDelete=True, deletes ONLY those. The audit CSV and RUN_INFO.txt of every run are kept.
+Sub BR_AuditFolderScan(days As Long, doDelete As Boolean, nFiles As Long, nFolders As Long, bytes As Double)
+	On Error GoTo ErrH
+	Dim ad As String, f As String, dirs List As String, g As String, logs List As String, cutoff As Double
+	Dim dt As Variant, fld As String
+	nFiles = 0: nFolders = 0: bytes = 0
+	ad = BR_CfgDir("AuditDir", "audit")
+	cutoff = CDbl(Today - days)
+	f = Dir$(ad & "*", 16)
+	Do While f <> ""
+		If f <> "." And f <> ".." And Len(f) > 11 Then
+			If Mid$(f, 5, 1) = "-" And Mid$(f, 8, 1) = "-" And Mid$(f, 11, 1) = "_" Then
+				If IsNumeric(Left$(f, 4)) And IsNumeric(Mid$(f, 6, 2)) And IsNumeric(Mid$(f, 9, 2)) Then
+					If (GetFileAttr(ad & f) And 16) = 16 Then dirs(f) = f
+				End If
+			End If
+		End If
+		f = Dir$()
+	Loop
+	ForAll dn In dirs
+		dt = DateSerial(CInt(Left$(CStr(dn), 4)), CInt(Mid$(CStr(dn), 6, 2)), CInt(Mid$(CStr(dn), 9, 2)))
+		If CDbl(dt) < cutoff Then
+			fld = ad & CStr(dn) & gSep
+			Erase logs
+			g = Dir$(fld & "*_debug.log")
+			Do While g <> ""
+				logs(g) = g
+				g = Dir$()
+			Loop
+			nFolders = nFolders + 1
+			ForAll lg In logs
+				bytes = bytes + FileLen(fld & CStr(lg))
+				nFiles = nFiles + 1
+				If doDelete Then Kill fld & CStr(lg)
+			End ForAll
+		End If
+	End ForAll
+	Exit Sub
+ErrH:
+	BR_Log LVL_WARN, "Run folder scan problem in " & ad & ": " & Error$ & " (line " & Erl & ")"
+	Exit Sub
+End Sub
 
 '=====================================================================
 ' BR_RunExport  -  runs agent BulkReg\05 - Export to Registration Text File
@@ -2174,13 +3146,13 @@ Function BR_WelcomeRich() As String
 	h = h & BR_RtH("What this tool does")
 	h = h & BR_RtP("DirSync creates Person documents for Active Directory users, but those users have no Notes ID and no mail file. " & _
 	"BulkReg turns them into full Domino users, in reviewed batches: it creates the Notes ID (deposited in the ID Vault through the policy), " & _
-	"creates the mail file on the home server (during registration, or afterwards with agent 07 for a faster registration), requests replicas on the other mail cluster members, and writes every action to the audit log.", "10pt", "normal", "#14142B")
+	"creates the mail file on the home server (during registration, or afterwards with agent 08 for a faster registration), requests replicas on the other mail cluster members, and writes every action to the audit log.", "10pt", "normal", "#14142B")
 	h = h & BR_RtGap()
 	h = h & BR_RtTable("25,25,25,25", BR_RtRow( _
 	BR_RtCard("#ECF3F8", "1  Plan", "#17707F", "Preflight checks everything. Build Batch writes the batch files. Nothing is registered.") & _
 	BR_RtCard("#ECF3F8", "2  Review", "#17707F", "You check the batch file in Excel and set Include to Y or N per user.") & _
 	BR_RtCard("#ECF3F8", "3  Register", "#17707F", "Dry run first, then live on the same file. You type the batch ID to confirm.") & _
-	BR_RtCard("#ECF3F8", "4  Mail + Verify", "#17707F", "With MailFileDeferred=1 agent 07 creates the mail files; Verify then checks registration, vault, mail file and replicas.")))
+	BR_RtCard("#ECF3F8", "4  Mail + Verify", "#17707F", "With MailFileDeferred=1 agent 08 creates the mail files (also repairs missing ones of users registered earlier); Verify then checks registration, vault, mail file and replicas.")))
 
 	h = h & BR_RtBox("#F7F7FC", "Before the first batch (one time)", "#17707F",  _
 	"bulkreg.ini and server_mapping.csv are filled in: no <placeholder> left, DryRun=1." & "~" & _
@@ -2207,9 +3179,9 @@ Function BR_WelcomeRich() As String
 	rw = rw & BR_RtStep("5", "Register for real", "DryRun=0   " & a & "03 - Register Batch", _
 	"Set DryRun=0 in bulkreg.ini, run 03 on the same batch and type the batch ID to confirm. Each batch can be registered live only once.", _
 	"BATCH-<id>_results.csv is written and the batch is DONE. Set DryRun=1 again.")
-	rw = rw & BR_RtStep("6", "Create mail files", "MailFileDeferred=1   " & a & "07 - Create Mail Files", _
-	"Skip this step when MailFileDeferred=0. With 1 the users were registered without a mail file: choose the batch (or leave empty for all) and run 07 right after the live run. It creates the missing files from MailTemplate, sets title and ACL and requests the cluster replicas. Existing mail files are never touched. DryRun=1 only reports. Until it has run, mail for the new users cannot be delivered.", _
-	"MAIL_CREATED for every user in BATCH-<id>_mailcreate_<mode>_<run>.csv.")
+	rw = rw & BR_RtStep("6", "Create / repair mail files", "MailFileDeferred=1   " & a & "08 - Repair Missing Mail Files", _
+	"Skip this step when MailFileDeferred=0. With 1 the users were registered without a mail file: enter a batch file, a server or leave empty for all, and run 08 right after the live run (it also repairs missing or incomplete mail files of users registered earlier). It creates the missing files from MailTemplate, sets title and ACL and requests the cluster replicas. Existing mail files are never touched. DryRun=1 only reports. Until it has run, mail for the new users cannot be delivered.", _
+	"MAIL_CREATED for every user in BATCH-<id>_mailrepair_<mode>_<run>.csv.")
 	rw = rw & BR_RtStep("7", "Verify", a & "04 - Verify Registration and Vault", _
 	"Choose the batch. Checks the registration, the ID Vault, the mail file and the replicas. Run it again later until all replicas exist.", _
 	"REGISTERED, IN_VAULT, MAILFILE_OK and REPLICAS_OK for every user.")
@@ -2278,3 +3250,244 @@ Function BR_LogWelcomeRich() As String
 	h = h & BR_RtP("HCL Software" & dot & "BulkReg " & BR_VERSION & dot & "Central log database. Written by BulkReg agents 01 - 05 and 07; design set up by agent 00.", "8pt", "normal", "#6B7280")
 	BR_LogWelcomeRich = h
 End Function
+
+
+'#####################################################################
+' 11 - BATCH MANAGER (4.2.1)
+'#####################################################################
+' Sorted list (Variant array of String) of the BATCH-*.csv file names in BatchDir. Dir$ cannot be nested, so
+' the names are collected first.
+Function BR_BatchFiles() As Variant
+	Dim d As String, f As String, n As Integer, arr() As String, i As Integer, j As Integer, t As String
+	d = BR_BatchDir()
+	ReDim arr(0) As String
+	f = Dir$(d & "BATCH-*.csv")
+	Do While f <> ""
+		If InStr(f, "_") = 0 Then
+			ReDim Preserve arr(n) As String
+			arr(n) = f: n = n + 1
+		End If
+		f = Dir$()
+	Loop
+	For i = 0 To n - 2                                    ' small list: plain sort
+		For j = i + 1 To n - 1
+			If arr(j) < arr(i) Then t = arr(i): arr(i) = arr(j): arr(j) = t
+		Next
+	Next
+	If n = 0 Then BR_BatchFiles = Split("", "|") Else BR_BatchFiles = arr
+End Function
+
+' Shows every batch with its state and what is left to do; writes BATCHSTATUS_<run>.csv; optionally RESUME /
+' REMAINDER / CLOSE (each confirmed). Reads the Domino Directory only (no changes there).
+Sub BR_RunBatchManager()
+	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace, ans As Variant, db As NotesDatabase, doc As NotesDocument
+	Dim files As Variant, i As Integer, bdir As String, bid As String, state As String, rec As String
+	Dim fh As Integer, fhO As Integer, txt As String, isFirst As Boolean, cols List As Integer, delim As String, parts As Variant
+	Dim nRows As Long, nReg As Long, nNot As Long, nGone As Long, nFail As Long, hasFlag As Boolean, last As String
+	Dim doneIds List As String, nid As String, unid As String, sumTxt As String, csvFile As String, resFile As String
+	Dim cmd As String, act As String, tgt As String
+
+	If Not BR_Init("BatchMgr") Then Exit Sub
+	bdir = BR_BatchDir()
+	Set db = BR_OpenDirectory()
+	csvFile = bdir & "BATCHSTATUS_" & gRunID & ".csv"
+	fhO = BR_CsvOpen(csvFile, "BatchID,State,IncludeRows,Registered,NotRegistered,PersonGone,FailedInResults,LastActivity,Recommendation")
+	files = BR_BatchFiles()
+	If UBound(files) < 0 Then
+		Close #fhO
+		BR_Close "No batches"
+		BR_Msg "No BATCH-*.csv files in " & bdir, 64
+		Exit Sub
+	End If
+	For i = 0 To UBound(files)
+		bid = Left$(files(i), Len(files(i)) - 4)
+		nRows = 0: nReg = 0: nNot = 0: nGone = 0: nFail = 0
+		resFile = bdir & bid & "_results.csv"
+		hasFlag = (Dir$(BR_BatchFlagFile(bid)) <> "")
+		Erase doneIds
+		' failed rows in the results (informational)
+		If Dir$(resFile) <> "" Then
+			fh = FreeFile()
+			Open resFile For Input As #fh Charset = "UTF-8"
+			isFirst = True
+			Do Until EOF(fh)
+				Line Input #fh, txt
+				If isFirst Then
+					Call BR_CsvHeader(txt, delim, cols): isFirst = False
+				ElseIf Trim$(txt) <> "" Then
+					parts = BR_CsvSplit(txt, delim)
+					If UCase$(BR_CsvGet(parts, cols, "Action")) = "REGISTER" Then
+						If Left$(UCase$(BR_CsvGet(parts, cols, "Result")), 10) <> "REGISTERED" And Left$(UCase$(BR_CsvGet(parts, cols, "Result")), 7) <> "SKIPPED" Then nFail = nFail + 1
+					End If
+				End If
+			Loop
+			Close #fh
+		End If
+		' rows of the batch: is the Person registered now?
+		fh = FreeFile()
+		Open bdir & files(i) For Input As #fh Charset = "UTF-8"
+		isFirst = True
+		Do Until EOF(fh)
+			Line Input #fh, txt
+			If isFirst Then
+				Call BR_CsvHeader(txt, delim, cols): isFirst = False
+			ElseIf Trim$(txt) <> "" Then
+				parts = BR_CsvSplit(txt, delim)
+				If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
+					nRows = nRows + 1
+					nid = BR_CsvGet(parts, cols, "NoteID"): unid = BR_CsvGet(parts, cols, "UNID")
+					Set doc = Nothing
+					On Error Resume Next
+					Set doc = db.GetDocumentByID(nid)
+					If doc Is Nothing And unid <> "" Then Set doc = db.GetDocumentByUNID(unid)
+					Err = 0
+					On Error GoTo ErrH
+					If doc Is Nothing Then
+						nGone = nGone + 1
+					ElseIf BR_IsRegistered(doc) Then
+						nReg = nReg + 1
+					Else
+						nNot = nNot + 1
+					End If
+				End If
+			End If
+		Loop
+		Close #fh
+		If Dir$(resFile) = "" Then
+			state = "OPEN": rec = "Not run yet: review, then run 03 (DryRun first)"
+		ElseIf hasFlag Then
+			state = "STOPPED": rec = "Stopped/hung half way: run 03 again to resume (registered users are skipped)"
+		ElseIf nNot > 0 Then
+			state = "DONE_INCOMPLETE": rec = nNot & " user(s) not registered: RESUME here, or REMAINDER (new batch with only those rows)"
+		Else
+			state = "DONE_COMPLETE": rec = "Nothing to do"
+		End If
+		last = ""
+		If hasFlag Then last = Format$(FileDateTime(BR_BatchFlagFile(bid)), "yyyy-mm-dd hh:nn:ss")
+		If last = "" And Dir$(resFile) <> "" Then last = Format$(FileDateTime(resFile), "yyyy-mm-dd hh:nn:ss")
+		Print #fhO, Q(bid) & "," & Q(state) & "," & nRows & "," & nReg & "," & nNot & "," & nGone & "," & nFail & "," & Q(last) & "," & Q(rec)
+		sumTxt = sumTxt & bid & "  " & state & "  rows " & nRows & ", registered " & nReg & ", not registered " & nNot & ", gone " & nGone & ", failed " & nFail & IIf2(hasFlag, ", last activity " & last, "") & Chr$(10)
+		BR_Log LVL_INFO, "BATCH " & bid & " " & state & " rows=" & nRows & " reg=" & nReg & " not=" & nNot & " gone=" & nGone & " failed=" & nFail
+	Next
+	Close #fhO
+	BR_Log LVL_INFO, "Batch status written: " & csvFile
+
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Batch Manager", sumTxt & Chr$(10) & "Report: " & csvFile & Chr$(10) & Chr$(10) & _
+	"Optional action - type  RESUME <batch id>  |  REMAINDER <batch id>  |  CLOSE <batch id>  (RESUME re-opens a DONE_INCOMPLETE batch; REMAINDER writes a new batch with the unregistered rows; CLOSE removes the flag of a STOPPED batch or closes an OPEN one). Leave empty or Cancel to only view.", "")
+	If IsEmpty(ans) Then ans = ""
+	cmd = Trim$(CStr(ans))
+	If cmd = "" Then
+		BR_Close "Batch status listed"
+		Exit Sub
+	End If
+	If InStr(cmd, " ") = 0 Then Error 6101, "Expected '<ACTION> <batch id>'"
+	act = UCase$(Left$(cmd, InStr(cmd, " ") - 1)): tgt = Trim$(Mid$(cmd, InStr(cmd, " ") + 1))
+	Call BR_BatchAction(act, tgt, bdir)
+	BR_Close "Batch action " & act & " " & tgt
+	Exit Sub
+ErrH:
+	On Error Resume Next
+	Close #fh
+	Close #fhO
+	BR_Log LVL_ERROR, "Batch manager aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Batch manager: " & Error$, 16
+	Exit Sub
+End Sub
+
+' Helper: String choice without the Variant of BR_IIf
+Function IIf2(c As Boolean, a As String, b As String) As String
+	If c Then IIf2 = a Else IIf2 = b
+End Function
+
+' The three batch actions. Each changes only files in BatchDir (never Domino) and is confirmed by typing YES.
+Sub BR_BatchAction(act As String, bid As String, bdir As String)
+	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace, ans As Variant, flagF As String, resF As String, bf As String
+	Dim fh As Integer, fhO As Integer, txt As String, isFirst As Boolean, cols List As Integer, delim As String, parts As Variant
+	Dim db As NotesDatabase, doc As NotesDocument, k As Integer, newId As String, newFile As String, nOut As Long, p As Integer, line As String
+	flagF = BR_BatchFlagFile(bid): resF = bdir & bid & "_results.csv": bf = bdir & bid & ".csv"
+	If Left$(bid, 6) <> "BATCH-" Or InStr(bid, "_") > 0 Or Dir$(bf) = "" Then Error 6102, "Batch file not found: " & bid
+	Set ws = New NotesUIWorkspace
+	Select Case act
+	Case "RESUME"
+		If Dir$(resF) = "" Or Dir$(flagF) <> "" Then Error 6103, "RESUME is only for a DONE batch (results file, no flag). OPEN: run 03. STOPPED: run 03 again."
+		ans = ws.Prompt(PROMPT_OKCANCELEDIT, "RESUME " & bid, "Re-opens " & bid & ": a flag file is created so that 03 resumes it (users already registered are skipped). Type YES:", "")
+		If IsEmpty(ans) Then ans = ""
+		If CStr(ans) <> "YES" Then Exit Sub
+		Call BR_AppendLine(flagF, "BulkReg " & BR_VERSION & " batch manager " & gRunID & " re-opened " & Format$(Now, "yyyy-mm-dd hh:nn:ss") & " by " & gOperator)
+		BR_Log LVL_WARN, "RESUME: " & bid & " re-opened"
+		BR_Msg bid & " re-opened. Run 03 - Register Batch (DryRun first).", 64
+	Case "CLOSE"
+		ans = ws.Prompt(PROMPT_OKCANCELEDIT, "CLOSE " & bid, "Marks " & bid & " as DONE without registering the rest (STOPPED: the flag is removed; OPEN: a header-only results file is written). Type YES:", "")
+		If IsEmpty(ans) Then ans = ""
+		If CStr(ans) <> "YES" Then Exit Sub
+		If Dir$(flagF) <> "" Then
+			Kill flagF
+		ElseIf Dir$(resF) = "" Then
+			Call BR_AppendLine(resF, Uchr$(&HFEFF) & BR_AuditHeader())
+		Else
+			Error 6104, bid & " is already DONE."
+		End If
+		BR_Log LVL_WARN, "CLOSE: " & bid & " closed by " & gOperator
+		BR_Msg bid & " closed.", 64
+	Case "REMAINDER"
+		If Dir$(resF) = "" Or Dir$(flagF) <> "" Then Error 6105, "REMAINDER is only for a DONE batch with unregistered rows."
+		Set db = BR_OpenDirectory()
+		k = 1
+		Do
+			newId = bid & "-R" & k: newFile = bdir & newId & ".csv": k = k + 1
+		Loop While Dir$(newFile) <> ""
+		fh = FreeFile()
+		Open bf For Input As #fh Charset = "UTF-8"
+		isFirst = True
+		Do Until EOF(fh)
+			Line Input #fh, txt
+			If isFirst Then
+				Call BR_CsvHeader(txt, delim, cols): isFirst = False
+				Call BR_AppendLine(newFile, Uchr$(&HFEFF) & Replace(txt, Uchr$(&HFEFF), ""))
+			ElseIf Trim$(txt) <> "" Then
+				parts = BR_CsvSplit(txt, delim)
+				If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
+					Set doc = Nothing
+					On Error Resume Next
+					Set doc = db.GetDocumentByID(BR_CsvGet(parts, cols, "NoteID"))
+					If doc Is Nothing And BR_CsvGet(parts, cols, "UNID") <> "" Then Set doc = db.GetDocumentByUNID(BR_CsvGet(parts, cols, "UNID"))
+					Err = 0
+					On Error GoTo ErrH
+					If Not doc Is Nothing Then
+						If Not BR_IsRegistered(doc) Then
+							If IsElement(cols("batchid")) Then parts(cols("batchid")) = newId
+							line = ""
+							For p = 0 To UBound(parts)
+								If p > 0 Then line = line & delim
+								line = line & Q(CStr(parts(p)))
+							Next
+							Call BR_AppendLine(newFile, line)
+							nOut = nOut + 1
+						End If
+					End If
+				End If
+			End If
+		Loop
+		Close #fh
+		If nOut = 0 Then
+			Kill newFile
+			BR_Msg "Every user of " & bid & " is registered (or gone). No remainder batch needed.", 64
+		Else
+			BR_Log LVL_WARN, "REMAINDER: " & newId & " written with " & nOut & " row(s) from " & bid
+			BR_Msg "Written " & newFile & " (" & nOut & " rows). Review it (the Seq column keeps the old numbers), then run 03.", 64
+		End If
+	Case Else
+		Error 6106, "Unknown action " & act & " (use RESUME, REMAINDER or CLOSE)"
+	End Select
+	Exit Sub
+ErrH:
+	On Error Resume Next
+	Close #fh
+	BR_Log LVL_ERROR, "Batch action failed: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Msg "Batch action failed: " & Error$, 16
+	Exit Sub
+End Sub

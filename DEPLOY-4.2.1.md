@@ -1,8 +1,30 @@
-# BulkReg 4.1.0 – Deployment steps
+# BulkReg 4.2.1 – Deployment steps
 
-Upgrade from 3.6.6 up to 4.0.1. Libraries `BulkRegCommon` and `BulkRegAgents` change, plus `bulkreg.ini` and one new agent (`BulkReg\07 - Create Mail Files`). Everything runs locally in the Notes client. Agents 00-06 are unchanged (only the version comment in their header).
+Upgrade from 3.6.6 up to 4.1.0. Libraries `BulkRegCommon` and `BulkRegAgents` change, `bulkreg.ini` gets new keys, **three new agents** are added (`BulkReg\08 - Repair Missing Mail Files`, `BulkReg\09 - Reconcile`, `BulkReg\10 - Audit Log Maintenance`) and **agent 07 is retired**. Everything runs locally in the Notes client. Agents 00-06 are unchanged (only the version comment in their header; 03 gains chunking inside the library).
 
-**4.1.0 change (name separator, fast registration):**
+**4.2.1 change (resume, batch management, name precedence):**
+
+1. **New agent `BulkReg\11 - Batch Manager`** (one-line agent, same recipe as 08: `Call BR_RunBatchManager()`, Shared, Target None, file `Agent11_BatchManager.lss`). Re-paste both libraries.
+2. **Resume a stopped or hung batch:** the batch is STOPPED when `<id>_results.csv` and `<id>_inprogress.flag` exist. Close the hung client, run **11** to see what is registered, run **03** again: registered users are skipped. If the flag is younger than `StaleRunMinutes=30`, 03 asks first (another client may still be running). Batches that ended DONE with unregistered rows (old runs): 11 > `RESUME <id>` or `REMAINDER <id>`. Clean stop: `bulkreg Stop` (creates STOP.txt), `bulkreg Unstop`.
+3. **Name precedence:** the `FullNameAfter` (else `NotesName`) of the reviewed batch row is used to create the user; the regenerated name only if both are empty. Edit that column in the CSV to change a name; an OU/organization that does not match the certifier fails the row.
+4. **Initial passwords** are written to the restricted file right after `RegisterNewUser`.
+5. Fixes: folder fill counts deferred mail files; resumed batches are not double-counted in the server load; 04 Verify uses the registered name.
+6. New ini key: `StaleRunMinutes`. Replace `bulkreg.ps1` / `bulkreg.cmd` (Stop, Unstop). Not compiled or run against Domino: pilot with a 10-user batch.
+
+
+**4.2.0 change (field fixes):**
+
+1. **Names with extra blanks.** The last name / common name is built with exactly one blank between the words (`FLT  LT ABC   XYZ 1000ops` -> `FLT LT ABC XYZ 1000OPS`); tabs, non-breaking and leading/trailing blanks are normalised. The post-registration name check ignores blanks and case; a really different common name is a WARN (`CnMismatchAction=WARN`, default) instead of stopping the whole run (`STOP` = old behaviour).
+2. **Chunked registration.** `RegisterChunkSize=10`, `ChunkPauseSec=5`, `ChunkSlowSec=20`. A run that stops half way leaves `<batch>_inprogress.flag` and the batch stays OPEN: run 03 again to resume. Create `<BatchDir>\STOP.txt` to stop cleanly after the current chunk (delete it before the next run).
+3. **Agent 07 retired, 08 added.** Delete the agent `BulkReg\07 - Create Mail Files` in Designer. Create `BulkReg\08 - Repair Missing Mail Files`, `BulkReg\09 - Reconcile`, `BulkReg\10 - Audit Log Maintenance` (Shared agent, Target None, paste `lotusscript/Agent08_RepairMailFiles.lss`, `Agent09_Reconcile.lss`, `Agent10_AuditMaintenance.lss`). 08 works from the Domino Directory (no batch files needed) and can run per mail server in parallel clients.
+4. **Audit log volume.** `LogDbLevel=WARN` and `LogDbAudit=CHANGES` stop the log database from receiving one document per INFO line and per read-only audit row. Run agent 10 (DryRun=1 first) for what already exists. **Agree `LogEntryRetentionDays`, `LogAuditRetentionDays` and `AuditFolderRetentionDays` with the audit/compliance owner before the first LIVE run.**
+5. New ini keys: see the end of `config/bulkreg.ini` and the sections *Batch registration*, *Mail files* (`MailRepairChunkSize`, `RepairCheckExisting`, `RepairRemoveEmptyShells`, `MailInheritTemplate`).
+
+Repair order for users that were registered but have no (or an incomplete) mailbox: set `DryRun=1`, run **09 - Reconcile** (read `RECON_*_missing_mail.csv`), run **08** (dry run, read the `_mailrepair_DRYRUN_` CSV), set `DryRun=0`, run 08 live (type REPAIR), run 09 again.
+
+Not yet verified in Designer: compile and dry-run on a test copy first.
+
+**4.1.0 change (name separator, fast registration; agent 07 here is retired in 4.2.0):**
 
 1. `LastNameSeparator=SPACE` puts one blank between the last-name source and the suffix: JobTitle `SGT ABC XXZ` + short name `11100OPS` -> `CN=SGT ABC XXZ 11100OPS/O=Demo`. The ini trims values, so a blank must be written as `SPACE` (or `BLANK`).
 2. `MailFileDeferred=1` registers users **without** creating the mail file (the slow step). Create the mail files afterwards with the new agent `BulkReg\07 - Create Mail Files` (Shared agent, Target None; paste `lotusscript/Agent07_CreateMailFiles.lss`). `MailTemplate` (e.g. `mail145.ntf`) is then required. Until agent 07 has run, mail for those users cannot be delivered. `MailFileDeferred=0` keeps the old behaviour.

@@ -1,0 +1,35 @@
+'=====================================================================
+' Agent name : BulkReg\10 - Audit Log Maintenance
+' Version    : 4.2.1  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 4.2.1)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunAuditMaint).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: open the agent, click in the editor, Ctrl+A, Delete, paste this
+'              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (NOT 'All selected documents' - Designer's default - or Notes asks for a selected document)
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunAuditMaint):
+'
+' Keeps the audit trail from growing without limit:
+'   A. log database: Entry documents older than LogEntryRetentionDays (30) and Audit/Run documents older than
+'      LogAuditRetentionDays (365) are EXPORTED to CSV in AuditArchiveDir, the export is verified, then the
+'      documents are deleted (needs Editor + Delete documents = the database owner)
+'   B. AuditDir run folders older than AuditFolderRetentionDays (90): only *_debug.log files are deleted
+' DryRun=1 (default) only counts. LIVE: type PURGE to confirm. Agree the retention periods with the
+' audit/compliance owner first; copy the archive folder to your approved retention store.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunAuditMaint()
+End Sub

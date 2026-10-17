@@ -1,0 +1,35 @@
+'=====================================================================
+' Agent name : BulkReg\11 - Batch Manager
+' Version    : 4.2.1  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 4.2.1)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunBatchManager).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: open the agent, click in the editor, Ctrl+A, Delete, paste this
+'              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (NOT 'All selected documents' - Designer's default - or Notes asks for a selected document)
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunBatchManager):
+'
+' Lists every BATCH-*.csv with its state (OPEN, STOPPED, DONE_INCOMPLETE, DONE_COMPLETE), how many rows are
+' registered / not registered / gone, failures, last activity and what to do next; writes BATCHSTATUS_<run>.csv
+' in BatchDir. Optional, each confirmed with YES:
+'   RESUME <id>    re-open a DONE batch that still has unregistered users, then run 03
+'   REMAINDER <id> write BATCH-<id>-R1.csv with only the unregistered rows (review it, then run 03)
+'   CLOSE <id>     remove the flag of a STOPPED batch (treat as DONE) or close an OPEN batch
+' Changes only files in BatchDir. Reads the Domino Directory, changes nothing there.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunBatchManager()
+End Sub

@@ -46,11 +46,13 @@ tbl(["Item", "Value"], [
   ["Date / Author", META.date + " / " + META.author],
   ["Classification", META.classification],
   ["Applies to", "HCL Domino 14.x servers (any supported OS). The initial load and all manual work are done from the **HCL Domino Administrator 14.x client on Windows**; everything runs locally in the Notes client (no server-side agents)."],
-  ["Framework version", "BulkReg " + KIT_VERSION + ": script libraries BulkRegCommon and BulkRegAgents, one-line agents 00–07, config templates, optional PowerShell helper, Audit Viewer"],
+  ["Framework version", "BulkReg " + KIT_VERSION + ": script libraries BulkRegCommon and BulkRegAgents, one-line agents 00–06 and 08–11 (07 retired), config templates, optional PowerShell helper, Audit Viewer"],
 ], [2400, 6960]);
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["4.2.1", "**Release 4.2.1.** **Resume and batch management:** new `11 - Batch Manager` (state of every batch, CSV report, RESUME / REMAINDER / CLOSE), stale-run question and per-user heartbeat in 03, `bulkreg Stop` / `Unstop`. **Name precedence:** the `FullNameAfter` (or `NotesName`) of the reviewed batch row is the name the user is created with; the regenerated name is only used when that column is empty. **Password safety:** the initial-password row is written immediately after `RegisterNewUser`. **Fixes:** folder fill counts include deferred mail files; a resumed batch no longer double-counts users already registered in the server-load balance; 04 Verify compares the registered name, not the first FullName value. Re-paste both libraries; add agent 11. Not compiled or run against Domino."],
+  ["4.2.0", "**Release 4.2.0.** **Names:** one blank between the words, whatever AD delivers (extra, leading, trailing, tab, non-breaking blanks are normalised, `BR_NormSpaces`); the post-registration name check ignores blanks and case and by default only WARNS about a really different common name (`CnMismatchAction=WARN`; before, one such user stopped the whole run). **Chunked registration:** 03 registers in chunks (`RegisterChunkSize=10`, `ChunkPauseSec`, adaptive `ChunkSlowSec`), stops cleanly on `<BatchDir>\\STOP.txt` and RESUMES a stopped batch (`<id>_inprogress.flag`). **Agent 07 retired;** new `08 - Repair Missing Mail Files` (works from the directory, fast database-list inventory, chunked, finds incomplete files, never overwrites), `09 - Reconcile` (CSV: missing users, mailbox missing, orphan mail files, name spacing) and `10 - Audit Log Maintenance` (archive to CSV, verify, purge; local debug logs). **Log volume:** `LogDbLevel=WARN`, `LogDbAudit=CHANGES`. Re-paste both libraries; add agents 08, 09, 10; delete agent 07. Not compiled or run against Domino."],
   ["4.1.0", "**Release 4.1.0.** **Name separator:** `LastNameSeparator=SPACE` (or `BLANK`) puts one blank between the last-name source and the suffix, e.g. `CN=SGT ABC XXZ 11100OPS/O=Demo` (ini values are trimmed, so a blank needs the keyword). **Fast registration:** `MailFileDeferred=1` registers users without creating the mail file; new agent `BulkReg\\07 - Create Mail Files` (`BR_RunCreateMailFiles`) creates the missing files afterwards from `MailTemplate`, sets title and ACL and requests the cluster replicas (`MailCreateMaxPerRun`, honors DryRun). Verify reports `MAILFILE_MISSING` for such users until 07 has run. **Clean-up:** the unused AutoSync hooks (`gAuto`, `gEmbedded`, `gEmb*`, `gBld*`) are removed from both libraries; welcome screen, README, DEPLOY-4.1.0.md and this guide updated. Re-paste both libraries and add agent 07."],
   ["4.0.1", "**Release 4.0.1.** **AutoSync removed:** library BulkRegAuto, agent 07, bulkreg_auto.ini, AUTOSYNC.md and the Linux helper are gone; Part E is deleted. **Unique last name:** LastName = JobTitle + \"-\" + short name, upper case (`ANALYST-JDOE`), only this generated value is stored in the Person item `Location`; JobTitle and Department are never changed. Keys `LastNameSuffixFields`, `LastNameSeparator`, `LastNameUppercase`, `LastNameBackupField`, `LastNameBackupOverwrite`; new checks (no suffix, organization once, common name after registration); `Location` not allowed in server_mapping.csv; registered users are never renamed. See the settings table."],
   ["4.0.0", "**Release 4.0.0.** Added unattended AutoSync (server agent). **Removed again in 4.0.1:** BulkReg runs locally in the Notes client only."],
@@ -145,9 +147,58 @@ tbl(["Object", "Canonical form", "Abbreviated form", "Notes"], [
 ], [2300, 2700, 2300, 2060]);
 pb();
 
+// ================================================================ RESUME AND BATCH MANAGEMENT (4.2.1)
+h1("Resuming and managing batches (4.2.1)");
+p("Like the rest of the kit this chapter has **not been compiled or run against Domino**: try it on a small test batch first. It answers: a 03 run was stopped, crashed or hung, what now?");
+h2("How a batch is tracked");
+tbl(["State", "How it is recognised (files in BatchDir)", "Next step"], [
+  ["OPEN", "`BATCH-<id>.csv`, no `_results.csv`", "Review, run 03 (DryRun first)"],
+  ["STOPPED", "`_results.csv` and `<id>_inprogress.flag`", "Run 03 again: it resumes"],
+  ["DONE_COMPLETE", "`_results.csv`, no flag, every row registered", "Nothing"],
+  ["DONE_INCOMPLETE", "`_results.csv`, no flag, rows still not registered (old-style run, or CLOSE)", "11 - RESUME or REMAINDER"],
+], [1900, 4700, 2760]);
+p("A LIVE run writes the flag when it starts, appends a heartbeat line after every user and removes the flag only when every row was processed. DryRun never writes a flag.");
+h2("Stop a run cleanly");
+p("Create an empty file `<BatchDir>\\STOP.txt` (or `bulkreg Stop`). The run stops at the end of the current chunk, the batch becomes STOPPED. Delete the file (`bulkreg Unstop`) before running 03 or 08 again.");
+h2("Resume a stopped or hung run");
+p("**Stopped by MaxConsecutiveErrors, STOP.txt or an error:** fix the cause, run 03 again. The newest OPEN or STOPPED batch is offered first; users already registered are skipped, so nobody is registered twice, and the server-load balance ignores rows already registered.");
+p("**Client hung or closed (crash, network, PC restart):** (1) close the hung Notes client; (2) on the server, check that no registration is still running (Administration Process, `show tasks`); (3) run **11 - Batch Manager** to see registered / not registered counts; (4) run 03 again. If the flag is younger than `StaleRunMinutes` (default 30) 03 asks first, because another client might still be running the batch. Answer Yes only when you are sure that client is gone: two clients on one batch can register a user twice.");
+p("**A user stopped half way (registered but vault, mail file or replica pending):** run 04 Verify, then 08 for the mail file. Do not register that user again.");
+h2("11 - Batch Manager");
+p("Lists every batch with state, rows, registered / not registered / gone, failed rows in the results, last activity and a recommendation, and writes `BATCHSTATUS_<run>.csv` in BatchDir. It reads the directory and changes only batch files. Optional actions, each confirmed by typing YES:");
+tbl(["Action", "Use for", "What it does"], [
+  ["RESUME <batch id>", "DONE_INCOMPLETE batch", "Creates the flag so that 03 resumes it"],
+  ["REMAINDER <batch id>", "DONE_INCOMPLETE batch you would rather re-review", "Writes `BATCH-<id>-R<n>.csv` with only the unregistered rows (BatchID rewritten). The old batch stays as it is"],
+  ["CLOSE <batch id>", "Batch you decide not to finish", "STOPPED: removes the flag. OPEN: writes a header-only results file. Users are not touched"],
+], [2300, 3000, 4060]);
+h2("Name precedence");
+p("The name of the **reviewed batch row** wins: `FullNameAfter` (if empty, `NotesName`) is normalised to one blank between the words and its common name becomes the registered common name (first name = the FirstName column when the name starts with it, otherwise the whole common name is the last name). The regenerated name is used only when both columns are empty. If the organization / OU of that name does not match the certifier and OrgUnit, the row fails validation before anything is created. A difference to the regenerated name is logged as a NOTE. Edit the column in the reviewed CSV if a name must be changed.");
+h2("Initial passwords");
+p("The password row is written to the restricted password file immediately after `RegisterNewUser` returns, so a hang in the mail, vault or replica steps no longer loses it. Keep that file as before (restricted folder, delete after hand-over).");
+h2("Fixes in 4.2.1");
+ul("Mail folder fill counts include users whose mail file is deferred (they have none on disk yet), so FILL no longer overfills a folder.", "A resumed batch no longer counts users already registered again in the per-server load.", "04 Verify (vault, name check, ACL owner) uses the registered name, not the first FullName value of a DirSync Person document.");
+h2("Notes from the HCL documentation (14.5.x Designer help, RegisterNewUser)");
+ul("When the registration code runs on a **server** (scheduled agent) and uses a certificate authority, that server must be a registration authority (RA), even if it is the CA. Not relevant for the client-run kit; relevant if you ever move it.", "`CreateMailDb=False` means the mail file is created during setup (not at registration); BulkReg's `MailFileDeferred` therefore creates it afterwards with 08. Check the page for your exact version.", "The documentation gives no performance comparison between client and server registration; do not assume the server is faster. Measure with a 10-user chunk.");
+pb();
+
+// ================================================================ WHAT IS NEW IN 4.2.0
+h1("What is new in 4.2.0 (operations)");
+p("Everything in this chapter is new in 4.2.0. Like the rest of the kit it has **not been compiled or run against Domino**: pilot it with a small batch first. Re-paste both libraries, create the agents 08, 09, 10 and 11 (one-line agents, same recipe as 01), delete the retired agent 07, recompile and re-sign.");
+h2("Names with extra blanks (the 'Common name differs' error)");
+p("AD values can carry double, leading, trailing, tab or non-breaking blanks. BulkReg now writes exactly one blank between the words: `FLT  LT ABC   XYZ 1000ops` becomes `FLT LT ABC XYZ 1000OPS`. After registration only a really different common name is a difference; blanks and case are ignored. With `CnMismatchAction=WARN` (default) such a user stays registered, the audit row carries `WARN:NAME_DIFF` and the run continues; `STOP` restores the old behaviour. A wrong organization or OU still stops the run. Users registered earlier are never renamed. Reconcile (09) lists the Person items that contain stray blanks (column SpacingItems).");
+h2("Chunked registration, stop and resume");
+p("03 registers the approved rows in chunks (`RegisterChunkSize`, default 10; 1000 rows = 100 chunks). After each chunk: progress line, fresh directory handle, pause (`ChunkPauseSec`, doubled up to 120 s when a chunk averages more than `ChunkSlowSec` seconds per user) and a check for `C:\\BulkReg\\batches\\STOP.txt`. Create that empty file to stop cleanly; delete it before running 03 or 08 again. A run that stops half way (circuit breaker, STOP.txt, closed client) leaves `<batch>_inprogress.flag`: the batch stays OPEN, 03 resumes it and users already registered are skipped. The batch is DONE only when every row was processed.");
+h2("08 - Repair Missing Mail Files (replaces 07)");
+p("Works from the Domino Directory, so it does not need batch files. Scope at start: empty = all registered users, a mail server name (run a second Notes client on the other server in parallel) or a BATCH file. It reads one database list per server, confirms each missing file with one open, opens the mail template once and creates the files in chunks. Existing files are checked for the `($Inbox)` view (`RepairCheckExisting`); an incomplete file is reported, never overwritten, and an EMPTY shell is removed and recreated only with `RepairRemoveEmptyShells=1` in LIVE mode. DryRun=1 reports only; LIVE needs the word REPAIR typed. Result: `<scope>_mailrepair_<mode>_<run>.csv`. Creating the file inline or with 08 costs the same server time per file; 08 does not make one file faster, it lets registration finish first and lets you run several clients.");
+h2("09 - Reconcile (CSV reports)");
+p("Read-only. Writes into `ReconcileDir`: `RECON_<run>_all.csv` (one row per directory user with Status and recommended Action), `_missing_users.csv` (not registered: in an open batch, batch DONE but no certificate, no Internet address, in no batch; and, if you supply an expected-users CSV with a ShortName / InternetAddress / FullName column, users of that list that are not in the directory), `_missing_mail.csv` (registered but mailbox missing, incomplete or not recorded in the Person document), `_orphan_mail.csv` (mail files in the numbered folders that no Person uses) and `_summary.txt`. Compare runs in Excel or with a diff tool.");
+h2("10 - Audit Log Maintenance and log volume");
+p("The log database grew because every INFO line and every audit row became a document. `LogDbLevel=WARN` and `LogDbAudit=CHANGES` stop that at the source; the local debug log and audit CSV of each run still hold everything. Agent 10 deals with what exists: Entry documents older than `LogEntryRetentionDays` (30) and Audit/Run documents older than `LogAuditRetentionDays` (365) are exported to CSV in `AuditArchiveDir`, the exported row count is checked, and only then are the documents deleted; run folders older than `AuditFolderRetentionDays` (90) lose their `*_debug.log` files (audit CSV and RUN_INFO stay). DryRun=1 only counts. LIVE needs Editor access with Delete documents and the word PURGE typed. The retention periods are defaults: agree them with the audit/compliance owner, copy the archive to your approved store, then compact the log database on the server.");
+pb();
+
 // ================================================================ RUN ORDER
 h1("Agent Run Order (read this first)");
-p("BulkReg has **six core agents** (00 - 05) plus the optional **07 - Create Mail Files** (needed only with `MailFileDeferred=1`, see step 6 below). Agent **00** is run once by the log database owner (B20a). In every batch **four** are used, always in this order: **01 → 02 → (you review) → 03 dry run → 03 live → 04**. Agent **05 is not part of the process**; it is only for the manual alternative in Appendix A. Run every agent from bulkreg.nsf > **Actions > BulkReg**.");
+p("BulkReg has **six core agents** (00 - 05) plus **08 - Repair Missing Mail Files** (needed with `MailFileDeferred=1`, and to repair users registered earlier), **09 - Reconcile** (CSV reports) and **10 - Audit Log Maintenance** (see chapter *What is new in 4.2.0*) and **11 - Batch Manager** (resume and manage batches, chapter *Resuming and managing batches*). Agent **00** is run once by the log database owner (B20a). In every batch **four** are used, always in this order: **01 → 02 → (you review) → 03 dry run → 03 live → 04**. Agent **05 is not part of the process**; it is only for the manual alternative in Appendix A. Run every agent from bulkreg.nsf > **Actions > BulkReg**.");
 code(`FOR EVERY BATCH:
 
  1. Actions > BulkReg > 01 - Preflight Check        (read-only)
@@ -161,9 +212,9 @@ code(`FOR EVERY BATCH:
  5. bulkreg.ini: DryRun=0
  6. Actions > BulkReg > 03 - Register Batch         (LIVE - type the batch ID)
          -> BATCH-<id>_results.csv     (batch is now DONE)
- 6b. ONLY with MailFileDeferred=1: Actions > BulkReg > 07 - Create Mail Files   (choose the batch)
-         -> BATCH-<id>_mailcreate_<mode>_<run>.csv : MAIL_CREATED for every user ?
-         (the users cannot receive mail until the mail files exist: run 07 right after 03 live)
+ 6b. ONLY with MailFileDeferred=1: Actions > BulkReg > 08 - Repair Missing Mail Files   (batch, server or empty)
+         -> <scope>_mailrepair_<mode>_<run>.csv : MAIL_CREATED for every user ?
+         (the users cannot receive mail until the mail files exist: run 08 right after 03 live)
  7. bulkreg.ini: DryRun=1
  8. Actions > BulkReg > 04 - Verify Registration and Vault   (choose the batch)
          -> BATCH-<id>_verify_<run>.csv : REGISTERED + IN_VAULT + MAILFILE_OK + REPLICAS_OK ?
@@ -551,8 +602,8 @@ tbl(["Key", "Enter", "From"], [
   ["MailFileTitle", "Leave `{CN}`: each new mail file gets the user's name as its database title (e.g. *Neha Arora*)", "–"],
   ["MailFolderMax", "The number of folders you created in B4, e.g. `5` for mail1–mail5 (mail cluster: users of all home servers together)", "Worksheet 11d"],
   ["MailTemplate", "Mail template file, e.g. `mail12.ntf` (empty = registration default). **Required** when `MailFileDeferred=1` or `RegisterCreateMailDb=0`.", "Worksheet 11b"],
-  ["MailFileDeferred", "`1` = 03 registers WITHOUT the mail file (fast); agent 07 creates it afterwards. `0` (default in code) = created during registration.", "1 for large runs"],
-  ["MailCreateMaxPerRun", "Agent 07: maximum mail files created per run (`0` = no limit). `PauseMs` and `MaxConsecutiveErrors` apply too.", "0"],
+  ["MailFileDeferred", "`1` = 03 registers WITHOUT the mail file (fast); agent 08 creates it afterwards. `0` (default in code) = created during registration.", "1 for large runs"],
+  ["MailCreateMaxPerRun", "Agent 08: maximum mail files created per run (`0` = no limit). `PauseMs` and `MaxConsecutiveErrors` apply too.", "0"],
   ["MailACLManager / MailQuotaSizeLimit", "Who gets **Manager** access to each new mail file: leave **empty** = your admin ID (the operator); or names separated by commas, e.g. `Admin User/Demo,LocalDomainAdmins`. Quota in MB (0 = none).", "Worksheet 11c"],
   ["LogServer / LogDb", "**Required.** The server and file of the central log database from B15, e.g. `DominoAdmin/Demo` and `bulkreg_log.nsf`", "B15"],
   ["DryRun", "Leave `1`", "–"],
@@ -828,7 +879,10 @@ tbl(["Agent name (type exactly)", "Line in Initialize", "Source file (same conte
   ["`BulkReg\\03 - Register Batch`", "`Call BR_RunRegisterBatch()`", "Agent03_RegisterBatch.lss"],
   ["`BulkReg\\04 - Verify Registration and Vault`", "`Call BR_RunVerify()`", "Agent04_VerifyVaultStatus.lss"],
   ["`BulkReg\\05 - Export to Registration Text File`", "`Call BR_RunExport()`", "Agent05_ExportToBatchRegFile.lss (optional)"],
-  ["`BulkReg\\07 - Create Mail Files`", "`Call BR_RunCreateMailFiles()`", "Agent07_CreateMailFiles.lss (only with MailFileDeferred=1; run after 03 live)"],
+  ["`BulkReg\\08 - Repair Missing Mail Files`", "`Call BR_RunRepairMail()`", "Agent08_RepairMailFiles.lss (replaces the retired 07; run after 03 live with MailFileDeferred=1, or any time to repair)"],
+  ["`BulkReg\\09 - Reconcile`", "`Call BR_RunReconcile()`", "Agent09_Reconcile.lss (read-only, writes CSV files)"],
+  ["`BulkReg\\10 - Audit Log Maintenance`", "`Call BR_RunAuditMaint()`", "Agent10_AuditMaintenance.lss (DryRun aware; archives then purges old log documents)"],
+  ["`BulkReg\\11 - Batch Manager`", "`Call BR_RunBatchManager()`", "Agent11_BatchManager.lss (batch states, BATCHSTATUS CSV, RESUME / REMAINDER / CLOSE)"],
 ], [3600, 2800, 2960]);
 p("Do the following for **each** agent in the table:");
 ol(
@@ -1119,8 +1173,8 @@ tbl(["Key", "Default", "Meaning"], [
   ["MailFileDir", "mail", "Only for MailFolderMode=SINGLE"],
   ["MailFolderMax", "5", "Number of pre-created folders (B4); no folder above it is assigned (0 = no limit)"],
   ["MailTemplate", "(empty)", "Mail template (empty = registration default; required with MailFileDeferred=1)"],
-  ["MailFileDeferred", "0 (ini template: 1)", "1 = register without mail file, create it with agent 07"],
-  ["MailCreateMaxPerRun", "0", "Agent 07 limit per run (0 = none)"],
+  ["MailFileDeferred", "0 (ini template: 1)", "1 = register without mail file, create it with agent 08"],
+  ["MailCreateMaxPerRun", "0", "Agent 08 limit per run (0 = none)"],
   ["MailOwnerAccess", "EDITOR", "Access of the user in his/her own mail file: EDITOR (with Delete documents), DESIGNER or MANAGER. Set at registration and corrected right after it; Verify reports and can correct it. With EDITOR the user cannot change the ACL (Access & Delegation) himself."],
   ["MailFileTitle / MailFileTitleOverwrite", "{CN} / 0", "Database title of each new mail file ({CN} = Neha Arora; also {FirstName} {LastName} {ShortName} {InternetAddress}); set right after registration, before the cluster replicas. 1 = replace a title that is already set."],
   ["MailACLManager / MailCreateFTIndex / MailQuotaSizeLimit / MailQuotaWarningThreshold", "– / 0 / 0 / 0", "Mail file settings (quota in MB). MailACLManager: empty = the operator's admin ID; comma separated names allowed; all of them get Manager access in every new mail file. MailCreateFTIndex also applies to the replicas."],
@@ -1312,6 +1366,9 @@ tbl(["Command", "Does"], [
 h2("D6 Troubleshooting");
 p("General method: set `LogLevel=DEBUG`, rebuild a 1-user batch (ExtraSelection), dry-run it, and read the debug log. FAILED rows show the stage (load, validate, configure, RegisterNewUser, verify, mailfile, replicas, vault) and the Notes error. Cross-check the same time in **certlog.nsf** on the registration server (certification and registration records) and in **log.nsf** on the registration and home servers (server events, mail file creation, Administration Process).");
 tbl(["Symptom", "Likely cause", "Fix"], [
+  ["03 stopped half way, or the client hung", "STOP.txt, MaxConsecutiveErrors, crash, closed client", "Chapter *Resuming and managing batches*: run 11 to check, then run 03 again"],
+  ["03 asks whether another client may still be running", "The batch flag was touched less than StaleRunMinutes ago", "Answer Yes only when the other client is closed; otherwise wait or review with 11"],
+  ["Batch is DONE but users are missing", "Old-style run, or CLOSE", "11: REMAINDER (or RESUME), review, run 03"],
   ["Actions menu shows only \"01\", \"02\"…", "`|` used in the agent names (alias separator)", "Rename the agents exactly as in B18"],
   ["Agents not in the Actions menu", "Private agent, or wrong trigger", "B18: Shared, On event > Action menu selection"],
   ["\"To run this agent you must have at least one document selected\"", "The agent's **Target** is *All selected documents* (Designer's default); bulkreg.nsf has no documents", "Designer > agent properties > Basics > Runtime: **Target: None**, Ctrl+S. Check all six agents."],
@@ -1344,7 +1401,7 @@ tbl(["Symptom", "Likely cause", "Fix"], [
   ["00 - Set Up Log Database: 'needs Designer or Manager access'", "Run by an operator (Author)", "The database owner runs it (B20a)"],
   ["WARN: mail file renamed", "The last-name file already exists on that server, in the directory or in an open batch", "Normal with SUFFIX. Review the new name, or edit MailFile"],
   ["\"Could not scan <server>\" in the debug log", "No access to the server's database list", "Uniqueness then uses the directory and the direct file check. Fix access and rebuild for full checking."],
-  ["MAILFILE_DEFERRED / MAILFILE_MISSING after a live run", "`MailFileDeferred=1`: the mail file is created by agent 07, not by 03", "Run Actions > BulkReg > 07 - Create Mail Files (batch or all), then Verify. Mail for these users is undeliverable until then"],
+  ["MAILFILE_DEFERRED / MAILFILE_MISSING after a live run", "`MailFileDeferred=1`: the mail file is created by agent 08, not by 03", "Run Actions > BulkReg > 08 - Repair Missing Mail Files (batch, server or all), then Verify. Mail for these users is undeliverable until then"],
   ["MAILFILE_PENDING / MAILFILE_MISSING", "Mail file creation queued (Administration Process) or failed: template missing, no Create databases right, server unreachable", "Check admin4.nsf on the home server, B4 rights and template; re-run Verify"],
   ["REPLICAS_MISSING after several hours", "AdminP request failed: requester or destination server has no Reader access to the mail file, no 'Create new replicas' right, no Connection document, or AdminP not running", "Open admin4.nsf > All Requests by Action, find Create Replica for the user and read the response document; fix B4 (cluster section); create the replicas manually (D3c)"],
   ["REQUEST_FAILED / REQUESTED k/n FAILED", "AdminP request could not be created (RegistrationServer unreachable, no rights to admin4.nsf, unrestricted methods not allowed)", "Check the message; create the replicas manually (D3c); confirm in the pilot (D9)"],
@@ -1442,7 +1499,9 @@ tbl(["Agent (code in BulkRegAgents)", "Reads", "Writes", "Asks for"], [
   ["03 - Register Batch (BR_RunRegisterBatch)", "One batch file, names.nsf", "names.nsf (LIVE), ID files, AdminP Create Replica requests (admin4.nsf), _results/_dryrun, password file, audit", "Config path, batch file, Yes/No, batch ID (LIVE), certifier password (UseCA=0)"],
   ["04 - Verify Registration and Vault (BR_RunVerify)", "A batch file or all users, ID Vault, mail files and their replicas", "_verify.csv, audit", "Config path, batch file or empty"],
   ["05 - Export (optional, BR_RunExport)", "names.nsf", "Text file, audit", "Config path, password Yes/No"],
-  ["07 - Create Mail Files (optional, BR_RunCreateMailFiles)", "A batch file or all users, Person documents, mail template", "Mail files (LIVE), title, ACL, AdminP Create Replica requests, _mailcreate CSV, audit", "Config path, batch file or empty, Yes/No"],
+  ["08 - Repair Missing Mail Files (BR_RunRepairMail)", "Domino Directory, server database lists, mail template", "Mail files (LIVE), title, ACL, AdminP Create Replica requests, _mailrepair CSV, audit", "Config path, scope, type REPAIR"],
+  ["09 - Reconcile (BR_RunReconcile)", "Domino Directory, server database lists, batch files, optional expected-users CSV", "RECON_*.csv files only (nothing changes in Domino)", "Config path, optional list"],
+  ["10 - Audit Log Maintenance (BR_RunAuditMaint)", "Log database, AuditDir", "CSV archive, deletes archived log documents and old debug logs (LIVE)", "Config path, type PURGE"],
 ], [2300, 2300, 2800, 1960]);
 
 h2("Appendix C – HCL documentation used");

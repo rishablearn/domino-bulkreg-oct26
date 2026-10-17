@@ -1,6 +1,6 @@
 <#
 =====================================================================
- bulkreg.ps1  -  BulkReg 4.1.0 OPTIONAL helper for the Windows admin workstation
+ bulkreg.ps1  -  BulkReg 4.2.1 OPTIONAL helper for the Windows admin workstation
                  (the machine running the HCL Domino Administrator client)
 
  Registration runs entirely inside the Domino Administrator client
@@ -23,7 +23,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('Help', 'Init', 'Check', 'DryRun', 'Batches', 'Status', 'Tail', 'PurgeSecrets', 'Versions')]
+    [ValidateSet('Help', 'Init', 'Check', 'DryRun', 'Batches', 'Status', 'Tail', 'PurgeSecrets', 'Versions', 'Stop', 'Unstop')]
     [string]$Command = 'Help',
     [Parameter(Position = 1)] [string]$Arg,
     [string]$Base = $(if ($env:BULKREG_BASE) { $env:BULKREG_BASE } else { 'C:\BulkReg' }),
@@ -33,7 +33,7 @@ param(
 )
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$Version = '4.1.0'
+$Version = '4.2.1'
 if (-not $Config) { $Config = if ($env:BULKREG_CONFIG) { $env:BULKREG_CONFIG } else { Join-Path $Base 'config\bulkreg.ini' } }
 $KitConfig = Join-Path $PSScriptRoot '..\..\config'
 $script:Fails = 0; $script:Warns = 0
@@ -102,6 +102,7 @@ Base=$Base  Config=$Config
                                      copy config templates if missing (run as Administrator)
   Check                              Validate folders, ACLs and config values
   DryRun On|Off                      Set DryRun=1 / 0 in bulkreg.ini (backup + diff)
+  Stop | Unstop                      Create / delete <BatchDir>\STOP.txt (clean stop of a chunked 03 run)
   Batches                            List batch files: rows, Include=Y, state (OPEN / DRYRUN / DONE)
   Status [file.csv]                  Summarise an audit or BATCH-*_results.csv by Result (default: newest audit)
   Tail                               Follow the newest debug log
@@ -178,7 +179,10 @@ function Test-Versions {
         @{ File = 'lotusscript\Agent04_VerifyVaultStatus.lss'; Pattern = 'Version\s*:\s*([0-9.]+)' },
         @{ File = 'lotusscript\Agent05_ExportToBatchRegFile.lss'; Pattern = 'Version\s*:\s*([0-9.]+)' },
         @{ File = 'lotusscript\Agent06_InstallWelcomePage.lss'; Pattern = 'Version\s*:\s*([0-9.]+)' },
-        @{ File = 'lotusscript\Agent07_CreateMailFiles.lss';  Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'lotusscript\Agent08_RepairMailFiles.lss';  Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'lotusscript\Agent09_Reconcile.lss';        Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'lotusscript\Agent10_AuditMaintenance.lss'; Pattern = 'Version\s*:\s*([0-9.]+)' },
+        @{ File = 'lotusscript\Agent11_BatchManager.lss';    Pattern = 'Version\s*:\s*([0-9.]+)' },
         @{ File = 'config\bulkreg.ini';                         Pattern = 'BulkReg ([0-9.]+)' },
         @{ File = 'config\server_mapping.csv';                  Pattern = 'BulkReg ([0-9.]+)' },
         @{ File = 'scripts\windows\bulkreg.cmd';                Pattern = 'BulkReg ([0-9.]+)' },
@@ -227,7 +231,8 @@ function Show-Batches {
         $inc = @($rows | Where-Object { $_.Include -eq 'Y' }).Count
         $res = Join-Path $d "$($_.BaseName)_results.csv"
         $dry = @(Get-ChildItem -LiteralPath $d -Filter "$($_.BaseName)_dryrun_*.csv" -File -ErrorAction SilentlyContinue)
-        $state = if (Test-Path $res) { 'DONE' } elseif ($dry.Count -gt 0) { 'OPEN (dry-run done)' } else { 'OPEN' }
+        $flag = Join-Path $d "$($_.BaseName)_inprogress.flag"
+        $state = if ((Test-Path $res) -and (Test-Path $flag)) { 'STOPPED HALF WAY (run 03 to resume)' } elseif (Test-Path $res) { 'DONE' } elseif ($dry.Count -gt 0) { 'OPEN (dry-run done)' } else { 'OPEN' }
         [pscustomobject]@{ Batch = $_.BaseName; Rows = $rows.Count; IncludeY = $inc; State = $state; Built = $_.CreationTime }
     } | Format-Table -AutoSize
 }
@@ -259,6 +264,8 @@ switch ($Command) {
     'Batches'      { Show-Batches }
     'Status'       { Show-Status $Arg }
     'Tail'         { Show-Tail }
+    'Stop'         { $sf = Join-Path (Get-CfgDir 'BatchDir' 'batches') 'STOP.txt'; New-Item -ItemType File -Force -Path $sf | Out-Null; Write-Action "Stop: created $sf"; Write-Host "STOP.txt created: a chunked 03 run stops cleanly at the end of its current chunk. 'Unstop' removes it." }
+    'Unstop'       { $sf = Join-Path (Get-CfgDir 'BatchDir' 'batches') 'STOP.txt'; if (Test-Path -LiteralPath $sf) { Remove-Item -LiteralPath $sf; Write-Action "Unstop: removed $sf"; Write-Host 'STOP.txt removed.' } else { Write-Host 'No STOP.txt.' } }
     'PurgeSecrets' { Remove-Secrets }
     'Versions'     { Test-Versions }
 }

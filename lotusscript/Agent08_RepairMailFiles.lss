@@ -1,0 +1,37 @@
+'=====================================================================
+' Agent name : BulkReg\08 - Repair Missing Mail Files
+' Version    : 4.2.1  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 4.2.1)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunRepairMail).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: open the agent, click in the editor, Ctrl+A, Delete, paste this
+'              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (NOT 'All selected documents' - Designer's default - or Notes asks for a selected document)
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunRepairMail):
+'
+' Creates the mail files that are missing for REGISTERED users (and reports incomplete ones). It
+' replaces the retired agent 07 - Create Mail Files. It works from the Domino Directory, not from batch
+' files, so it also repairs users whose batch file / results file is gone and users registered by an
+' interrupted run. Scope: all users, one mail server, or one batch file.
+' Fast: one database list per server, the mail template opened once, work in chunks of
+' MailRepairChunkSize (default 10) with an adaptive pause, STOP.txt for a clean stop.
+' Never overwrites an existing mail file; a file with documents is never touched.
+' DryRun=1 (default) only reports (WOULD_CREATE). LIVE: type REPAIR to confirm.
+' Report: <BatchDir>\<scope>_mailrepair_<MODE>_<run>.csv + audit folder + log database.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunRepairMail()
+End Sub
