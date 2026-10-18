@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 4.2.1
+' Script Library : BulkRegCommon            Version 4.3.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "4.2.1"
+Public Const BR_VERSION = "4.3.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -93,6 +93,8 @@ Public gRunDoc As NotesDocument   ' the Run document of this run
 Public gRunTitle As String
 Public gLogWriteErr As Integer
 Public gLogDbLevel As Integer     ' lowest level written as an Entry document to the log database (LogDbLevel, default WARN)
+Public gRegIdx List As String         ' duplicate guard (4.3.0): keys of the REGISTERED Person documents -> NoteID
+Public gRegIdxOn As Boolean
 Public gLogDbAudit As String      ' ALL | CHANGES | PROBLEMS: which audit rows become Audit documents in the log database
 Public gSession As NotesSession
 Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
@@ -1567,6 +1569,9 @@ Function BR_Validate(u As BRUser) As String
 	If u.LastName <> "" And u.LastNameSuffix = "" And Trim$(CfgS("LastNameSuffixFields", "ShortName,sAMAccountName")) <> "" Then
 		s = s & "ERROR:No usable suffix for the last name '" & u.LastName & "' (LastNameSuffixFields=" & CfgS("LastNameSuffixFields", "ShortName,sAMAccountName") & " all empty or invalid) - not unique, user not registered; "
 	End If
+	' duplicate guard (4.3.0): a user who is NOT registered but whose Internet address, short name, objectGUID or
+	' common name already belongs to a DIFFERENT registered Person document must not be registered again
+	s = s & BR_DupCheck(u)
 	' Missing Internet address is never an ERROR:
 	'   SkipNoInternetAddress=1 (default) -> SKIP: the user is left out of batches and flagged
 	'     (SKIPPED_NO_INET) until the address exists in AD and DirSync has written it;
@@ -2576,4 +2581,80 @@ Function BR_HomeServerOK(server As String, cache List As String) As Boolean
 		BR_Log LVL_INFO, "Server " & server & ": " & cache(k)
 	End If
 	BR_HomeServerOK = (cache(k) = "OK")
+End Function
+
+
+'=====================================================================
+' DUPLICATE GUARD (4.3.0)
+'=====================================================================
+' One pass over the REGISTERED Person documents builds an index (Internet address, short name(s), objectGUID,
+' common name(s) of every FullName value -> NoteID). BR_Validate then refuses to register a user whose key
+' belongs to a DIFFERENT registered document: the second identity (and a second mail file) is never created.
+' DuplicateGuard=0 switches it off. Nothing is deleted or changed: duplicates are only reported (agent 09).
+Sub BR_DupIndexLoad(db As NotesDatabase)
+	On Error GoTo ErrH
+	Dim col As NotesDocumentCollection, doc As NotesDocument, n As Long
+	Erase gRegIdx
+	gRegIdxOn = False
+	If Not CfgB("DuplicateGuard", True) Then
+		BR_Log LVL_INFO, "Duplicate guard: OFF (DuplicateGuard=0)"
+		Exit Sub
+	End If
+	Set col = db.Search(|Form = "Person" & @IsAvailable(Certificate) & Certificate != ""|, Nothing, 0)
+	Set doc = col.GetFirstDocument()
+	Do While Not (doc Is Nothing)
+		Call BR_DupIndexAdd(doc)
+		n = n + 1
+		Set doc = col.GetNextDocument(doc)
+	Loop
+	gRegIdxOn = True
+	BR_Log LVL_INFO, "Duplicate guard: " & n & " registered Person documents indexed"
+	Exit Sub
+ErrH:
+	gRegIdxOn = False
+	BR_Log LVL_WARN, "Duplicate guard could not be loaded (" & Error$ & ", err " & Err & ") - continuing WITHOUT it"
+	Exit Sub
+End Sub
+
+Sub BR_DupIndexAdd(doc As NotesDocument)
+	Dim nid As String, v As Variant, k As String, nm As NotesName
+	nid = CStr(doc.NoteID)
+	k = BR_NormKey(BR_Item(doc, "InternetAddress"))
+	If k <> "" Then gRegIdx("i:" & k) = nid
+	k = BR_Item(doc, "objectGUID")
+	If k <> "" Then gRegIdx("g:" & LCase$(k)) = nid
+	v = doc.GetItemValue("ShortName")
+	ForAll x In v
+		k = BR_NormKey(CStr(x))
+		If k <> "" Then gRegIdx("s:" & k) = nid
+	End ForAll
+	v = doc.GetItemValue("FullName")
+	ForAll y In v
+		If Trim$(CStr(y)) <> "" Then
+			Set nm = New NotesName(CStr(y))
+			k = BR_NormKey(nm.Common)
+			If k <> "" Then gRegIdx("c:" & k) = nid
+		End If
+	End ForAll
+End Sub
+
+' "" = no duplicate, else "ERROR:DUPLICATE_REGISTERED ..." (text starts with the marker 03 looks for)
+Function BR_DupCheck(u As BRUser) As String
+	Dim keys(3) As String, what(3) As String, i As Integer, hit As String
+	If Not gRegIdxOn Then Exit Function
+	keys(0) = "i:" & BR_NormKey(u.InternetAddress): what(0) = "Internet address " & u.InternetAddress
+	keys(1) = "s:" & BR_NormKey(u.ShortName):       what(1) = "short name " & u.ShortName
+	keys(2) = "g:" & LCase$(u.GUID):                what(2) = "objectGUID " & u.GUID
+	keys(3) = "c:" & BR_NormKey(BR_CommonName(u)):  what(3) = "common name " & BR_CommonName(u)
+	For i = 0 To 3
+		If Len(keys(i)) > 2 Then
+			If IsElement(gRegIdx(keys(i))) Then
+				hit = gRegIdx(keys(i))
+				If hit <> CStr(u.NoteID) Then
+					BR_DupCheck = "ERROR:DUPLICATE_REGISTERED - " & what(i) & " already belongs to the registered Person document NoteID " & hit & " (not registered again; run 09 - Reconcile, file *_duplicates.csv); "
+					Exit Function
+				End If
+			End If
+		End If
+	Next
 End Function

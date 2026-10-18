@@ -1,6 +1,14 @@
-# BulkReg 4.2.1 – Deployment steps
+# BulkReg 4.3.0 – Deployment steps
 
 Upgrade from 3.6.6 up to 4.1.0. Libraries `BulkRegCommon` and `BulkRegAgents` change, `bulkreg.ini` gets new keys, **three new agents** are added (`BulkReg\08 - Repair Missing Mail Files`, `BulkReg\09 - Reconcile`, `BulkReg\10 - Audit Log Maintenance`) and **agent 07 is retired**. Everything runs locally in the Notes client. Agents 00-06 are unchanged (only the version comment in their header; 03 gains chunking inside the library).
+
+**4.3.0 change (gaps, duplicates, aborted batches):**
+
+1. Re-paste both libraries (no new agent). New ini keys: `DuplicateGuard=1`, `ReconcileCheckVault=0`.
+2. **Gaps:** run 09 - Reconcile; read `RECON_<run>_gaps.csv`. NOT_REGISTERED: 02 then 03. NO_MAIL: run 08 and enter the path of the gaps file as scope. NO_VAULT (`ReconcileCheckVault=1`) and DUPLICATE: manual.
+3. **Duplicates:** 01/02 flag and 03 skips (`SKIPPED_DUPLICATE`) a user who already exists as a registered Person document (same Internet address, short name, objectGUID or common name). 09 `_duplicates.csv` lists KEEP / DO_NOT_REGISTER / REVIEW. Nothing is deleted by the kit: remove duplicate identities with the Administration Process after review.
+4. **Aborted batch:** 11 - Batch Manager, `RECOVER <batch id>` (read-only), then 03 / 08 / 04 as `RECOVER_<id>_<run>.csv` says.
+5. Not compiled or run against Domino. Pilot with a 10-user batch; check the duplicate guard with one known duplicate before a large run.
 
 **4.2.1 change (resume, batch management, name precedence):**
 

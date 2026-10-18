@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 4.2.1
+' Script Library : BulkRegAgents            Version 4.3.0
 ' Purpose        : The code of the BulkReg agents (00 - 11). Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -219,6 +219,7 @@ Sub BR_RunPreflight()
 	ForAll ld In gSrvLoad
 		loadBefore(ListTag(ld)) = ld
 	End ForAll
+	Call BR_DupIndexLoad(db)                                 ' duplicate guard (4.3.0)
 	Set col = BR_GetCandidates(db, True)
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
@@ -512,6 +513,7 @@ Sub BR_RunBuildBatch()
 	Call BR_OpenBatchNoteIDs(openIds, mfNames, mfCounts)
 	Call BR_ScanDirectoryMail(db, mfNames, mfCounts)
 	Set usersView = db.GetView("($Users)")
+	Call BR_DupIndexLoad(db)                                 ' duplicate guard: users who already exist as a registered Person are flagged, not put in a batch
 	Set col = BR_GetCandidates(db, True)
 
 	Set doc = col.GetFirstDocument()
@@ -895,6 +897,7 @@ Sub BR_RunRegisterBatch()
 
 	' ---------- register the approved rows ----------
 	Set db = BR_OpenDirectory()
+	Call BR_DupIndexLoad(db)                                 ' duplicate guard (4.3.0): never register a second identity for an existing registered user
 	tChunk = Timer
 	For i = 0 To n - 1
 		res = BR_RegisterOne(db, nid(i), un(i), gid(i), hs(i), mf(i), mn(i), ou(i), po(i), gr(i), vs(i), cr(i), na(i), fn(i))
@@ -1092,6 +1095,14 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 
 	stage = "validate"
 	issues = BR_Validate(u) & nameNote
+	If InStr(issues, "DUPLICATE_REGISTERED") > 0 Then
+		' a different registered Person document already has this user's address / short name / GUID / name:
+		' SKIPPED (not a failure, does not count towards MaxConsecutiveErrors). Nothing is created or deleted.
+		Call BR_Audit(u, gMode, "REGISTER", "SKIPPED_DUPLICATE", BR_Elapsed(t0), issues)
+		BR_Log LVL_WARN, "SKIP DUPLICATE " & u.FullNameBefore & " : " & issues
+		BR_RegisterOne = "SKIP:duplicate"
+		Exit Function
+	End If
 	If InStr(issues, "ERROR:") = 0 Then
 		If Not BR_HomeServerOK(u.HomeServer, gSrvOK) Then
 			issues = issues & "ERROR:HomeServer " & u.HomeServer & " unreachable; "
@@ -1217,6 +1228,7 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 	Set doc = db.GetDocumentByID(u.NoteID)
 	If doc Is Nothing Then Error 4001, "Person document not found after registration"
 	u.FullNameAfter = BR_RegisteredName(doc, u)          ' the registered name, not necessarily the first FullName value (see BR_RegisteredName)
+	If gRegIdxOn Then Call BR_DupIndexAdd(doc)           ' the new identity is part of the duplicate guard from now on
 	u.MailSystemAfter = BR_Item(doc, "MailSystem")
 	If Not BR_IsRegistered(doc) Then Error 4002, "RegisterNewUser returned but Person doc has no Certificate"
 	' the Notes name must be the generated CN + OU/Org (organization once) - stop the whole run at the first wrong name
@@ -1690,7 +1702,8 @@ Sub BR_RunRepairMail()
 	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Repair missing mail files (" & gMode & ")", _
 	"Scope. Leave EMPTY for all registered DirSync users on all mail servers, or enter:" & Chr$(10) & _
 	"  - a mail server name: only users on that server (run a second client on the other server in parallel)" & Chr$(10) & _
-	"  - the path of a BATCH-<id>.csv: only the users of that batch", "")
+	"  - the path of a BATCH-<id>.csv: only the users of that batch" & Chr$(10) & _
+	"  - the path of RECON_<run>_gaps.csv (from 09 - Reconcile): only the users with a gap", "")
 	If IsEmpty(ans) Then
 		BR_Close "Cancelled"
 		Exit Sub
@@ -1700,9 +1713,14 @@ Sub BR_RunRepairMail()
 		scopeFile = BR_LocalPath(scope)
 		If Dir$(scopeFile) = "" Then Error 8001, "Batch file not found: " & scopeFile
 		bname = StrRightBack(scopeFile, gSep)
-		If Left$(bname, 6) <> "BATCH-" Or InStr(bname, "_") > 0 Then Error 8002, "Choose the batch file itself (BATCH-<id>.csv): " & bname
-		gBatchID = Left$(bname, Len(bname) - 4)
-		scopeLabel = gBatchID
+		If Left$(bname, 6) = "RECON_" And LCase$(Right$(bname, 9)) = "_gaps.csv" Then
+			gBatchID = "GAPS"                                 ' the gap list of 09 - Reconcile (Include/NoteID/UNID columns): only these users
+			scopeLabel = "GAPS-" & Mid$(bname, 7, Len(bname) - 15)
+		Else
+			If Left$(bname, 6) <> "BATCH-" Or InStr(bname, "_") > 0 Then Error 8002, "Choose a batch file (BATCH-<id>.csv) or the gap list of 09 (RECON_<run>_gaps.csv): " & bname
+			gBatchID = Left$(bname, Len(bname) - 4)
+			scopeLabel = gBatchID
+		End If
 	ElseIf scope <> "" Then
 		scopeSrv = BR_SrvAbbr(scope)
 		scopeLabel = "SRV-" & BR_SafeName(scopeSrv)
@@ -2107,6 +2125,8 @@ End Function
 '   RECON_<run>_missing_users.csv  not registered / not in the directory
 '   RECON_<run>_missing_mail.csv   registered, mailbox missing / incomplete / not recorded
 '   RECON_<run>_orphan_mail.csv    mail files with no user
+'   RECON_<run>_gaps.csv           (4.3.0) one row per gap: NOT_REGISTERED / NO_MAIL / NO_VAULT / DUPLICATE; 08 accepts it as scope
+'   RECON_<run>_duplicates.csv     (4.3.0) groups with the same address / short name / GUID / name / mail file: KEEP, DO_NOT_REGISTER, REVIEW
 '   RECON_<run>_summary.txt        counts per status
 ' Mail existence comes from ONE database list per server (fast); a file missing per the list is confirmed
 ' with one direct open (ReconcileConfirmMissing=1, default) so a list the ID cannot fully see never
@@ -2127,10 +2147,14 @@ Sub BR_RunReconcile()
 	Dim confirmMissing As Boolean, checkHealth As Boolean, skipInet As Boolean, inet As String, fullN As String, shortN As String
 	Dim nid As String, srvAll As String, lst As Variant, p As Long, summary As String, sumTxt As String
 	Dim tg As String, rl As Variant, rj As Integer
+	Dim ru As BRUser, vstat As String, checkVault As Boolean, fhGap As Integer, fhDup As Integer, gapKind As String
+	Dim dgrp List As String, dDet List As String, dReg List As String, dMok List As String, dUnid List As String, gapSeen List As String
+	Dim mem As Variant, keeper As String, rec As String, dk As String, nDupGroups As Long
 
 	If Not BR_Init("Reconcile") Then Exit Sub
 	confirmMissing = CfgB("ReconcileConfirmMissing", True)
 	checkHealth = CfgB("ReconcileCheckHealth", False)
+	checkVault = CfgB("ReconcileCheckVault", False)
 	skipInet = CfgB("SkipNoInternetAddress", True)
 	' ---------- where the files go ----------
 	outDir = BR_CfgDir("ReconcileDir", "reconcile")
@@ -2210,7 +2234,8 @@ Sub BR_RunReconcile()
 	End If
 
 	' ---------- output files ----------
-	hdr = "NoteID,FullName,ShortName,InternetAddress,Registered,Status,Action,MailServer,MailFile,MailFileOnServer,MailHealth,Batch,SpacingItems,InExpectedList"
+	hdr = "NoteID,FullName,ShortName,InternetAddress,Registered,Status,Action,MailServer,MailFile,MailFileOnServer,MailHealth,Batch,SpacingItems,InExpectedList,VaultStatus"
+	fhGap = BR_CsvOpen(pfx & "_gaps.csv", "Include,NoteID,UNID,FullName,InternetAddress,Gap,Agent,Detail")
 	fhAll = BR_CsvOpen(pfx & "_all.csv", hdr)
 	fhUsr = BR_CsvOpen(pfx & "_missing_users.csv", hdr)
 	fhMail = BR_CsvOpen(pfx & "_missing_mail.csv", hdr)
@@ -2231,7 +2256,7 @@ Sub BR_RunReconcile()
 		sp = BR_SpacingItems(doc)
 		bt = ""
 		If IsElement(batchOf("n" & UCase$(nid))) Then bt = batchOf("n" & UCase$(nid))
-		onSrv = "": health = ""
+		onSrv = "": health = "": vstat = ""
 		matched = False
 		' expected-list match: any ShortName value, the Internet address or any FullName value
 		If nXl > 0 Then matched = BR_ReconMatch(doc, xlKeys)
@@ -2287,11 +2312,43 @@ Sub BR_RunReconcile()
 				action = "In no batch: run 01 - Preflight, 02 - Build Batch"
 			End If
 		End If
+		If checkVault And reg And stat = "OK" Then
+			Call BR_ReadUser(doc, ru)                              ' gives the VaultServer of the user's mapping rule
+			vstat = BR_VaultStatus(BR_RegisteredName(doc, ru), ru.VaultServer)
+			If vstat = "NOT_IN_VAULT" Then
+				stat = "REGISTERED_NOT_IN_VAULT"
+				action = "ID is not in the ID vault: see the guide (chapter on gaps); do NOT register the user again"
+			ElseIf Left$(vstat, 11) = "CHECK_ERROR" Or Left$(vstat, 11) = "NOT_CHECKED" Then
+				If IsElement(cnt("(vault not checked)")) Then cnt("(vault not checked)") = cnt("(vault not checked)") + 1 Else cnt("(vault not checked)") = 1
+			End If
+		End If
 		If sp <> "" And stat = "OK" Then action = "Spacing in " & sp & " (cosmetic after 4.2.0)"
-		row = Q(nid) & "," & Q(fullN) & "," & Q(shortN) & "," & Q(inet) & "," & Q(BR_IIfStr(reg, "Y", "N")) & "," & Q(stat) & "," & Q(action) & "," & Q(srv) & "," & Q(mf) & "," & Q(onSrv) & "," & Q(health) & "," & Q(bt) & "," & Q(sp) & "," & Q(BR_IIfStr(nXl = 0, "", BR_IIfStr(matched, "Y", "N")))
+		row = Q(nid) & "," & Q(fullN) & "," & Q(shortN) & "," & Q(inet) & "," & Q(BR_IIfStr(reg, "Y", "N")) & "," & Q(stat) & "," & Q(action) & "," & Q(srv) & "," & Q(mf) & "," & Q(onSrv) & "," & Q(health) & "," & Q(bt) & "," & Q(sp) & "," & Q(BR_IIfStr(nXl = 0, "", BR_IIfStr(matched, "Y", "N"))) & "," & Q(vstat)
 		Print #fhAll, row
 		If InStr(stat, "NOT_REGISTERED") = 1 Then Print #fhUsr, row
 		If InStr(stat, "REGISTERED_MAIL_") = 1 Or stat = "REGISTERED_NO_MAILFILE_ITEM" Then Print #fhMail, row
+		' gap list (one row per gap; Include/NoteID/UNID columns, so 08 accepts the file as its scope)
+		gapKind = ""
+		If stat = "NOT_REGISTERED" Or stat = "NOT_REGISTERED_BATCH_DONE" Then
+			gapKind = "NOT_REGISTERED|02 - Build Batch, then 03"
+		ElseIf stat = "NOT_REGISTERED_IN_OPEN_BATCH" Then
+			gapKind = "NOT_REGISTERED_PENDING|03 on " & bt
+		ElseIf stat = "REGISTERED_MAIL_MISSING" Or stat = "REGISTERED_MAIL_INCOMPLETE" Then
+			gapKind = "NO_MAIL|08 - Repair Missing Mail Files"
+		ElseIf stat = "REGISTERED_NO_MAILFILE_ITEM" Then
+			gapKind = "NO_MAIL_ITEM|Manual: set MailServer/MailFile in the Person document, then 08"
+		ElseIf stat = "REGISTERED_NOT_IN_VAULT" Then
+			gapKind = "NO_VAULT|Manual: vault/policy action (not 03)"
+		End If
+		If gapKind <> "" Then Print #fhGap, Q("Y") & "," & Q(nid) & "," & Q(doc.UniversalID) & "," & Q(fullN) & "," & Q(inet) & "," & Q(Left$(gapKind, InStr(gapKind, "|") - 1)) & "," & Q(Mid$(gapKind, InStr(gapKind, "|") + 1)) & "," & Q(action)
+		' duplicate groups: same Internet address, short name, objectGUID, common name or mail file
+		dDet("n" & nid) = Q(fullN) & "," & Q(BR_IIfStr(reg, "Y", "N")) & "," & Q(inet) & "," & Q(srv) & "," & Q(mf) & "," & Q(onSrv)
+		dReg("n" & nid) = BR_IIfStr(reg, "Y", "N"): dMok("n" & nid) = onSrv: dUnid("n" & nid) = doc.UniversalID
+		Call BR_DupAdd(dgrp, "inet:" & BR_NormKey(inet), nid)
+		Call BR_DupAdd(dgrp, "short:" & BR_NormKey(shortN), nid)
+		Call BR_DupAdd(dgrp, "guid:" & LCase$(BR_Item(doc, "objectGUID")), nid)
+		Call BR_DupAdd(dgrp, "cn:" & BR_NormKey(BR_CnOf(fullN)), nid)
+		If reg And mf <> "" Then Call BR_DupAdd(dgrp, "mail:" & LCase$(srv & "!!" & mf), nid)
 		If IsElement(cnt(stat)) Then cnt(stat) = cnt(stat) + 1 Else cnt(stat) = 1
 		If sp <> "" Then
 			If IsElement(cnt("(name spacing)")) Then cnt("(name spacing)") = cnt("(name spacing)") + 1 Else cnt("(name spacing)") = 1
@@ -2305,7 +2362,7 @@ Sub BR_RunReconcile()
 		ForAll xv In xlKeys
 			If xv = "0" Then
 				nXlMissing = nXlMissing + 1
-				Print #fhUsr, Q("") & "," & Q(xlOrig(ListTag(xv))) & "," & Q("") & "," & Q("") & "," & Q("N") & "," & Q("NOT_IN_DIRECTORY") & "," & Q("In the expected list but no Person document matches: not synced from AD yet (DirSync) or a different spelling") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("N")
+				Print #fhUsr, Q("") & "," & Q(xlOrig(ListTag(xv))) & "," & Q("") & "," & Q("") & "," & Q("N") & "," & Q("NOT_IN_DIRECTORY") & "," & Q("In the expected list but no Person document matches: not synced from AD yet (DirSync) or a different spelling") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("") & "," & Q("N") & "," & Q("")
 			End If
 		End ForAll
 		If nXlMissing > 0 Then cnt("NOT_IN_DIRECTORY") = nXlMissing
@@ -2313,6 +2370,42 @@ Sub BR_RunReconcile()
 	Close #fhAll
 	Close #fhUsr
 	Close #fhMail
+
+	' ---------- duplicates (report only: nothing is deleted or changed) ----------
+	fhDup = BR_CsvOpen(pfx & "_duplicates.csv", "Group,Key,NoteID,FullName,Registered,InternetAddress,MailServer,MailFile,MailOnServer,Recommendation")
+	ForAll gv In dgrp
+		If InStr(gv, "|") > 0 Then
+			dk = ListTag(gv)
+			mem = Split(gv, "|")
+			keeper = ""
+			For j = 0 To UBound(mem)                 ' keeper: a registered identity whose mail file exists, else any registered one
+				If keeper = "" And dReg("n" & mem(j)) = "Y" And dMok("n" & mem(j)) = "Y" Then keeper = CStr(mem(j))
+			Next
+			If keeper = "" Then
+				For j = 0 To UBound(mem)
+					If keeper = "" And dReg("n" & mem(j)) = "Y" Then keeper = CStr(mem(j))
+				Next
+			End If
+			nDupGroups = nDupGroups + 1
+			For j = 0 To UBound(mem)
+				If CStr(mem(j)) = keeper Then
+					rec = "KEEP"
+				ElseIf dReg("n" & mem(j)) = "N" Then
+					rec = "DO_NOT_REGISTER: duplicate" & BR_IIfStr(keeper <> "", " of NoteID " & keeper, " (no registered identity yet - fix the AD data first)") & "; remove this Person document only after review"
+				Else
+					rec = "REVIEW: second REGISTERED identity of NoteID " & keeper & " - decide with the user which one stays, then delete the other with the Administration Process (it handles ID, mail and ACLs per policy)"
+				End If
+				Print #fhDup, Q(CStr(nDupGroups)) & "," & Q(dk) & "," & Q(CStr(mem(j))) & "," & dDet("n" & mem(j)) & "," & Q(rec)
+				If rec <> "KEEP" And Not IsElement(gapSeen("n" & mem(j))) Then
+					gapSeen("n" & mem(j)) = "1"
+					Print #fhGap, Q("N") & "," & Q(CStr(mem(j))) & "," & Q(dUnid("n" & mem(j))) & "," & Q("") & "," & Q("") & "," & Q("DUPLICATE") & "," & Q("09 *_duplicates.csv (manual, destructive step)") & "," & Q(dk)
+				End If
+			Next
+		End If
+	End ForAll
+	Close #fhDup
+	Close #fhGap
+	If nDupGroups > 0 Then cnt("DUPLICATE_GROUPS") = nDupGroups
 
 	' ---------- orphan mail files: in a numbered mail folder, no Person document points at them ----------
 	fhOrph = BR_CsvOpen(pfx & "_orphan_mail.csv", "MailServer,MailFile")
@@ -2341,7 +2434,7 @@ Sub BR_RunReconcile()
 	ForAll cv In cnt
 		sumTxt = sumTxt & Right$("      " & CStr(cv), 7) & "  " & ListTag(cv) & Chr$(13) & Chr$(10)
 	End ForAll
-	sumTxt = sumTxt & Chr$(13) & Chr$(10) & "Files: " & pfx & "_all.csv | _missing_users.csv | _missing_mail.csv | _orphan_mail.csv" & Chr$(13) & Chr$(10)
+	sumTxt = sumTxt & Chr$(13) & Chr$(10) & "Files: " & pfx & "_all.csv | _missing_users.csv | _missing_mail.csv | _orphan_mail.csv | _gaps.csv | _duplicates.csv" & Chr$(13) & Chr$(10)
 	Call BR_AppendLine(pfx & "_summary.txt", sumTxt)
 	BR_Log LVL_INFO, Replace(sumTxt, Chr$(13) & Chr$(10), " | ")
 	summary = "RECONCILE | users=" & nTotal & " ok=" & BR_ListLongText(cnt, "OK") & " mail missing=" & BR_ListLongText(cnt, "REGISTERED_MAIL_MISSING") & " no mail item=" & BR_ListLongText(cnt, "REGISTERED_NO_MAILFILE_ITEM") & " not registered=" & (nTotal - BR_RegisteredCount(cnt)) & " orphan mail files=" & BR_ListLongText(cnt, "ORPHAN_MAIL_FILE")
@@ -2369,6 +2462,20 @@ Function BR_RegisteredCount(cnt List As Long) As Long
 	End ForAll
 	BR_RegisteredCount = n
 End Function
+
+' Common name of a hierarchical name ("" for an empty value)
+Function BR_CnOf(s As String) As String
+	Dim nm As NotesName
+	If Trim$(s) = "" Then Exit Function
+	Set nm = New NotesName(s)
+	BR_CnOf = nm.Common
+End Function
+
+' Adds a NoteID to a duplicate-candidate group (key = type:value). An empty value (key ends with ":") is ignored.
+Sub BR_DupAdd(grp List As String, key As String, nid As String)
+	If Right$(key, 1) = ":" Then Exit Sub
+	If IsElement(grp(key)) Then grp(key) = grp(key) & "|" & nid Else grp(key) = nid
+End Sub
 
 ' Opens a new UTF-8 CSV for output and writes BOM + header. Returns the file number.
 Function BR_CsvOpen(path As String, header As String) As Integer
@@ -2736,6 +2843,7 @@ Sub BR_RunExport()
 	Call st.WriteText(Uchr$(&HFEFF), EOL_NONE)
 
 	Set db = BR_OpenDirectory()
+	Call BR_DupIndexLoad(db)                                 ' duplicate guard (4.3.0)
 	Set col = BR_GetCandidates(db, True)
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
@@ -3375,7 +3483,7 @@ Sub BR_RunBatchManager()
 
 	Set ws = New NotesUIWorkspace
 	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Batch Manager", sumTxt & Chr$(10) & "Report: " & csvFile & Chr$(10) & Chr$(10) & _
-	"Optional action - type  RESUME <batch id>  |  REMAINDER <batch id>  |  CLOSE <batch id>  (RESUME re-opens a DONE_INCOMPLETE batch; REMAINDER writes a new batch with the unregistered rows; CLOSE removes the flag of a STOPPED batch or closes an OPEN one). Leave empty or Cancel to only view.", "")
+	"Optional action - type  RECOVER <batch id> (read-only analysis of an aborted batch)  |  RESUME <batch id>  |  REMAINDER <batch id>  |  CLOSE <batch id>  (RESUME re-opens a DONE_INCOMPLETE batch; REMAINDER writes a new batch with the unregistered rows; CLOSE removes the flag of a STOPPED batch or closes an OPEN one). Leave empty or Cancel to only view.", "")
 	If IsEmpty(ans) Then ans = ""
 	cmd = Trim$(CStr(ans))
 	If cmd = "" Then
@@ -3433,6 +3541,8 @@ Sub BR_BatchAction(act As String, bid As String, bdir As String)
 		End If
 		BR_Log LVL_WARN, "CLOSE: " & bid & " closed by " & gOperator
 		BR_Msg bid & " closed.", 64
+	Case "RECOVER"
+		Call BR_RecoverBatch(bid, bdir)
 	Case "REMAINDER"
 		If Dir$(resF) = "" Or Dir$(flagF) <> "" Then Error 6105, "REMAINDER is only for a DONE batch with unregistered rows."
 		Set db = BR_OpenDirectory()
@@ -3481,7 +3591,7 @@ Sub BR_BatchAction(act As String, bid As String, bdir As String)
 			BR_Msg "Written " & newFile & " (" & nOut & " rows). Review it (the Seq column keeps the old numbers), then run 03.", 64
 		End If
 	Case Else
-		Error 6106, "Unknown action " & act & " (use RESUME, REMAINDER or CLOSE)"
+		Error 6106, "Unknown action " & act & " (use RECOVER, RESUME, REMAINDER or CLOSE)"
 	End Select
 	Exit Sub
 ErrH:
@@ -3489,5 +3599,99 @@ ErrH:
 	Close #fh
 	BR_Log LVL_ERROR, "Batch action failed: " & Error$ & " (err " & Err & ", line " & Erl & ")"
 	BR_Msg "Batch action failed: " & Error$, 16
+	Exit Sub
+End Sub
+
+
+' RECOVER <batch id> (4.3.0): READ-ONLY analysis of an aborted, terminated or hung batch. For every Include=Y row it
+' looks at the REAL state in the directory (not at what the results file says) and writes
+' RECOVER_<id>_<run>.csv with State and the next step. Nothing is registered, created or deleted.
+'   OK                       registered, mail file exists, in the vault (when a VaultServer applies)
+'   REGISTERED_NO_RESULT     registered, but the results file has no REGISTERED row: the run died after RegisterNewUser.
+'                            Check the restricted password file(s) of the batch; run 08 and 04 for this user
+'   NO_MAIL                  registered, mail file missing -> 08
+'   NOT_IN_VAULT             registered, ID not in the vault -> vault/policy action, never 03
+'   NOT_REGISTERED           still to do -> run 03 (resume) or REMAINDER
+'   DUPLICATE                not registered, but another registered Person document already has the user's key
+'                            (the duplicate guard would skip it) -> 09 *_duplicates.csv, manual review
+'   GONE                     the Person document no longer exists
+Sub BR_RecoverBatch(bid As String, bdir As String)
+	On Error GoTo ErrH
+	Dim db As NotesDatabase, doc As NotesDocument, ru As BRUser, doneIds List As String, cnt List As Long
+	Dim fh As Integer, fhO As Integer, txt As String, isFirst As Boolean, cols List As Integer, delim As String, parts As Variant
+	Dim nid As String, unid As String, st As String, act As String, srv As String, mf As String, vs As String, outF As String
+	Dim sumTxt As String, pwHint As String, pf As String, nRows As Long, dupTxt As String
+	outF = bdir & "RECOVER_" & bid & "_" & gRunID & ".csv"
+	Set db = BR_OpenDirectory()
+	Call BR_DupIndexLoad(db)
+	Call BR_ResultsDoneIds(bdir & bid & "_results.csv", doneIds)
+	fhO = BR_CsvOpen(outF, "NoteID,FullName,State,NextStep")
+	fh = FreeFile()
+	Open bdir & bid & ".csv" For Input As #fh Charset = "UTF-8"
+	isFirst = True
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		If isFirst Then
+			Call BR_CsvHeader(txt, delim, cols): isFirst = False
+		ElseIf Trim$(txt) <> "" Then
+			parts = BR_CsvSplit(txt, delim)
+			If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
+				nRows = nRows + 1
+				nid = BR_CsvGet(parts, cols, "NoteID"): unid = BR_CsvGet(parts, cols, "UNID")
+				Set doc = Nothing
+				On Error Resume Next
+				Set doc = db.GetDocumentByID(nid)
+				If doc Is Nothing And unid <> "" Then Set doc = db.GetDocumentByUNID(unid)
+				Err = 0
+				On Error GoTo ErrH
+				If doc Is Nothing Then
+					st = "GONE": act = "The Person document no longer exists: nothing to do"
+				Else
+					Call BR_ReadUser(doc, ru)
+					If BR_IsRegistered(doc) Then
+						srv = BR_Item(doc, "MailServer"): mf = BR_Item(doc, "MailFile")
+						vs = ""
+						If ru.VaultServer <> "" Then vs = BR_VaultStatus(BR_RegisteredName(doc, ru), ru.VaultServer)
+						If srv = "" Or mf = "" Then
+							st = "NO_MAIL": act = "Person has no MailServer/MailFile item: set them, then run 08"
+						ElseIf Not BR_MailFileExists(srv, mf) Then
+							st = "NO_MAIL": act = "Run 08 - Repair Missing Mail Files (scope: this batch)"
+						ElseIf vs = "NOT_IN_VAULT" Then
+							st = "NOT_IN_VAULT": act = "ID is not in the vault: vault/policy action. Do NOT run 03 for this user"
+						ElseIf Not IsElement(doneIds(CStr(nid))) And Not IsElement(doneIds(UCase$(nid))) Then
+							st = "REGISTERED_NO_RESULT": act = "Registered but the results file has no REGISTERED row (run died after RegisterNewUser): find the initial password in the restricted password file(s) of this batch, then 04 Verify"
+						Else
+							st = "OK": act = ""
+						End If
+					Else
+						dupTxt = BR_DupCheck(ru)
+						If dupTxt <> "" Then
+							st = "DUPLICATE": act = "Another registered Person document exists (" & Left$(dupTxt, 120) & "): review with 09 *_duplicates.csv"
+						Else
+							st = "NOT_REGISTERED": act = "Run 03 (resumes this batch) or REMAINDER"
+						End If
+					End If
+				End If
+				Print #fhO, Q(nid) & "," & Q(BR_CsvGet(parts, cols, "FullName")) & "," & Q(st) & "," & Q(act)
+				If IsElement(cnt(st)) Then cnt(st) = cnt(st) + 1 Else cnt(st) = 1
+			End If
+		End If
+	Loop
+	Close #fh
+	Close #fhO
+	ForAll cv In cnt
+		sumTxt = sumTxt & Right$("     " & CStr(cv), 6) & "  " & ListTag(cv) & Chr$(10)
+	End ForAll
+	pf = Dir$(BR_CfgDir("PasswordDir", "secure") & "BulkReg_InitialPasswords_" & bid & "_*.csv")
+	If pf <> "" Then pwHint = Chr$(10) & "Password file(s) of this batch exist in PasswordDir (restricted)."
+	BR_Log LVL_INFO, "RECOVER " & bid & ": " & Replace(sumTxt, Chr$(10), " | ")
+	BR_Msg "Recovery analysis of " & bid & " (" & nRows & " rows, read-only):" & Chr$(10) & sumTxt & pwHint & Chr$(10) & "Report: " & outF & Chr$(10) & Chr$(10) & "Order: 03 (resume) for NOT_REGISTERED, then 08 for NO_MAIL, then 04 Verify.", 64
+	Exit Sub
+ErrH:
+	On Error Resume Next
+	Close #fh
+	Close #fhO
+	BR_Log LVL_ERROR, "Recover failed: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Msg "Recover failed: " & Error$, 16
 	Exit Sub
 End Sub

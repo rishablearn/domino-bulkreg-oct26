@@ -1,6 +1,6 @@
 '=====================================================================
 ' Agent name : BulkReg\09 - Reconcile
-' Version    : 4.2.1  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 4.2.1)
+' Version    : 4.3.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents 4.3.0)
 ' Code       : ALL logic is in the script library BulkRegAgents (BR_RunReconcile).
 '              This agent only calls it, so it never changes between releases.
 '
@@ -19,6 +19,7 @@
 '   RECON_<run>_missing_mail.csv  registered users whose mailbox is missing, incomplete or not recorded
 '   RECON_<run>_orphan_mail.csv   mail files in the numbered mail folders that no Person document uses
 '   RECON_<run>_summary.txt       counts per status
+' 4.3.0: also RECON_<run>_gaps.csv (not registered / no mail / no vault / duplicate; scope file for 08) and _duplicates.csv.
 ' Optional input: a CSV of the users that SHOULD exist (column ShortName / InternetAddress / FullName).
 ' Also flags Person items (JobTitle, FirstName, ...) with extra blanks. Changes nothing in Domino.
 '=====================================================================

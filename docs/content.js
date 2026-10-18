@@ -51,6 +51,7 @@ tbl(["Item", "Value"], [
 h3("Revision history");
 tbl(["Version", "Change"], [
   ["1.0 – 2.9", "Guide-only versions before the kit had one version number (see below from 2.0)"],
+  ["4.3.0", "**Release 4.3.0.** **Gaps:** 09 - Reconcile now writes `RECON_<run>_gaps.csv` (one row per gap: NOT_REGISTERED, NO_MAIL, NO_VAULT with `ReconcileCheckVault=1`, DUPLICATE) with the agent to use; 08 accepts that file as its scope. **Duplicates:** `DuplicateGuard=1` - 01/02 flag and 03 SKIPS (`SKIPPED_DUPLICATE`) a user whose Internet address, short name, objectGUID or common name already belongs to a different registered Person document; 09 writes `RECON_<run>_duplicates.csv` with KEEP / DO_NOT_REGISTER / REVIEW. **Aborted batches:** Batch Manager action `RECOVER <batch id>` (read-only, real state per row, `RECOVER_<id>_<run>.csv`). Nothing is deleted automatically. Re-paste both libraries. Not compiled or run against Domino."],
   ["4.2.1", "**Release 4.2.1.** **Resume and batch management:** new `11 - Batch Manager` (state of every batch, CSV report, RESUME / REMAINDER / CLOSE), stale-run question and per-user heartbeat in 03, `bulkreg Stop` / `Unstop`. **Name precedence:** the `FullNameAfter` (or `NotesName`) of the reviewed batch row is the name the user is created with; the regenerated name is only used when that column is empty. **Password safety:** the initial-password row is written immediately after `RegisterNewUser`. **Fixes:** folder fill counts include deferred mail files; a resumed batch no longer double-counts users already registered in the server-load balance; 04 Verify compares the registered name, not the first FullName value. Re-paste both libraries; add agent 11. Not compiled or run against Domino."],
   ["4.2.0", "**Release 4.2.0.** **Names:** one blank between the words, whatever AD delivers (extra, leading, trailing, tab, non-breaking blanks are normalised, `BR_NormSpaces`); the post-registration name check ignores blanks and case and by default only WARNS about a really different common name (`CnMismatchAction=WARN`; before, one such user stopped the whole run). **Chunked registration:** 03 registers in chunks (`RegisterChunkSize=10`, `ChunkPauseSec`, adaptive `ChunkSlowSec`), stops cleanly on `<BatchDir>\\STOP.txt` and RESUMES a stopped batch (`<id>_inprogress.flag`). **Agent 07 retired;** new `08 - Repair Missing Mail Files` (works from the directory, fast database-list inventory, chunked, finds incomplete files, never overwrites), `09 - Reconcile` (CSV: missing users, mailbox missing, orphan mail files, name spacing) and `10 - Audit Log Maintenance` (archive to CSV, verify, purge; local debug logs). **Log volume:** `LogDbLevel=WARN`, `LogDbAudit=CHANGES`. Re-paste both libraries; add agents 08, 09, 10; delete agent 07. Not compiled or run against Domino."],
   ["4.1.0", "**Release 4.1.0.** **Name separator:** `LastNameSeparator=SPACE` (or `BLANK`) puts one blank between the last-name source and the suffix, e.g. `CN=SGT ABC XXZ 11100OPS/O=Demo` (ini values are trimmed, so a blank needs the keyword). **Fast registration:** `MailFileDeferred=1` registers users without creating the mail file; new agent `BulkReg\\07 - Create Mail Files` (`BR_RunCreateMailFiles`) creates the missing files afterwards from `MailTemplate`, sets title and ACL and requests the cluster replicas (`MailCreateMaxPerRun`, honors DryRun). Verify reports `MAILFILE_MISSING` for such users until 07 has run. **Clean-up:** the unused AutoSync hooks (`gAuto`, `gEmbedded`, `gEmb*`, `gBld*`) are removed from both libraries; welcome screen, README, DEPLOY-4.1.0.md and this guide updated. Re-paste both libraries and add agent 07."],
@@ -147,6 +148,44 @@ tbl(["Object", "Canonical form", "Abbreviated form", "Notes"], [
 ], [2300, 2700, 2300, 2060]);
 pb();
 
+// ================================================================ GAPS, DUPLICATES, ABORTED BATCHES (4.3.0)
+h1("Gaps, duplicates and aborted batches (4.3.0)");
+p("Not compiled or run against Domino: pilot with a small batch. A new batch cannot repair every gap, because 03 can only register users who are not registered yet. The strategy is one reconciliation pass that sorts the users by what is missing, then the right agent for each group.");
+h2("Strategy after any failed, aborted or partial run");
+tbl(["Step", "Agent", "What it does"], [
+  ["1", "09 - Reconcile (ReconcileCheckVault=1 for the vault check)", "Writes `RECON_<run>_gaps.csv`, `_duplicates.csv`, `_all.csv`, `_missing_*.csv`"],
+  ["2", "11 - Batch Manager, `RECOVER <batch id>`", "For an aborted batch: real state of every row (OK, REGISTERED_NO_RESULT, NO_MAIL, NOT_IN_VAULT, NOT_REGISTERED, DUPLICATE, GONE)"],
+  ["3", "02 then 03 (DryRun first)", "NOT_REGISTERED: missed, failed or newly added users. 02 skips users in open batches and flags duplicates"],
+  ["4", "08 with scope `RECON_<run>_gaps.csv`", "NO_MAIL: creates the missing or incomplete mail files of exactly those users"],
+  ["5", "04 - Verify", "Registered, vault, mail file, replicas"],
+  ["6", "Manual", "NO_VAULT and DUPLICATE: see below"],
+], [700, 3700, 4960]);
+h2("The gap list");
+tbl(["Gap", "Meaning", "Next step"], [
+  ["NOT_REGISTERED", "No certificate (not in a batch, or batch DONE without a certificate)", "02 - Build Batch, then 03"],
+  ["NOT_REGISTERED_PENDING", "In an open batch", "03 on that batch"],
+  ["NO_MAIL", "Registered, mail file missing (or incomplete with `ReconcileCheckHealth=1`)", "08, scope = the gaps file"],
+  ["NO_MAIL_ITEM", "Person document has no MailServer/MailFile", "Set both items, then 08"],
+  ["NO_VAULT", "Registered, ID not in the vault (needs `ReconcileCheckVault=1` and a VaultServer)", "Manual vault/policy action. Never register the user again. The kit only detects this gap; I have not verified a supported way to put an existing ID into the vault"],
+  ["DUPLICATE", "Member of a duplicate group that is not the KEEP entry", "See *Duplicates*"],
+], [2300, 3900, 3160]);
+p("The file has the columns `Include` (Y), `NoteID`, `UNID`, so 08 accepts it as scope. It never goes to 03: 03 accepts only `BATCH-*.csv` built by 02.");
+h2("Duplicates");
+p("**Prevention (`DuplicateGuard=1`, default).** 01, 02 and 03 index the registered Person documents once. A user who is not registered, but whose Internet address, short name, objectGUID or common name already belongs to a *different* registered Person document, is marked `ERROR:DUPLICATE_REGISTERED` by 01/02 (not put in a clean batch) and is skipped by 03 with the audit result `SKIPPED_DUPLICATE`. A skip is not a failure and does not count towards `MaxConsecutiveErrors`. A user registered earlier in the same run joins the index at once.");
+p("**Detection.** 09 writes `RECON_<run>_duplicates.csv`: groups by Internet address, short name, objectGUID, common name and mail file. Per member the recommendation is KEEP (a registered identity whose mail file exists, else any registered one), DO_NOT_REGISTER (an unregistered duplicate) or REVIEW (a second registered identity).");
+p("**Resolution is manual, deliberately.** BulkReg never deletes Person documents, IDs or mail files. For REVIEW rows: decide with the user which identity stays, check which mail file holds the mail, then remove the other identity with the Administration Process (delete person), which handles ID, mail and ACLs according to your policy. For DO_NOT_REGISTER rows: fix the cause in AD (a second account for the same person) or remove the DirSync Person document after review. Then run 09 again. Switch the guard off only with `DuplicateGuard=0`.");
+h2("Aborted, terminated or hung batches");
+ol(
+  "**Close the hung client**, and make sure no other client is running the batch (`StaleRunMinutes` helps, it does not replace this check).",
+  "**RECOVER:** 11 - Batch Manager, type `RECOVER <batch id>`. Read-only. Read `RECOVER_<id>_<run>.csv`.",
+  "**REGISTERED_NO_RESULT** (the run died after `RegisterNewUser`): the initial password is in the restricted password file of that batch (written immediately after registration since 4.2.1). Then run 04 for the user.",
+  "**NOT_REGISTERED:** run 03 again (resumes, registered users are skipped), or `REMAINDER <batch id>` for a new batch with only those rows.",
+  "**NO_MAIL:** run 08 (scope: the batch file). **NOT_IN_VAULT:** manual vault action, never 03.",
+  "**DUPLICATE:** do not force it: review with 09 `_duplicates.csv`.",
+  "Run 04 - Verify, then 09 to confirm that the gap list is empty."
+);
+pb();
+
 // ================================================================ RESUME AND BATCH MANAGEMENT (4.2.1)
 h1("Resuming and managing batches (4.2.1)");
 p("Like the rest of the kit this chapter has **not been compiled or run against Domino**: try it on a small test batch first. It answers: a 03 run was stopped, crashed or hung, what now?");
@@ -191,7 +230,7 @@ p("03 registers the approved rows in chunks (`RegisterChunkSize`, default 10; 10
 h2("08 - Repair Missing Mail Files (replaces 07)");
 p("Works from the Domino Directory, so it does not need batch files. Scope at start: empty = all registered users, a mail server name (run a second Notes client on the other server in parallel) or a BATCH file. It reads one database list per server, confirms each missing file with one open, opens the mail template once and creates the files in chunks. Existing files are checked for the `($Inbox)` view (`RepairCheckExisting`); an incomplete file is reported, never overwritten, and an EMPTY shell is removed and recreated only with `RepairRemoveEmptyShells=1` in LIVE mode. DryRun=1 reports only; LIVE needs the word REPAIR typed. Result: `<scope>_mailrepair_<mode>_<run>.csv`. Creating the file inline or with 08 costs the same server time per file; 08 does not make one file faster, it lets registration finish first and lets you run several clients.");
 h2("09 - Reconcile (CSV reports)");
-p("Read-only. Writes into `ReconcileDir`: `RECON_<run>_all.csv` (one row per directory user with Status and recommended Action), `_missing_users.csv` (not registered: in an open batch, batch DONE but no certificate, no Internet address, in no batch; and, if you supply an expected-users CSV with a ShortName / InternetAddress / FullName column, users of that list that are not in the directory), `_missing_mail.csv` (registered but mailbox missing, incomplete or not recorded in the Person document), `_orphan_mail.csv` (mail files in the numbered folders that no Person uses) and `_summary.txt`. Compare runs in Excel or with a diff tool.");
+p("Read-only. Writes into `ReconcileDir`: `RECON_<run>_all.csv` (one row per directory user with Status and recommended Action), `_missing_users.csv` (not registered: in an open batch, batch DONE but no certificate, no Internet address, in no batch; and, if you supply an expected-users CSV with a ShortName / InternetAddress / FullName column, users of that list that are not in the directory), `_missing_mail.csv` (registered but mailbox missing, incomplete or not recorded in the Person document), `_orphan_mail.csv` (mail files in the numbered folders that no Person uses), **`_gaps.csv`** (one row per gap with the agent to use; scope file for 08; 4.3.0), **`_duplicates.csv`** (KEEP / DO_NOT_REGISTER / REVIEW; 4.3.0) and `_summary.txt`. `_all.csv` has a VaultStatus column (filled with `ReconcileCheckVault=1`). See chapter *Gaps, duplicates and aborted batches*. Compare runs in Excel or with a diff tool.");
 h2("10 - Audit Log Maintenance and log volume");
 p("The log database grew because every INFO line and every audit row became a document. `LogDbLevel=WARN` and `LogDbAudit=CHANGES` stop that at the source; the local debug log and audit CSV of each run still hold everything. Agent 10 deals with what exists: Entry documents older than `LogEntryRetentionDays` (30) and Audit/Run documents older than `LogAuditRetentionDays` (365) are exported to CSV in `AuditArchiveDir`, the exported row count is checked, and only then are the documents deleted; run folders older than `AuditFolderRetentionDays` (90) lose their `*_debug.log` files (audit CSV and RUN_INFO stay). DryRun=1 only counts. LIVE needs Editor access with Delete documents and the word PURGE typed. The retention periods are defaults: agree them with the audit/compliance owner, copy the archive to your approved store, then compact the log database on the server.");
 pb();
@@ -880,7 +919,7 @@ tbl(["Agent name (type exactly)", "Line in Initialize", "Source file (same conte
   ["`BulkReg\\04 - Verify Registration and Vault`", "`Call BR_RunVerify()`", "Agent04_VerifyVaultStatus.lss"],
   ["`BulkReg\\05 - Export to Registration Text File`", "`Call BR_RunExport()`", "Agent05_ExportToBatchRegFile.lss (optional)"],
   ["`BulkReg\\08 - Repair Missing Mail Files`", "`Call BR_RunRepairMail()`", "Agent08_RepairMailFiles.lss (replaces the retired 07; run after 03 live with MailFileDeferred=1, or any time to repair)"],
-  ["`BulkReg\\09 - Reconcile`", "`Call BR_RunReconcile()`", "Agent09_Reconcile.lss (read-only, writes CSV files)"],
+  ["`BulkReg\\09 - Reconcile`", "`Call BR_RunReconcile()`", "Agent09_Reconcile.lss (read-only, writes CSV files incl. gaps and duplicates)"],
   ["`BulkReg\\10 - Audit Log Maintenance`", "`Call BR_RunAuditMaint()`", "Agent10_AuditMaintenance.lss (DryRun aware; archives then purges old log documents)"],
   ["`BulkReg\\11 - Batch Manager`", "`Call BR_RunBatchManager()`", "Agent11_BatchManager.lss (batch states, BATCHSTATUS CSV, RESUME / REMAINDER / CLOSE)"],
 ], [3600, 2800, 2960]);
@@ -1366,6 +1405,9 @@ tbl(["Command", "Does"], [
 h2("D6 Troubleshooting");
 p("General method: set `LogLevel=DEBUG`, rebuild a 1-user batch (ExtraSelection), dry-run it, and read the debug log. FAILED rows show the stage (load, validate, configure, RegisterNewUser, verify, mailfile, replicas, vault) and the Notes error. Cross-check the same time in **certlog.nsf** on the registration server (certification and registration records) and in **log.nsf** on the registration and home servers (server events, mail file creation, Administration Process).");
 tbl(["Symptom", "Likely cause", "Fix"], [
+  ["03 result SKIPPED_DUPLICATE / 02 shows ERROR:DUPLICATE_REGISTERED", "A different registered Person document has the same Internet address, short name, objectGUID or common name", "Run 09, read `_duplicates.csv`, resolve (chapter *Gaps, duplicates and aborted batches*); `DuplicateGuard=0` only if you are sure"],
+  ["Batch aborted and you do not know who is registered", "Crash, closed client, network", "11: `RECOVER <batch id>`, then 03 / 08 / 04 as the report says"],
+  ["Registered user has no ID in the vault", "Vault or policy step failed", "Detected by 09 with `ReconcileCheckVault=1` (NO_VAULT) or by 04; manual action, never register again"],
   ["03 stopped half way, or the client hung", "STOP.txt, MaxConsecutiveErrors, crash, closed client", "Chapter *Resuming and managing batches*: run 11 to check, then run 03 again"],
   ["03 asks whether another client may still be running", "The batch flag was touched less than StaleRunMinutes ago", "Answer Yes only when the other client is closed; otherwise wait or review with 11"],
   ["Batch is DONE but users are missing", "Old-style run, or CLOSE", "11: REMAINDER (or RESUME), review, run 03"],
@@ -1500,7 +1542,7 @@ tbl(["Agent (code in BulkRegAgents)", "Reads", "Writes", "Asks for"], [
   ["04 - Verify Registration and Vault (BR_RunVerify)", "A batch file or all users, ID Vault, mail files and their replicas", "_verify.csv, audit", "Config path, batch file or empty"],
   ["05 - Export (optional, BR_RunExport)", "names.nsf", "Text file, audit", "Config path, password Yes/No"],
   ["08 - Repair Missing Mail Files (BR_RunRepairMail)", "Domino Directory, server database lists, mail template", "Mail files (LIVE), title, ACL, AdminP Create Replica requests, _mailrepair CSV, audit", "Config path, scope, type REPAIR"],
-  ["09 - Reconcile (BR_RunReconcile)", "Domino Directory, server database lists, batch files, optional expected-users CSV", "RECON_*.csv files only (nothing changes in Domino)", "Config path, optional list"],
+  ["09 - Reconcile (BR_RunReconcile)", "Domino Directory, server database lists, batch files, optional expected-users CSV", "RECON_*.csv files only, including _gaps and _duplicates (nothing changes in Domino)", "Config path, optional list"],
   ["10 - Audit Log Maintenance (BR_RunAuditMaint)", "Log database, AuditDir", "CSV archive, deletes archived log documents and old debug logs (LIVE)", "Config path, type PURGE"],
 ], [2300, 2300, 2800, 1960]);
 

@@ -1,23 +1,24 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 4.2.1 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.html`, same version as the kit (4.2.1). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+BulkReg 4.3.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.html`, same version as the kit (4.3.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
-## What changed in 4.2.0 and 4.2.1
+## What changed in 4.2.0 - 4.3.0
 - **Names with extra blanks:** one blank between the words whatever AD delivers (`FLT  LT ABC   XYZ 1000ops` -> `FLT LT ABC XYZ 1000OPS`). The "common name differs" check ignores blanks and case and only WARNS about a really different name (`CnMismatchAction`), so one odd user no longer stops the run.
 - **Chunked registration:** 03 registers in chunks (`RegisterChunkSize=10`), pauses between them, stops cleanly on `<BatchDir>\STOP.txt` and **resumes** a half-done batch (`<id>_inprogress.flag`).
 - **08 - Repair Missing Mail Files** replaces the retired 07: works from the directory (no batch file needed), per mail server in parallel, finds missing and incomplete mail files, never overwrites a file with data.
-- **09 - Reconcile:** CSV files (`RECON_<run>_all / _missing_users / _missing_mail / _orphan_mail`) for missing users, registered-but-no-mailbox, orphan mail files and stray blanks in names.
+- **09 - Reconcile:** CSV files (`RECON_<run>_all / _missing_users / _missing_mail / _orphan_mail / _gaps / _duplicates`) for missing users, registered-but-no-mailbox, orphan mail files and stray blanks in names.
 - **10 - Audit Log Maintenance:** archive to CSV, verify, then purge old log documents; deletes old debug logs. `LogDbLevel=WARN` / `LogDbAudit=CHANGES` stop the log database growing. Retention periods are defaults: agree them with audit/compliance.
-- **11 - Batch Manager (4.2.1):** state of every batch, resume stopped or hung runs (run 03 again; RESUME / REMAINDER / CLOSE for batches that finished incomplete), CSV report. `bulkreg Stop` / `Unstop` for a clean stop. The `FullNameAfter` of the reviewed batch row is the name the user is created with.
-- Upgrade: `DEPLOY-4.2.1.md`. Not compiled or run against Domino.
+- **11 - Batch Manager (4.3.0):** state of every batch, resume stopped or hung runs (run 03 again; RESUME / REMAINDER / CLOSE for batches that finished incomplete), CSV report. `bulkreg Stop` / `Unstop` for a clean stop. The `FullNameAfter` of the reviewed batch row is the name the user is created with.
+- **4.3.0 - gaps, duplicates, aborted batches:** 09 writes `_gaps.csv` (not registered / no mail / no vault / duplicate) that 08 accepts as scope; `DuplicateGuard=1` stops a second identity being registered (`SKIPPED_DUPLICATE`), `_duplicates.csv` lists them for manual resolution; Agent 11 `RECOVER <batch id>` analyses an aborted batch (read-only).
+- Upgrade: `DEPLOY-4.3.0.md`. Not compiled or run against Domino.
 
 ## What changed in 4.1.0
 - **Name separator:** `LastNameSeparator=SPACE` (or `BLANK`) gives `CN=SGT ABC XXZ 11100OPS/O=Demo` (JobTitle + one blank + short name). A plain blank in bulkreg.ini would be trimmed, hence the keyword.
 - **Fast registration:** `MailFileDeferred=1` registers users **without** creating the mail file; the agent `BulkReg\08 - Repair Missing Mail Files` (was 07 in 4.1.0) creates the missing files afterwards from `MailTemplate` (title, ACL, cluster replicas; `MailCreateMaxPerRun`; honors `DryRun`). Run it right after each live batch: until then mail for those users cannot be delivered. Several Notes clients can run 07 on different batch files in parallel. `MailFileDeferred=0` keeps the old behaviour.
 - **Clean-up:** the unused AutoSync hooks were removed from both libraries (re-paste both).
 
-## What changed in 3.9.x (still valid in 4.2.1)
+## What changed in 3.9.x (still valid in 4.3.0)
 Preflight checks all users (`PreflightScope=ALL`, `_batchplan.txt` shows the split); Build Batch writes all batch files in one run (`BATCH-<run>-01.csv`, `-02.csv` ...); the registration last name is built from `LastNameField` (JobTitle) + separator + short name and upper-cased (e.g. `SGT ABC XXZ 11100OPS`, see 'Unique last name' below); users are filled into the `HomeServers` pool (`HomeServerAssignment=FILL`: first server up to 2500, then the next; mapping rule `AUTO`); the short name comes from the AD samaccountname item (`ShortNameFields`), never the FullName; a missing Internet address is constructed as `<shortname>@<InternetDomain>`; Domino on Linux (`ServerOS=LINUX`, `/local/notesdata`, paths sent as `mail1/smith.nsf`). The audit and batch files carry `FullNameAfter` (the Person name after registration); the Person item `JobTitle` (rank, first, last from AD) is registered as the last name. Details: `CHANGELOG.md`. Upgrade steps: `DEPLOY-4.0.1.md`.
 
 ## Unique last name (since 4.0.1; separator SPACE since 4.1.0)
@@ -151,7 +152,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 | 7 | `03 - Register Batch` with DryRun=1 | All rows WOULD_REGISTER |
 | 8 | Pilot batch of 2 users (once) | REGISTERED + IN_VAULT |
 | 9 | `03 - Register Batch` with DryRun=0, type the batch ID | Batch DONE |
-| 9b | Only with `MailFileDeferred=1` (or to repair): `08 - Repair Missing Mail Files` (batch, server or empty) | MAIL_CREATED for every user; then `09 - Reconcile` shows nothing missing |
+| 9b | Only with `MailFileDeferred=1` (or to repair): `08 - Repair Missing Mail Files` (batch, server or empty) | MAIL_CREATED for every user; also accepts `RECON_<run>_gaps.csv` as scope; then `09 - Reconcile` shows nothing missing |
 | 10 | `04 - Verify Registration and Vault` (choose the batch); hand over passwords; `PurgeSecrets` | All IN_VAULT, MAILFILE_OK, REPLICAS_OK. **Repeat 6–10.** |
 
 ## PowerShell helper (optional)
@@ -159,7 +160,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (4.2.1)   ·   CHANGELOG.md   release history
+VERSION      current release (4.3.0)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (the code of the manual agents)
              Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile,
