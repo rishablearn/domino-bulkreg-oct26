@@ -2704,7 +2704,7 @@ End Sub
 ' user whose text contains "ERROR:DUPLICATE_" (SKIPPED_DUPLICATE: not a failure, nothing created or deleted).
 Function BR_DupCheck(u As BRUser) As String
 	Dim keys(3) As String, what(3) As String, i As Integer, hit As String, isReg As Boolean
-	Dim mk As String, base As String, mv As String
+	Dim mk As String, idBase As String, mv As String
 	If Not gRegIdxOn Then Exit Function
 	isReg = IsElement(gRegIdx("r:" & CStr(u.NoteID)))        ' a registered user is checked against OTHER documents only
 	keys(0) = "i:" & BR_NormKey(u.InternetAddress): what(0) = "Internet address " & u.InternetAddress
@@ -2745,9 +2745,9 @@ Function BR_DupCheck(u As BRUser) As String
 
 	' (4.4.0) ID file: an ID of this user is already in IDFileDir (earlier attempt or earlier registration)
 	If CfgB("DuplicateCheckIDFile", True) Then
-		base = LCase$(BR_SafeFile(u))
-		If IsElement(gIdFileIdx(base)) Then
-			BR_DupCheck = "ERROR:DUPLICATE_IDFILE - an ID file for this user already exists in IDFileDir (" & gIdFileIdx(base) & "): registering again would create a second ID. Find out whether that ID was registered / is in the vault; move or archive the old file only after that; "
+		idBase = LCase$(BR_SafeFile(u))
+		If IsElement(gIdFileIdx(idBase)) Then
+			BR_DupCheck = "ERROR:DUPLICATE_IDFILE - an ID file for this user already exists in IDFileDir (" & gIdFileIdx(idBase) & "): registering again would create a second ID. Find out whether that ID was registered / is in the vault; move or archive the old file only after that; "
 			Exit Function
 		End If
 	End If
