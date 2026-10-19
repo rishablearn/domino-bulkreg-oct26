@@ -458,7 +458,7 @@ function Invoke-IniUpgrade {
     $bak = "$Config.bak.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     Copy-Item -LiteralPath $Config -Destination $bak
     Set-Content -LiteralPath $Config -Value $new -Encoding UTF8
-    Write-Action "IniUpgrade $Config from $tplPath: $($added.Count) key(s) added; backup $bak"
+    Write-Action "IniUpgrade $Config from ${tplPath}: $($added.Count) key(s) added; backup $bak"
 
     # verify: every key of the template is there now and none of YOUR values changed
     $chk = Read-Ini $Config
