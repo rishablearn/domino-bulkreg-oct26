@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 4.3.0
+' Script Library : BulkRegAgents            Version 4.4.0
 ' Purpose        : The code of the BulkReg agents (00 - 11). Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -1095,8 +1095,10 @@ Function BR_RegisterOne(db As NotesDatabase, noteID As String, unid As String, b
 
 	stage = "validate"
 	issues = BR_Validate(u) & nameNote
-	If InStr(issues, "DUPLICATE_REGISTERED") > 0 Then
-		' a different registered Person document already has this user's address / short name / GUID / name:
+	If InStr(issues, "ERROR:DUPLICATE_") > 0 Then
+		' DUPLICATE_REGISTERED: a different registered Person document already has this user's address / short name /
+		' GUID / name. DUPLICATE_MAILFILE / DUPLICATE_IDFILE / DUPLICATE_VAULT (4.4.0): the mail file, an ID file or an
+		' ID in the vault already exists for this user.
 		' SKIPPED (not a failure, does not count towards MaxConsecutiveErrors). Nothing is created or deleted.
 		Call BR_Audit(u, gMode, "REGISTER", "SKIPPED_DUPLICATE", BR_Elapsed(t0), issues)
 		BR_Log LVL_WARN, "SKIP DUPLICATE " & u.FullNameBefore & " : " & issues
@@ -2127,6 +2129,10 @@ End Function
 '   RECON_<run>_orphan_mail.csv    mail files with no user
 '   RECON_<run>_gaps.csv           (4.3.0) one row per gap: NOT_REGISTERED / NO_MAIL / NO_VAULT / DUPLICATE; 08 accepts it as scope
 '   RECON_<run>_duplicates.csv     (4.3.0) groups with the same address / short name / GUID / name / mail file: KEEP, DO_NOT_REGISTER, REVIEW
+'   RECON_<run>_duplicate_ids.csv  (4.4.0) second ID for one person: IDFILE_MULTIPLE (several ID files in IDFileDir),
+'                                  IDFILE_UNREGISTERED (ID file but no certificate), VAULT_UNREGISTERED (ID in the vault, no
+'                                  certificate; only with ReconcileCheckVault=1). Switch: DuplicateCheckIDFile. Same-MailFile
+'                                  duplicates are groups of _duplicates.csv (key mail:)
 '   RECON_<run>_summary.txt        counts per status
 ' Mail existence comes from ONE database list per server (fast); a file missing per the list is confirmed
 ' with one direct open (ReconcileConfirmMissing=1, default) so a list the ID cannot fully see never
@@ -2150,12 +2156,16 @@ Sub BR_RunReconcile()
 	Dim ru As BRUser, vstat As String, checkVault As Boolean, fhGap As Integer, fhDup As Integer, gapKind As String
 	Dim dgrp List As String, dDet List As String, dReg List As String, dMok List As String, dUnid List As String, gapSeen List As String
 	Dim mem As Variant, keeper As String, rec As String, dk As String, nDupGroups As Long
+	Dim fhDid As Integer, su As BRUser, idb As String, idf As String, idChk As Boolean, vsrv As String, nDupIds As Long
 
 	If Not BR_Init("Reconcile") Then Exit Sub
 	confirmMissing = CfgB("ReconcileConfirmMissing", True)
 	checkHealth = CfgB("ReconcileCheckHealth", False)
 	checkVault = CfgB("ReconcileCheckVault", False)
 	skipInet = CfgB("SkipNoInternetAddress", True)
+	idChk = CfgB("DuplicateCheckIDFile", True)
+	Erase gIdFileIdx
+	If idChk Then Call BR_DupIdFileLoad()                    ' (4.4.0) one listing of IDFileDir
 	' ---------- where the files go ----------
 	outDir = BR_CfgDir("ReconcileDir", "reconcile")
 	On Error Resume Next
@@ -2239,6 +2249,7 @@ Sub BR_RunReconcile()
 	fhAll = BR_CsvOpen(pfx & "_all.csv", hdr)
 	fhUsr = BR_CsvOpen(pfx & "_missing_users.csv", hdr)
 	fhMail = BR_CsvOpen(pfx & "_missing_mail.csv", hdr)
+	fhDid = BR_CsvOpen(pfx & "_duplicate_ids.csv", "NoteID,UNID,FullName,ShortName,Registered,Kind,Detail,Recommendation")
 
 	' ---------- every directory user ----------
 	Set db = BR_OpenDirectory()
@@ -2322,6 +2333,34 @@ Sub BR_RunReconcile()
 				If IsElement(cnt("(vault not checked)")) Then cnt("(vault not checked)") = cnt("(vault not checked)") + 1 Else cnt("(vault not checked)") = 1
 			End If
 		End If
+		' (4.4.0) second ID for the same person: more than one ID file, an ID file of a user who is not registered,
+		' or (ReconcileCheckVault=1) an ID of that name already in the vault although the user is not registered
+		If idChk Then
+			Call BR_ClearUser(su)
+			su.ShortName = shortN: su.NoteID = nid
+			idb = LCase$(BR_SafeFile(su))
+			If IsElement(gIdFileIdx(idb)) Then
+				idf = gIdFileIdx(idb)
+				If InStr(idf, "|") > 0 Then
+					Call BR_ReconDupIdRow(fhDid, fhGap, nid, doc.UniversalID, fullN, shortN, inet, reg, "IDFILE_MULTIPLE", "ID files: " & Replace(idf, "|", " ; "), "REVIEW: more than one ID file for this user - keep the one that is in the vault / was handed out, archive the others (BulkReg never deletes an ID file)")
+					nDupIds = nDupIds + 1
+				ElseIf Not reg Then
+					Call BR_ReconDupIdRow(fhDid, fhGap, nid, doc.UniversalID, fullN, shortN, inet, reg, "IDFILE_UNREGISTERED", "ID file " & idf & " exists but the Person document has no certificate", "REVIEW: an earlier attempt created an ID. Check the registration log and the vault before 03 registers again (03 skips this user: DUPLICATE_IDFILE)")
+					nDupIds = nDupIds + 1
+				End If
+			End If
+		End If
+		If checkVault And Not reg Then
+			Call BR_ReadUser(doc, ru)
+			vsrv = ru.VaultServer
+			If vsrv = "" Then vsrv = CfgS("VaultServer", "")
+			If ru.LastName <> "" And vsrv <> "" Then
+				If BR_VaultStatus(BR_ExpectedName(ru), vsrv) = "IN_VAULT" Then
+					Call BR_ReconDupIdRow(fhDid, fhGap, nid, doc.UniversalID, fullN, shortN, inet, reg, "VAULT_UNREGISTERED", "An ID named " & BR_ExpectedName(ru) & " is in the vault " & vsrv & " but the Person document has no certificate", "REVIEW: do NOT register again; find the ID in the vault (vault admin) and repair the Person document (03 skips this user: DUPLICATE_VAULT)")
+					nDupIds = nDupIds + 1
+				End If
+			End If
+		End If
 		If sp <> "" And stat = "OK" Then action = "Spacing in " & sp & " (cosmetic after 4.2.0)"
 		row = Q(nid) & "," & Q(fullN) & "," & Q(shortN) & "," & Q(inet) & "," & Q(BR_IIfStr(reg, "Y", "N")) & "," & Q(stat) & "," & Q(action) & "," & Q(srv) & "," & Q(mf) & "," & Q(onSrv) & "," & Q(health) & "," & Q(bt) & "," & Q(sp) & "," & Q(BR_IIfStr(nXl = 0, "", BR_IIfStr(matched, "Y", "N"))) & "," & Q(vstat)
 		Print #fhAll, row
@@ -2370,6 +2409,8 @@ Sub BR_RunReconcile()
 	Close #fhAll
 	Close #fhUsr
 	Close #fhMail
+	Close #fhDid
+	If nDupIds > 0 Then cnt("DUPLICATE_ID_ROWS") = nDupIds
 
 	' ---------- duplicates (report only: nothing is deleted or changed) ----------
 	fhDup = BR_CsvOpen(pfx & "_duplicates.csv", "Group,Key,NoteID,FullName,Registered,InternetAddress,MailServer,MailFile,MailOnServer,Recommendation")
@@ -2434,7 +2475,7 @@ Sub BR_RunReconcile()
 	ForAll cv In cnt
 		sumTxt = sumTxt & Right$("      " & CStr(cv), 7) & "  " & ListTag(cv) & Chr$(13) & Chr$(10)
 	End ForAll
-	sumTxt = sumTxt & Chr$(13) & Chr$(10) & "Files: " & pfx & "_all.csv | _missing_users.csv | _missing_mail.csv | _orphan_mail.csv | _gaps.csv | _duplicates.csv" & Chr$(13) & Chr$(10)
+	sumTxt = sumTxt & Chr$(13) & Chr$(10) & "Files: " & pfx & "_all.csv | _missing_users.csv | _missing_mail.csv | _orphan_mail.csv | _gaps.csv | _duplicates.csv | _duplicate_ids.csv" & Chr$(13) & Chr$(10)
 	Call BR_AppendLine(pfx & "_summary.txt", sumTxt)
 	BR_Log LVL_INFO, Replace(sumTxt, Chr$(13) & Chr$(10), " | ")
 	summary = "RECONCILE | users=" & nTotal & " ok=" & BR_ListLongText(cnt, "OK") & " mail missing=" & BR_ListLongText(cnt, "REGISTERED_MAIL_MISSING") & " no mail item=" & BR_ListLongText(cnt, "REGISTERED_NO_MAILFILE_ITEM") & " not registered=" & (nTotal - BR_RegisteredCount(cnt)) & " orphan mail files=" & BR_ListLongText(cnt, "ORPHAN_MAIL_FILE")
@@ -2447,11 +2488,18 @@ ErrH:
 	Close #fhUsr
 	Close #fhMail
 	Close #fhOrph
+	Close #fhDid
 	Close #fh
 	BR_Log LVL_ERROR, "Reconcile aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
 	BR_Close "ABORTED"
 	BR_Msg "Reconcile aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
 	Exit Sub
+End Sub
+
+' One row in _duplicate_ids.csv and one (Include=N) row in _gaps.csv for a second-ID finding (4.4.0)
+Sub BR_ReconDupIdRow(fhDid As Integer, fhGap As Integer, nid As String, unid As String, fullN As String, shortN As String, inet As String, reg As Boolean, kind As String, detail As String, rec As String)
+	Print #fhDid, Q(nid) & "," & Q(unid) & "," & Q(fullN) & "," & Q(shortN) & "," & Q(BR_IIfStr(reg, "Y", "N")) & "," & Q(kind) & "," & Q(detail) & "," & Q(rec)
+	Print #fhGap, Q("N") & "," & Q(nid) & "," & Q(unid) & "," & Q(fullN) & "," & Q(inet) & "," & Q("DUPLICATE_" & kind) & "," & Q("09 *_duplicate_ids.csv (manual)") & "," & Q(detail)
 End Sub
 
 ' Number of directory users that ARE registered, from the per-status counters

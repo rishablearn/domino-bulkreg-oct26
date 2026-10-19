@@ -1,6 +1,6 @@
 <#
 =====================================================================
- bulkreg.ps1  -  BulkReg 4.3.0 OPTIONAL helper for the Windows admin workstation
+ bulkreg.ps1  -  BulkReg 4.4.0 OPTIONAL helper for the Windows admin workstation
                  (the machine running the HCL Domino Administrator client)
 
  Registration runs entirely inside the Domino Administrator client
@@ -15,6 +15,9 @@
    Status        summarise the newest (or a given) audit or results CSV
    Tail          follow the newest debug log while an agent runs
    PurgeSecrets  list / delete initial-password files, text files, local IDs
+   IniCompare    compare YOUR bulkreg.ini with the kit template: missing / unknown / different / placeholders
+   IniUpgrade    add ONLY the keys missing in your bulkreg.ini (your values stay; preview unless -Yes; backup)
+                 (neither needs administrator rights: the config folder is not restricted by Init)
 
  Usage:  .\bulkreg.cmd <Command> [options]        (.\bulkreg.cmd Help)
  Every state-changing command is written to <AuditDir>\bulkreg_admin_actions.log
@@ -23,17 +26,19 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('Help', 'Init', 'Check', 'DryRun', 'Batches', 'Status', 'Tail', 'PurgeSecrets', 'Versions', 'Stop', 'Unstop')]
+    [ValidateSet('Help', 'Init', 'Check', 'DryRun', 'Batches', 'Status', 'Tail', 'PurgeSecrets', 'Versions', 'Stop', 'Unstop', 'IniCompare', 'IniUpgrade')]
     [string]$Command = 'Help',
     [Parameter(Position = 1)] [string]$Arg,
     [string]$Base = $(if ($env:BULKREG_BASE) { $env:BULKREG_BASE } else { 'C:\BulkReg' }),
     [string]$Config,
+    [string]$Template,
+    [string]$Out,
     [switch]$IncludeIds,
     [switch]$Yes
 )
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$Version = '4.3.0'
+$Version = '4.4.0'
 if (-not $Config) { $Config = if ($env:BULKREG_CONFIG) { $env:BULKREG_CONFIG } else { Join-Path $Base 'config\bulkreg.ini' } }
 $KitConfig = Join-Path $PSScriptRoot '..\..\config'
 $script:Fails = 0; $script:Warns = 0
@@ -108,6 +113,13 @@ Base=$Base  Config=$Config
   Tail                               Follow the newest debug log
   PurgeSecrets [-IncludeIds] [-Yes]  List (default) or delete password/text files (and local ID files)
   Versions                           Check that every kit file carries the release number in VERSION
+  IniCompare [other.ini] [-Out f.csv]  Compare your bulkreg.ini with the kit template (or with other.ini): MISSING keys
+                                     (with the release that introduced them), UNKNOWN / RETIRED keys, values that DIFFER,
+                                     <PLACEHOLDER>s still in your file, duplicate keys. Read-only. -Out writes a CSV.
+  IniUpgrade [-Template t.ini] [-Yes]  Insert the keys that are missing in your bulkreg.ini, with their comments and the
+                                     template default, right after the key that precedes them in the template. Existing
+                                     values, comments and order are never touched. Without -Yes: preview only. With -Yes:
+                                     backup (bulkreg.ini.bak.<time>), write, re-read and verify, show the added lines.
 
 The agents themselves are run from bulkreg.nsf > Actions in the Domino Administrator client.
 "@ | Write-Host
@@ -154,6 +166,13 @@ function Invoke-Check {
     } else {
         $cid = Get-Cfg 'CertifierIDFile'
         if ($cid -and (Test-Path $cid)) { Pass "certifier ID file $cid" } else { Fail "UseCA=0 but certifier ID file not found: $cid" }
+    }
+    $shippedIni = Join-Path $KitConfig 'bulkreg.ini'
+    if (Test-Path -LiteralPath $shippedIni) {
+        $myIni = Read-Ini $Config
+        $miss = @((Read-Ini $shippedIni).Map.Keys | Where-Object { -not $myIni.Map.Contains($_) })
+        if ($miss.Count -eq 0) { Pass 'bulkreg.ini has every key of the kit template' }
+        else { Warn "$($miss.Count) key(s) of the kit template are missing in your bulkreg.ini (built-in defaults apply): run  bulkreg.cmd IniCompare  then  IniUpgrade" }
     }
     if ((Get-Cfg 'DryRun' '1') -eq '1') { Pass 'DryRun=1 (safe)' } else { Warn 'DryRun=0 - LIVE mode' }
     if (Get-Cfg 'DefaultPolicy') { Pass 'DefaultPolicy set' } else { Warn 'DefaultPolicy empty - make sure a policy assigns the ID Vault' }
@@ -256,7 +275,210 @@ function Remove-Secrets {
     Write-Host "Removed $($files.Count) file(s)."
 }
 
+# ---------- bulkreg.ini: compare with the template, add only the missing keys (4.4.0) ----------
+# Why: every release adds keys to bulkreg.ini. The agents read a missing key with a built-in default, but the
+# defaults are not always what you want and the new keys are invisible in your old file. IniUpgrade adds ONLY what is
+# missing; IniCompare shows the differences first. Both read the KEY HISTORY lines at the end of the template
+# ("# [since 4.3.0] Key, Key") to say which release introduced a key. No administrator rights are needed.
+
+# Parses an ini the way the agents do (bulkreg.ini: key=value, # ; [ start a comment, the LAST duplicate wins)
+function Read-Ini([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { throw "ini file not found: $Path" }
+    $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8)
+    $map = [ordered]@{}
+    $dups = New-Object System.Collections.Generic.List[string]
+    $ver = ''
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $t = $lines[$i].Trim([char]0xFEFF).Trim()
+        if ($ver -eq '' -and $i -lt 8 -and $t -match 'BulkReg\s+([0-9]+(\.[0-9]+)+)') { $ver = $Matches[1] }
+        if ($t -eq '' -or $t -match '^[#;\[]') { continue }
+        $p = $t.IndexOf('=')
+        if ($p -lt 1) { continue }
+        $k = $t.Substring(0, $p).Trim()
+        $lk = $k.ToLowerInvariant()
+        if ($map.Contains($lk)) { $dups.Add($k) }
+        $map[$lk] = [pscustomobject]@{ Key = $k; Value = $t.Substring($p + 1).Trim(); Line = $i }
+    }
+    [pscustomobject]@{ Path = $Path; Lines = $lines; Map = $map; Dups = @($dups); Version = $ver }
+}
+
+# "# [since 4.3.0] Key, Key" / "# [removed 3.9.2] Key" lines of the template -> lower-case key -> Kind, Ver
+function Read-KeyHistory([string]$Path) {
+    $h = @{}
+    if (-not (Test-Path -LiteralPath $Path)) { return $h }
+    foreach ($l in (Get-Content -LiteralPath $Path -Encoding UTF8)) {
+        if ($l -match '^\s*#\s*\[(since|removed)\s+([0-9]+(?:\.[0-9]+)+)\]\s*(.+?)\s*$') {
+            $kind = $Matches[1]; $ver = $Matches[2]
+            foreach ($k in ($Matches[3] -split '\s*,\s*')) {
+                if ($k) { $h[$k.ToLowerInvariant()] = [pscustomobject]@{ Kind = $kind; Ver = $ver } }
+            }
+        }
+    }
+    return $h
+}
+
+# The comment lines directly above a key line of the template (a blank line, another key or a section banner ends them)
+function Get-KeyComment([string[]]$Lines, [int]$Idx) {
+    $c = New-Object System.Collections.Generic.List[string]
+    for ($j = $Idx - 1; $j -ge 0; $j--) {
+        $t = $Lines[$j].Trim()
+        if ($t -notmatch '^#') { break }
+        if ($t -match '^#\s*[-=]{5,}') { break }
+        if ($t -match '^#\s*\[(since|removed)\s+[0-9]') { break }
+        $c.Insert(0, $Lines[$j].TrimEnd())
+    }
+    return $c.ToArray()
+}
+
+function Get-IniRows([object]$Mine, [object]$Other, [hashtable]$Hist) {
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($lk in $Other.Map.Keys) {
+        $o = $Other.Map[$lk]
+        $since = if ($Hist.ContainsKey($lk) -and $Hist[$lk].Kind -eq 'since') { $Hist[$lk].Ver } else { '' }
+        if ($Mine.Map.Contains($lk)) {
+            $m = $Mine.Map[$lk]
+            $st = if ($m.Value -ieq $o.Value) { 'SAME' } else { 'DIFFERENT' }
+            if ($m.Value -match '<[^>]+>') { $st = 'PLACEHOLDER' }
+            $rows.Add([pscustomobject]@{ Status = $st; Key = $o.Key; Since = $since; Yours = $m.Value; Template = $o.Value; Line = $m.Line + 1 })
+        } else {
+            $rows.Add([pscustomobject]@{ Status = 'MISSING'; Key = $o.Key; Since = $since; Yours = ''; Template = $o.Value; Line = '' })
+        }
+    }
+    foreach ($lk in $Mine.Map.Keys) {
+        if ($Other.Map.Contains($lk)) { continue }
+        $m = $Mine.Map[$lk]
+        $st = if ($Hist.ContainsKey($lk) -and $Hist[$lk].Kind -eq 'removed') { 'RETIRED' } else { 'UNKNOWN' }
+        $since = if ($st -eq 'RETIRED') { 'removed ' + $Hist[$lk].Ver } else { '' }
+        $rows.Add([pscustomobject]@{ Status = $st; Key = $m.Key; Since = $since; Yours = $m.Value; Template = ''; Line = $m.Line + 1 })
+    }
+    foreach ($d in $Mine.Dups) { $rows.Add([pscustomobject]@{ Status = 'DUPLICATE'; Key = $d; Since = ''; Yours = $Mine.Map[$d.ToLowerInvariant()].Value; Template = ''; Line = $Mine.Map[$d.ToLowerInvariant()].Line + 1 }) }
+    return , $rows
+}
+
+function Sort-BySince($Rows) {
+    # newest release first, keys without a release last
+    $Rows | Sort-Object @{ Expression = { if ($_.Since -match '^[0-9]') { [version]$_.Since } else { [version]'0.0' } }; Descending = $true }, Key
+}
+
+function Invoke-IniCompare {
+    $shipped = Join-Path $KitConfig 'bulkreg.ini'
+    $otherPath = if ($Arg) { $Arg } elseif ($Template) { $Template } else { $shipped }
+    $mine = Read-Ini $Config
+    $other = Read-Ini $otherPath
+    $hist = Read-KeyHistory $shipped
+    $rows = Get-IniRows $mine $other $hist
+    Write-Host "Yours   : $Config   (release in header: $(if ($mine.Version) { $mine.Version } else { 'unknown' }))"
+    Write-Host "Compared: $otherPath   (release in header: $(if ($other.Version) { $other.Version } else { 'unknown' }))"
+    if (-not (Test-Path -LiteralPath $shipped)) { Warn "kit template $shipped not found: no release information (KEY HISTORY)" }
+    foreach ($s in 'MISSING', 'UNKNOWN', 'RETIRED', 'DUPLICATE', 'PLACEHOLDER', 'DIFFERENT') {
+        $sel = @($rows | Where-Object { $_.Status -eq $s })
+        $title = switch ($s) {
+            'MISSING'     { 'MISSING in your ini - IniUpgrade adds them with the template value' }
+            'UNKNOWN'     { 'NOT in the compared file - typo, customer-specific or removed long ago (nothing reads a misspelled key)' }
+            'RETIRED'     { 'RETIRED keys - no longer used, safe to delete' }
+            'DUPLICATE'   { 'DUPLICATE keys - the LAST one in the file wins in the agents' }
+            'PLACEHOLDER' { 'PLACEHOLDER still in your values - replace before a live run' }
+            'DIFFERENT'   { 'DIFFERENT from the compared value (informational: your value wins)' }
+        }
+        Write-Host ''
+        Write-Host ("== {0} ({1})" -f $title, $sel.Count)
+        if ($sel.Count -eq 0) { continue }
+        if ($s -eq 'MISSING') { Sort-BySince $sel | Format-Table Since, Key, @{ n = 'Template value'; e = { $_.Template } } -AutoSize }
+        elseif ($s -in 'DIFFERENT', 'PLACEHOLDER') { $sel | Format-Table Line, Key, Yours, @{ n = 'Compared'; e = { $_.Template } } -AutoSize -Wrap }
+        else { $sel | Format-Table Line, Key, Yours, Since -AutoSize -Wrap }
+    }
+    $same = @($rows | Where-Object { $_.Status -eq 'SAME' }).Count
+    Write-Host ''
+    Write-Host ("{0} key(s) identical." -f $same)
+    $miss = @($rows | Where-Object { $_.Status -eq 'MISSING' }).Count
+    if ($miss -gt 0) { Warn "$miss key(s) missing: run  bulkreg.cmd IniUpgrade  (preview) and  IniUpgrade -Yes" } else { Pass 'no key missing' }
+    if (@($rows | Where-Object { $_.Status -eq 'PLACEHOLDER' }).Count -gt 0) { Warn 'unreplaced <PLACEHOLDER> values' }
+    if ($Out) {
+        $rows | Export-Csv -LiteralPath $Out -NoTypeInformation -Encoding UTF8
+        Write-Host "Written: $Out"
+    }
+    Show-Summary
+}
+
+function Invoke-IniUpgrade {
+    $tplPath = if ($Template) { $Template } else { Join-Path $KitConfig 'bulkreg.ini' }
+    if (-not (Test-Path -LiteralPath $tplPath)) { throw "template not found: $tplPath (use -Template <file>)" }
+    if ((Resolve-Path -LiteralPath $tplPath).Path -eq (Resolve-Path -LiteralPath $Config).Path) { throw 'the template and your bulkreg.ini are the same file' }
+    $tpl = Read-Ini $tplPath
+    $mine = Read-Ini $Config
+    $hist = Read-KeyHistory $tplPath
+    $today = Get-Date -Format 'yyyy-MM-dd'
+    $inserts = @{}                    # index of YOUR line (-1 = end of file) -> lines to add after it
+    $added = New-Object System.Collections.Generic.List[object]
+    $anchor = -1
+    foreach ($lk in $tpl.Map.Keys) {
+        if ($mine.Map.Contains($lk)) { $anchor = $mine.Map[$lk].Line; continue }
+        $item = $tpl.Map[$lk]
+        $since = if ($hist.ContainsKey($lk) -and $hist[$lk].Kind -eq 'since') { $hist[$lk].Ver } else { '' }
+        $block = New-Object System.Collections.Generic.List[string]
+        $cmt = @(Get-KeyComment $tpl.Lines $item.Line)
+        if ($cmt.Count -gt 0) { $block.Add('') }
+        $block.Add("# [IniUpgrade $today] added" + $(if ($since) { " - new in $since" } else { '' }))
+        foreach ($c in $cmt) { $block.Add($c) }
+        $block.Add("$($item.Key)=$($item.Value)")
+        if (-not $inserts.ContainsKey($anchor)) { $inserts[$anchor] = New-Object System.Collections.Generic.List[string] }
+        foreach ($b in $block) { $inserts[$anchor].Add($b) }
+        $added.Add([pscustomobject]@{ Since = $since; Key = $item.Key; Value = $item.Value; After = $(if ($anchor -ge 0) { ($mine.Lines[$anchor]).Trim() } else { '(end of file)' }) })
+    }
+    Write-Host "Your ini : $Config   (release in header: $(if ($mine.Version) { $mine.Version } else { 'unknown' }))"
+    Write-Host "Template : $tplPath   (release in header: $(if ($tpl.Version) { $tpl.Version } else { 'unknown' }))"
+    if ($mine.Dups.Count -gt 0) { Warn "duplicate keys in your ini (the last one wins): $($mine.Dups -join ', ') - not changed" }
+    if ($added.Count -eq 0) { Pass 'nothing to add: every key of the template is already in your bulkreg.ini'; Show-Summary; return }
+    Write-Host ''
+    Write-Host ("{0} key(s) missing in your ini:" -f $added.Count)
+    Sort-BySince $added | Format-Table Since, Key, Value, @{ n = 'Inserted after'; e = { $_.After } } -AutoSize -Wrap
+    $needs = @($added | Where-Object { $_.Value -match '<[^>]+>' })
+    foreach ($n in $needs) { Warn "$($n.Key)=$($n.Value) is a <PLACEHOLDER>: set a real value after the upgrade" }
+    if (-not $Yes) {
+        Write-Host 'PREVIEW only - nothing was changed. Run again with -Yes to add these keys (a backup is made first).'
+        Show-Summary
+        return
+    }
+
+    $new = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $mine.Lines.Count; $i++) {
+        $new.Add($mine.Lines[$i])
+        if ($inserts.ContainsKey($i)) { foreach ($x in $inserts[$i]) { $new.Add($x) } }
+    }
+    if ($inserts.ContainsKey(-1)) {
+        $new.Add('')
+        $new.Add("# ---------- added by IniUpgrade $today (no earlier key of the template was found in this file) ----------")
+        foreach ($x in $inserts[-1]) { $new.Add($x) }
+    }
+    if ($tpl.Version -and $mine.Version -and $tpl.Version -ne $mine.Version) {
+        for ($i = 0; $i -lt [Math]::Min(8, $new.Count); $i++) {
+            if ($new[$i] -match 'BulkReg\s+[0-9]+(\.[0-9]+)+') { $new[$i] = ([regex]'BulkReg\s+[0-9]+(\.[0-9]+)+').Replace($new[$i], "BulkReg $($tpl.Version)", 1); break }
+        }
+    }
+    $bak = "$Config.bak.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    Copy-Item -LiteralPath $Config -Destination $bak
+    Set-Content -LiteralPath $Config -Value $new -Encoding UTF8
+    Write-Action "IniUpgrade $Config from $tplPath: $($added.Count) key(s) added; backup $bak"
+
+    # verify: every key of the template is there now and none of YOUR values changed
+    $chk = Read-Ini $Config
+    $bad = 0
+    foreach ($lk in $tpl.Map.Keys) { if (-not $chk.Map.Contains($lk)) { Fail "after the upgrade $($tpl.Map[$lk].Key) is still missing"; $bad++ } }
+    foreach ($lk in $mine.Map.Keys) {
+        if (-not $chk.Map.Contains($lk)) { Fail "after the upgrade your key $($mine.Map[$lk].Key) is gone"; $bad++ }
+        elseif ($chk.Map[$lk].Value -cne $mine.Map[$lk].Value) { Fail "your value of $($mine.Map[$lk].Key) changed"; $bad++ }
+    }
+    if ($bad -eq 0) { Pass "$($added.Count) key(s) added; all your $($mine.Map.Count) values are unchanged" }
+    else { Warn "restore the backup:  Copy-Item '$bak' '$Config' -Force" }
+    Write-Host "Backup: $bak"
+    Write-Host 'Added lines (diff against the backup):'
+    Compare-Object (Get-Content -LiteralPath $bak) (Get-Content -LiteralPath $Config) | ForEach-Object { "  {0} {1}" -f $(if ($_.SideIndicator -eq '=>') { '+' } else { '-' }), $_.InputObject }
+    Show-Summary
+}
+
 switch ($Command) {
+    'IniCompare'   { Invoke-IniCompare }
+    'IniUpgrade'   { Invoke-IniUpgrade }
     'Help'         { Show-Help }
     'Init'         { Invoke-Init }
     'Check'        { Invoke-Check }

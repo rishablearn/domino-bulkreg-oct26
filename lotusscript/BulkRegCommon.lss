@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegCommon            Version 4.3.0
+' Script Library : BulkRegCommon            Version 4.4.0
 ' Purpose        : Shared code for the BulkReg framework
 '                  (config, multi-server mapping, logging, audit, helpers)
 ' Used by        : BulkRegAgents (the code of all five agents)
@@ -21,7 +21,7 @@ Option Declare
 ' --- part 2: (Declarations) ---
 '#####################################################################
 
-Public Const BR_VERSION = "4.3.0"
+Public Const BR_VERSION = "4.4.0"
 
 ' ---------- log levels ----------
 Public Const LVL_DEBUG = 10
@@ -95,6 +95,8 @@ Public gLogWriteErr As Integer
 Public gLogDbLevel As Integer     ' lowest level written as an Entry document to the log database (LogDbLevel, default WARN)
 Public gRegIdx List As String         ' duplicate guard (4.3.0): keys of the REGISTERED Person documents -> NoteID
 Public gRegIdxOn As Boolean
+Public gIdFileIdx List As String       ' duplicate guard (4.4.0): ID files in IDFileDir, key = lower case base name (run suffix removed) -> file name
+Public gDupVaultCache List As String   ' duplicate guard (4.4.0): vault answer per expected name (one vault call per name and run)
 Public gLogDbAudit As String      ' ALL | CHANGES | PROBLEMS: which audit rows become Audit documents in the log database
 Public gSession As NotesSession
 Public gPlatform As String       ' NotesSession.Platform, e.g. "Windows/64"
@@ -2591,15 +2593,29 @@ End Function
 ' common name(s) of every FullName value -> NoteID). BR_Validate then refuses to register a user whose key
 ' belongs to a DIFFERENT registered document: the second identity (and a second mail file) is never created.
 ' DuplicateGuard=0 switches it off. Nothing is deleted or changed: duplicates are only reported (agent 09).
+'
+' 4.4.0: three more checks, each with its own switch (all default as shown; the guard itself must be on):
+'   DuplicateCheckMailFile=1   the planned mail file (home server + path) is already the MailServer/MailFile of a
+'                              DIFFERENT registered Person document            -> ERROR:DUPLICATE_MAILFILE
+'   DuplicateCheckIDFile=1     an ID file for this user already exists in IDFileDir (<short>_<NoteID>.id or the
+'                              _<run> copy of an earlier attempt): registering again would create a SECOND ID
+'                              for the same person                              -> ERROR:DUPLICATE_IDFILE
+'   DuplicateCheckVault=REGISTER  0 = off | REGISTER (default) = only 03 - Register Batch asks the ID vault |
+'                              ALL = 01, 02 and 03 ask it (one vault call per user and run: slow for thousands)
+'                              the user is NOT registered yet but an ID of that name is already in the vault
+'                                                                               -> ERROR:DUPLICATE_VAULT
 Sub BR_DupIndexLoad(db As NotesDatabase)
 	On Error GoTo ErrH
 	Dim col As NotesDocumentCollection, doc As NotesDocument, n As Long
 	Erase gRegIdx
+	Erase gIdFileIdx
+	Erase gDupVaultCache
 	gRegIdxOn = False
 	If Not CfgB("DuplicateGuard", True) Then
 		BR_Log LVL_INFO, "Duplicate guard: OFF (DuplicateGuard=0)"
 		Exit Sub
 	End If
+	If CfgB("DuplicateCheckIDFile", True) Then Call BR_DupIdFileLoad()
 	Set col = db.Search(|Form = "Person" & @IsAvailable(Certificate) & Certificate != ""|, Nothing, 0)
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
@@ -2608,7 +2624,8 @@ Sub BR_DupIndexLoad(db As NotesDatabase)
 		Set doc = col.GetNextDocument(doc)
 	Loop
 	gRegIdxOn = True
-	BR_Log LVL_INFO, "Duplicate guard: " & n & " registered Person documents indexed"
+	BR_Log LVL_INFO, "Duplicate guard: " & n & " registered Person documents indexed | checks: mail file=" & BR_IIfStr(CfgB("DuplicateCheckMailFile", True), "on", "off") & _
+	", ID file=" & BR_IIfStr(CfgB("DuplicateCheckIDFile", True), "on (" & BR_ListCount2(gIdFileIdx) & " ID files in IDFileDir)", "off") & ", vault=" & BR_DupVaultMode()
 	Exit Sub
 ErrH:
 	gRegIdxOn = False
@@ -2616,9 +2633,54 @@ ErrH:
 	Exit Sub
 End Sub
 
+' ID files of IDFileDir (one directory listing per run). Key = lower case file name without ".id" and without the
+' "_yyyymmdd-hhnnss" suffix that 03 adds when an ID file of that name was already there; value = the file name(s).
+Sub BR_DupIdFileLoad()
+	On Error GoTo ErrH
+	Dim d As String, f As String, b As String
+	d = BR_CfgDir("IDFileDir", "ids")
+	f = Dir$(d & "*.id")
+	Do While f <> ""
+		b = LCase$(Left$(f, Len(f) - 3))
+		If b Like "*_########-######" Then b = Left$(b, Len(b) - 16)
+		If IsElement(gIdFileIdx(b)) Then gIdFileIdx(b) = gIdFileIdx(b) & "|" & f Else gIdFileIdx(b) = f
+		f = Dir$()
+	Loop
+	Exit Sub
+ErrH:
+	BR_Log LVL_WARN, "Duplicate guard: ID file folder could not be listed (" & Error$ & ", err " & Err & ") - ID file check skipped"
+	Erase gIdFileIdx
+	Exit Sub
+End Sub
+
+Function BR_ListCount2(lst List As String) As Long
+	Dim n As Long
+	ForAll x In lst
+		n = n + 1
+	End ForAll
+	BR_ListCount2 = n
+End Function
+
+' DuplicateCheckVault: "OFF", "REGISTER" (default) or "ALL"
+Function BR_DupVaultMode() As String
+	Dim m As String
+	m = UCase$(Trim$(CfgS("DuplicateCheckVault", "REGISTER")))
+	If m = "0" Or m = "OFF" Or m = "NO" Or m = "" Then
+		BR_DupVaultMode = "OFF"
+	ElseIf m = "ALL" Or m = "1" Then
+		BR_DupVaultMode = "ALL"
+	Else
+		BR_DupVaultMode = "REGISTER"
+	End If
+End Function
+
 Sub BR_DupIndexAdd(doc As NotesDocument)
-	Dim nid As String, v As Variant, k As String, nm As NotesName
+	Dim nid As String, v As Variant, k As String, nm As NotesName, ms As String, mf As String
 	nid = CStr(doc.NoteID)
+	gRegIdx("r:" & nid) = nid                     ' this document is registered (the ID file / vault checks apply to unregistered users only)
+	ms = BR_SrvAbbr(BR_Item(doc, "MailServer"))
+	mf = BR_MailPathNorm(BR_Item(doc, "MailFile"))
+	If ms <> "" And mf <> "" Then gRegIdx("m:" & LCase$(ms & "!!" & mf)) = nid
 	k = BR_NormKey(BR_Item(doc, "InternetAddress"))
 	If k <> "" Then gRegIdx("i:" & k) = nid
 	k = BR_Item(doc, "objectGUID")
@@ -2638,10 +2700,13 @@ Sub BR_DupIndexAdd(doc As NotesDocument)
 	End ForAll
 End Sub
 
-' "" = no duplicate, else "ERROR:DUPLICATE_REGISTERED ..." (text starts with the marker 03 looks for)
+' "" = no duplicate, else "ERROR:DUPLICATE_<kind> ..." (kind = REGISTERED, MAILFILE, IDFILE or VAULT). 03 skips every
+' user whose text contains "ERROR:DUPLICATE_" (SKIPPED_DUPLICATE: not a failure, nothing created or deleted).
 Function BR_DupCheck(u As BRUser) As String
-	Dim keys(3) As String, what(3) As String, i As Integer, hit As String
+	Dim keys(3) As String, what(3) As String, i As Integer, hit As String, isReg As Boolean
+	Dim mk As String, base As String, mv As String
 	If Not gRegIdxOn Then Exit Function
+	isReg = IsElement(gRegIdx("r:" & CStr(u.NoteID)))        ' a registered user is checked against OTHER documents only
 	keys(0) = "i:" & BR_NormKey(u.InternetAddress): what(0) = "Internet address " & u.InternetAddress
 	keys(1) = "s:" & BR_NormKey(u.ShortName):       what(1) = "short name " & u.ShortName
 	keys(2) = "g:" & LCase$(u.GUID):                what(2) = "objectGUID " & u.GUID
@@ -2657,4 +2722,63 @@ Function BR_DupCheck(u As BRUser) As String
 			End If
 		End If
 	Next
+
+	' (4.4.0) mail file: the file this user would get (or already points at) belongs to another registered user
+	If CfgB("DuplicateCheckMailFile", True) And u.HomeServer <> "" Then
+		For i = 0 To 1
+			If i = 0 Then mv = u.MailFile Else mv = u.MailFileBefore
+			mv = BR_MailPathNorm(mv)
+			If mv <> "" Then
+				mk = "m:" & LCase$(BR_SrvAbbr(u.HomeServer) & "!!" & mv)
+				If IsElement(gRegIdx(mk)) Then
+					hit = gRegIdx(mk)
+					If hit <> CStr(u.NoteID) Then
+						BR_DupCheck = "ERROR:DUPLICATE_MAILFILE - mail file " & mv & " on " & BR_SrvAbbr(u.HomeServer) & " is already the mail file of the registered Person document NoteID " & hit & " (a second user would share or overwrite it; run 09 - Reconcile, file *_duplicates.csv); "
+						Exit Function
+					End If
+				End If
+			End If
+		Next
+	End If
+
+	If isReg Then Exit Function                              ' ID file and vault: only relevant for a user who is NOT registered yet
+
+	' (4.4.0) ID file: an ID of this user is already in IDFileDir (earlier attempt or earlier registration)
+	If CfgB("DuplicateCheckIDFile", True) Then
+		base = LCase$(BR_SafeFile(u))
+		If IsElement(gIdFileIdx(base)) Then
+			BR_DupCheck = "ERROR:DUPLICATE_IDFILE - an ID file for this user already exists in IDFileDir (" & gIdFileIdx(base) & "): registering again would create a second ID. Find out whether that ID was registered / is in the vault; move or archive the old file only after that; "
+			Exit Function
+		End If
+	End If
+
+	' (4.4.0) ID in the vault: the user is not registered but an ID of the expected name is already in the ID vault
+	BR_DupCheck = BR_DupVaultCheck(u)
+End Function
+
+' ID vault check of the not yet registered user. DuplicateCheckVault: OFF | REGISTER (03 only, default) | ALL.
+' One vault call per expected name and run (cached). A failed vault call is NOT a duplicate (logged once, no issue).
+Function BR_DupVaultCheck(u As BRUser) As String
+	On Error GoTo ErrH
+	Dim mode As String, nm As String, vs As String, k As String
+	mode = BR_DupVaultMode()
+	If mode = "OFF" Then Exit Function
+	If mode = "REGISTER" And gTool <> "Register" Then Exit Function
+	vs = u.VaultServer
+	If vs = "" Then vs = CfgS("VaultServer", "")
+	If vs = "" Or InStr(vs, "<") > 0 Then Exit Function
+	If u.LastName = "" Then Exit Function
+	nm = BR_ExpectedName(u)
+	k = LCase$(nm)
+	If Not IsElement(gDupVaultCache(k)) Then
+		gDupVaultCache(k) = BR_VaultStatus(nm, vs)
+		If Left$(gDupVaultCache(k), 11) = "CHECK_ERROR" Then BR_Log LVL_WARN, "Duplicate guard: vault check for " & nm & " failed (" & gDupVaultCache(k) & ") - not treated as a duplicate"
+	End If
+	If gDupVaultCache(k) = "IN_VAULT" Then
+		BR_DupVaultCheck = "ERROR:DUPLICATE_VAULT - an ID named " & nm & " is already in the ID vault (" & vs & ") although this user is not registered: do NOT register again; find the existing ID (vault admin) and fix the Person document; "
+	End If
+	Exit Function
+ErrH:
+	BR_Log LVL_WARN, "Duplicate guard: vault check error " & Error$ & " (err " & Err & ") - skipped"
+	Exit Function
 End Function

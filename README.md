@@ -1,7 +1,12 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 4.3.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
-**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.html`, same version as the kit (4.3.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+BulkReg 4.4.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+**Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.html`, same version as the kit (4.4.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+
+## What changed in 4.4.0
+- **bulkreg.ini upgrades are incremental:** `scripts\windows\bulkreg.cmd IniCompare` shows what your file lacks (with the release that added each key), what is unknown or retired, which `<PLACEHOLDER>`s remain and which values differ from the template; `IniUpgrade` previews and `IniUpgrade -Yes` adds only the missing keys with their comments (backup, read-back check, diff). Your values are never changed. No administrator rights needed.
+- **Duplicate users by mail file, ID file and ID vault:** `DuplicateCheckMailFile`, `DuplicateCheckIDFile`, `DuplicateCheckVault` (own switches; guard on). 01/02 flag `ERROR:DUPLICATE_MAILFILE / _IDFILE / _VAULT`, 03 skips the user (`SKIPPED_DUPLICATE`); 09 adds `_duplicate_ids.csv`. Nothing is deleted.
+- Upgrade: `DEPLOY-4.4.0.md`. Not compiled or run against Domino.
 
 ## What changed in 4.2.0 - 4.3.0
 - **Names with extra blanks:** one blank between the words whatever AD delivers (`FLT  LT ABC   XYZ 1000ops` -> `FLT LT ABC XYZ 1000OPS`). The "common name differs" check ignores blanks and case and only WARNS about a really different name (`CnMismatchAction`), so one odd user no longer stops the run.
@@ -11,14 +16,13 @@ BulkReg 4.3.0 · run from the **HCL Domino Administrator client on Windows** · 
 - **10 - Audit Log Maintenance:** archive to CSV, verify, then purge old log documents; deletes old debug logs. `LogDbLevel=WARN` / `LogDbAudit=CHANGES` stop the log database growing. Retention periods are defaults: agree them with audit/compliance.
 - **11 - Batch Manager (4.3.0):** state of every batch, resume stopped or hung runs (run 03 again; RESUME / REMAINDER / CLOSE for batches that finished incomplete), CSV report. `bulkreg Stop` / `Unstop` for a clean stop. The `FullNameAfter` of the reviewed batch row is the name the user is created with.
 - **4.3.0 - gaps, duplicates, aborted batches:** 09 writes `_gaps.csv` (not registered / no mail / no vault / duplicate) that 08 accepts as scope; `DuplicateGuard=1` stops a second identity being registered (`SKIPPED_DUPLICATE`), `_duplicates.csv` lists them for manual resolution; Agent 11 `RECOVER <batch id>` analyses an aborted batch (read-only).
-- Upgrade: `DEPLOY-4.3.0.md`. Not compiled or run against Domino.
 
 ## What changed in 4.1.0
 - **Name separator:** `LastNameSeparator=SPACE` (or `BLANK`) gives `CN=SGT ABC XXZ 11100OPS/O=Demo` (JobTitle + one blank + short name). A plain blank in bulkreg.ini would be trimmed, hence the keyword.
 - **Fast registration:** `MailFileDeferred=1` registers users **without** creating the mail file; the agent `BulkReg\08 - Repair Missing Mail Files` (was 07 in 4.1.0) creates the missing files afterwards from `MailTemplate` (title, ACL, cluster replicas; `MailCreateMaxPerRun`; honors `DryRun`). Run it right after each live batch: until then mail for those users cannot be delivered. Several Notes clients can run 07 on different batch files in parallel. `MailFileDeferred=0` keeps the old behaviour.
 - **Clean-up:** the unused AutoSync hooks were removed from both libraries (re-paste both).
 
-## What changed in 3.9.x (still valid in 4.3.0)
+## What changed in 3.9.x (still valid in 4.4.0)
 Preflight checks all users (`PreflightScope=ALL`, `_batchplan.txt` shows the split); Build Batch writes all batch files in one run (`BATCH-<run>-01.csv`, `-02.csv` ...); the registration last name is built from `LastNameField` (JobTitle) + separator + short name and upper-cased (e.g. `SGT ABC XXZ 11100OPS`, see 'Unique last name' below); users are filled into the `HomeServers` pool (`HomeServerAssignment=FILL`: first server up to 2500, then the next; mapping rule `AUTO`); the short name comes from the AD samaccountname item (`ShortNameFields`), never the FullName; a missing Internet address is constructed as `<shortname>@<InternetDomain>`; Domino on Linux (`ServerOS=LINUX`, `/local/notesdata`, paths sent as `mail1/smith.nsf`). The audit and batch files carry `FullNameAfter` (the Person name after registration); the Person item `JobTitle` (rank, first, last from AD) is registered as the last name. Details: `CHANGELOG.md`. Upgrade steps: `DEPLOY-4.0.1.md`.
 
 ## Unique last name (since 4.0.1; separator SPACE since 4.1.0)
@@ -160,7 +164,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (4.3.0)   ·   CHANGELOG.md   release history
+VERSION      current release (4.4.0)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (the code of the manual agents)
              Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile,

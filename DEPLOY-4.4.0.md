@@ -1,6 +1,22 @@
-# BulkReg 4.3.0 – Deployment steps
+# BulkReg 4.4.0 – Deployment steps
 
 Upgrade from 3.6.6 up to 4.1.0. Libraries `BulkRegCommon` and `BulkRegAgents` change, `bulkreg.ini` gets new keys, **three new agents** are added (`BulkReg\08 - Repair Missing Mail Files`, `BulkReg\09 - Reconcile`, `BulkReg\10 - Audit Log Maintenance`) and **agent 07 is retired**. Everything runs locally in the Notes client. Agents 00-06 are unchanged (only the version comment in their header; 03 gains chunking inside the library).
+
+**4.4.0 change (incremental ini upgrade, ini comparison, more duplicate checks):**
+
+1. **Do not retype `bulkreg.ini`.** Copy the new kit to the admin PC, open a normal (non-elevated) PowerShell or cmd in `scripts\windows` and run, with your live file in `C:\BulkReg\config\bulkreg.ini` (`-Config <path>` for another one):
+   - `bulkreg.cmd IniCompare` - read-only: keys MISSING in your file (with the release that introduced them), UNKNOWN / RETIRED keys, `<PLACEHOLDER>`s still active, duplicate keys, values that DIFFER from the template. `IniCompare other.ini` compares with another ini instead (test vs production); `-Out f.csv` writes the result as CSV.
+   - `bulkreg.cmd IniUpgrade` - preview of the keys that would be added, nothing is changed.
+   - `bulkreg.cmd IniUpgrade -Yes` - adds ONLY the missing keys, each with its comment and the template default, right after the key that precedes it in the template. Your values, comments and order are never touched. A backup `bulkreg.ini.bak.<time>` is made first; the file is read back and checked (every template key present, every value of yours unchanged) and the added lines are shown as a diff. Works from any older release (4.2.0, 4.2.1, 4.3.0 ... 3.x): the release of every key is read from the KEY HISTORY lines at the end of `config/bulkreg.ini`.
+   - `bulkreg.cmd Check` now also warns when keys of the template are missing.
+   - No administrator rights are needed (only `Init` needs them). The helper is not compiled or run on a Windows PowerShell here: run `IniCompare` first and check the preview before `-Yes`.
+2. **Duplicate user checks.** New ini keys (added by IniUpgrade): `DuplicateCheckMailFile=1`, `DuplicateCheckIDFile=1`, `DuplicateCheckVault=REGISTER`. All work only while `DuplicateGuard=1`.
+   - **Mail file:** the mail file the user would get (or the Person document already points at) is the MailServer/MailFile of another registered Person document -> `ERROR:DUPLICATE_MAILFILE` (01/02), `SKIPPED_DUPLICATE` (03).
+   - **ID file:** an ID file `<shortname>_<NoteID>.id` (or its `_<run>` copy) already exists in `IDFileDir` for a user who is not registered -> `ERROR:DUPLICATE_IDFILE`. **Behaviour change:** before 4.4.0, 03 only warned and wrote a second ID under another name. Look at the registration log and the vault before you move the old ID file away; BulkReg never deletes an ID file.
+   - **ID in the vault:** the user is not registered but an ID of the expected name is already in the vault -> `ERROR:DUPLICATE_VAULT`. `REGISTER` = only 03 asks the vault (one call per user); `ALL` = 01/02/03 (slow for thousands); `0` = off. A failed vault call is logged and is not treated as a duplicate.
+   - **Reconcile:** 09 writes `RECON_<run>_duplicate_ids.csv` (IDFILE_MULTIPLE, IDFILE_UNREGISTERED and, with `ReconcileCheckVault=1`, VAULT_UNREGISTERED) and lists each finding in `_gaps.csv` as DUPLICATE_<kind> (Include=N). Several users with the same mail file are groups (key `mail:`) in `_duplicates.csv` as before.
+3. Re-paste both libraries (`BulkRegCommon` first, then `BulkRegAgents`); recompile; re-sign. No new agent. Replace `bulkreg.ps1`, `bulkreg.cmd` and (for the template) `config\bulkreg.ini`.
+4. Not compiled or run against Domino. Pilot: put a copy of an existing user's ID file name into `IDFileDir` (or use a user with a known vault ID) and confirm 03 skips exactly that user with `DUPLICATE_IDFILE` / `DUPLICATE_VAULT`.
 
 **4.3.0 change (gaps, duplicates, aborted batches):**
 
