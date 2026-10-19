@@ -2325,6 +2325,17 @@ Function BR_Pick(s As String) As String
 	BR_Pick = Mid$(s, Int(Rnd() * Len(s)) + 1, 1)
 End Function
 
+' Minutes between a date/time (e.g. FileDateTime of a flag file) and now. LotusScript has no DateDiff:
+' subtracting two dates gives days. An unreadable date returns 0 (= "just now", so the caller asks rather than assumes).
+Function BR_MinutesSince(dt As Variant) As Long
+	On Error GoTo ErrH
+	BR_MinutesSince = CLng((CDbl(Now) - CDbl(dt)) * 1440#)
+	Exit Function
+ErrH:
+	BR_MinutesSince = 0
+	Exit Function
+End Function
+
 Function BR_Elapsed(t0 As Double) As Double
 	Dim t As Double
 	t = Timer - t0

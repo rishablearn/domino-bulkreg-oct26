@@ -793,8 +793,8 @@ Sub BR_RunRegisterBatch()
 	flagFile = BR_BatchFlagFile(gBatchID)
 	' 4.2.1: a flag younger than StaleRunMinutes means another client may still be registering this batch
 	If gMode = "LIVE" And Dir$(flagFile) <> "" Then
-		If DateDiff("n", FileDateTime(flagFile), Now) < CfgL("StaleRunMinutes", 30) Then
-			If Messagebox("The batch " & gBatchID & " shows activity " & DateDiff("n", FileDateTime(flagFile), Now) & " minute(s) ago (flag file). Another client may still be running it." & Chr$(10) & Chr$(10) & "Two runs on one batch can register users twice. Continue only if the other client is closed or hung. Continue?", 4 + 32, "BulkReg - possible active run") <> 6 Then Error 6008, "Cancelled: possible active run of " & gBatchID & ". Use 11 - Batch Manager to review."
+		If BR_MinutesSince(FileDateTime(flagFile)) < CfgL("StaleRunMinutes", 30) Then
+			If Messagebox("The batch " & gBatchID & " shows activity " & BR_MinutesSince(FileDateTime(flagFile)) & " minute(s) ago (flag file). Another client may still be running it." & Chr$(10) & Chr$(10) & "Two runs on one batch can register users twice. Continue only if the other client is closed or hung. Continue?", 4 + 32, "BulkReg - possible active run") <> 6 Then Error 6008, "Cancelled: possible active run of " & gBatchID & ". Use 11 - Batch Manager to review."
 		End If
 	End If
 	If Dir$(BR_StopFile()) <> "" Then Error 6007, "STOP.txt exists in " & bdir & " - delete it to run again (it is the clean-stop signal for chunked runs)."
@@ -2814,7 +2814,7 @@ Sub BR_AuditFolderScan(days As Long, doDelete As Boolean, nFiles As Long, nFolde
 		f = Dir$()
 	Loop
 	ForAll dn In dirs
-		dt = DateSerial(CInt(Left$(CStr(dn), 4)), CInt(Mid$(CStr(dn), 6, 2)), CInt(Mid$(CStr(dn), 9, 2)))
+		dt = DateNumber(CInt(Left$(CStr(dn), 4)), CInt(Mid$(CStr(dn), 6, 2)), CInt(Mid$(CStr(dn), 9, 2)))
 		If CDbl(dt) < cutoff Then
 			fld = ad & CStr(dn) & gSep
 			Erase logs
