@@ -1718,7 +1718,7 @@ Function BR_CnProblem(actual As String, u As BRUser) As String
 	' Blanks (extra, leading, trailing, non-breaking, tab) and upper/lower case are NOT a difference (4.2.0):
 	' only a different name is reported. What the caller does with it: CnMismatchAction=WARN (default) records
 	' it and goes on, STOP halts the run (the pre-4.2.0 behaviour).
-	If BR_NormKey(nn.Common) <> BR_NormKey(BR_CommonName(u)) Then BR_CnProblem = "Common name '" & nn.Common & "' differs from the generated name '" & BR_CommonName(u) & "'"
+	If BR_NormKey(CStr(nn.Common)) <> BR_NormKey(BR_CommonName(u)) Then BR_CnProblem = "Common name '" & nn.Common & "' differs from the generated name '" & BR_CommonName(u) & "'"
 End Function
 
 Function BR_NameProblem(actual As String, u As BRUser) As String
@@ -1752,7 +1752,7 @@ Function BR_MailTitle(u As BRUser) As String
 	Dim t As String, cn As String, nn As NotesName
 	If u.FullNameAfter <> "" Then
 		Set nn = New NotesName(u.FullNameAfter)
-		cn = BR_NormSpaces(nn.Common)             ' one blank between the words, also for an AD-style name
+		cn = BR_NormSpaces(CStr(nn.Common))             ' one blank between the words, also for an AD-style name
 	Else
 		cn = BR_CommonName(u)
 	End If
@@ -2250,7 +2250,7 @@ Function BR_RegisteredName(doc As NotesDocument, u As BRUser) As String
 				Exit Function
 			End If
 			If loose = "" Then
-				If BR_NormKey(nn.Common) = BR_NormKey(want) Then loose = Trim$(CStr(vals(i)))
+				If BR_NormKey(CStr(nn.Common)) = BR_NormKey(want) Then loose = Trim$(CStr(vals(i)))
 			End If
 		End If
 	Next
@@ -2694,7 +2694,7 @@ Sub BR_DupIndexAdd(doc As NotesDocument)
 	ForAll y In v
 		If Trim$(CStr(y)) <> "" Then
 			Set nm = New NotesName(CStr(y))
-			k = BR_NormKey(nm.Common)
+			k = BR_NormKey(CStr(nm.Common))
 			If k <> "" Then gRegIdx("c:" & k) = nid
 		End If
 	End ForAll
@@ -2703,18 +2703,18 @@ End Sub
 ' "" = no duplicate, else "ERROR:DUPLICATE_<kind> ..." (kind = REGISTERED, MAILFILE, IDFILE or VAULT). 03 skips every
 ' user whose text contains "ERROR:DUPLICATE_" (SKIPPED_DUPLICATE: not a failure, nothing created or deleted).
 Function BR_DupCheck(u As BRUser) As String
-	Dim keys(3) As String, what(3) As String, i As Integer, hit As String, isReg As Boolean
+	Dim dupKeys(3) As String, what(3) As String, i As Integer, hit As String, isReg As Boolean
 	Dim mk As String, idBase As String, mv As String
 	If Not gRegIdxOn Then Exit Function
 	isReg = IsElement(gRegIdx("r:" & CStr(u.NoteID)))        ' a registered user is checked against OTHER documents only
-	keys(0) = "i:" & BR_NormKey(u.InternetAddress): what(0) = "Internet address " & u.InternetAddress
-	keys(1) = "s:" & BR_NormKey(u.ShortName):       what(1) = "short name " & u.ShortName
-	keys(2) = "g:" & LCase$(u.GUID):                what(2) = "objectGUID " & u.GUID
-	keys(3) = "c:" & BR_NormKey(BR_CommonName(u)):  what(3) = "common name " & BR_CommonName(u)
+	dupKeys(0) = "i:" & BR_NormKey(u.InternetAddress): what(0) = "Internet address " & u.InternetAddress
+	dupKeys(1) = "s:" & BR_NormKey(u.ShortName):       what(1) = "short name " & u.ShortName
+	dupKeys(2) = "g:" & LCase$(u.GUID):                what(2) = "objectGUID " & u.GUID
+	dupKeys(3) = "c:" & BR_NormKey(BR_CommonName(u)):  what(3) = "common name " & BR_CommonName(u)
 	For i = 0 To 3
-		If Len(keys(i)) > 2 Then
-			If IsElement(gRegIdx(keys(i))) Then
-				hit = gRegIdx(keys(i))
+		If Len(dupKeys(i)) > 2 Then
+			If IsElement(gRegIdx(dupKeys(i))) Then
+				hit = gRegIdx(dupKeys(i))
 				If hit <> CStr(u.NoteID) Then
 					BR_DupCheck = "ERROR:DUPLICATE_REGISTERED - " & what(i) & " already belongs to the registered Person document NoteID " & hit & " (not registered again; run 09 - Reconcile, file *_duplicates.csv); "
 					Exit Function

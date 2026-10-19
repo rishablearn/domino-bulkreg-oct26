@@ -1367,7 +1367,7 @@ Function BR_ApplyBatchName(u As BRUser, bNameAfter As String, bFirst As String) 
 	If nm = "" Then Exit Function
 	regen = BR_CommonName(u)
 	Set nn = New NotesName(nm)
-	cn = BR_NormSpaces(nn.Common)
+	cn = BR_NormSpaces(CStr(nn.Common))
 	If InStr(nm, "/") > 0 And CfgB("UseCA", True) Then
 		abbr = BR_Abbr(nm)
 		sfx = BR_ExpectedSuffix(u.OrgUnit)
@@ -2342,10 +2342,10 @@ Sub BR_RunReconcile()
 			If IsElement(gIdFileIdx(idb)) Then
 				idf = gIdFileIdx(idb)
 				If InStr(idf, "|") > 0 Then
-					Call BR_ReconDupIdRow(fhDid, fhGap, nid, doc.UniversalID, fullN, shortN, inet, reg, "IDFILE_MULTIPLE", "ID files: " & Replace(idf, "|", " ; "), "REVIEW: more than one ID file for this user - keep the one that is in the vault / was handed out, archive the others (BulkReg never deletes an ID file)")
+					Call BR_ReconDupIdRow(fhDid, fhGap, nid, CStr(doc.UniversalID), fullN, shortN, inet, reg, "IDFILE_MULTIPLE", "ID files: " & Replace(idf, "|", " ; "), "REVIEW: more than one ID file for this user - keep the one that is in the vault / was handed out, archive the others (BulkReg never deletes an ID file)")
 					nDupIds = nDupIds + 1
 				ElseIf Not reg Then
-					Call BR_ReconDupIdRow(fhDid, fhGap, nid, doc.UniversalID, fullN, shortN, inet, reg, "IDFILE_UNREGISTERED", "ID file " & idf & " exists but the Person document has no certificate", "REVIEW: an earlier attempt created an ID. Check the registration log and the vault before 03 registers again (03 skips this user: DUPLICATE_IDFILE)")
+					Call BR_ReconDupIdRow(fhDid, fhGap, nid, CStr(doc.UniversalID), fullN, shortN, inet, reg, "IDFILE_UNREGISTERED", "ID file " & idf & " exists but the Person document has no certificate", "REVIEW: an earlier attempt created an ID. Check the registration log and the vault before 03 registers again (03 skips this user: DUPLICATE_IDFILE)")
 					nDupIds = nDupIds + 1
 				End If
 			End If
@@ -2356,7 +2356,7 @@ Sub BR_RunReconcile()
 			If vsrv = "" Then vsrv = CfgS("VaultServer", "")
 			If ru.LastName <> "" And vsrv <> "" Then
 				If BR_VaultStatus(BR_ExpectedName(ru), vsrv) = "IN_VAULT" Then
-					Call BR_ReconDupIdRow(fhDid, fhGap, nid, doc.UniversalID, fullN, shortN, inet, reg, "VAULT_UNREGISTERED", "An ID named " & BR_ExpectedName(ru) & " is in the vault " & vsrv & " but the Person document has no certificate", "REVIEW: do NOT register again; find the ID in the vault (vault admin) and repair the Person document (03 skips this user: DUPLICATE_VAULT)")
+					Call BR_ReconDupIdRow(fhDid, fhGap, nid, CStr(doc.UniversalID), fullN, shortN, inet, reg, "VAULT_UNREGISTERED", "An ID named " & BR_ExpectedName(ru) & " is in the vault " & vsrv & " but the Person document has no certificate", "REVIEW: do NOT register again; find the ID in the vault (vault admin) and repair the Person document (03 skips this user: DUPLICATE_VAULT)")
 					nDupIds = nDupIds + 1
 				End If
 			End If
@@ -3563,7 +3563,7 @@ Sub BR_BatchAction(act As String, bid As String, bdir As String)
 	On Error GoTo ErrH
 	Dim ws As NotesUIWorkspace, ans As Variant, flagF As String, resF As String, bf As String
 	Dim fh As Integer, fhO As Integer, txt As String, isFirst As Boolean, cols List As Integer, delim As String, parts As Variant
-	Dim db As NotesDatabase, doc As NotesDocument, k As Integer, newId As String, newFile As String, nOut As Long, p As Integer, line As String
+	Dim db As NotesDatabase, doc As NotesDocument, k As Integer, newId As String, newFile As String, nOut As Long, p As Integer, outLine As String
 	flagF = BR_BatchFlagFile(bid): resF = bdir & bid & "_results.csv": bf = bdir & bid & ".csv"
 	If Left$(bid, 6) <> "BATCH-" Or InStr(bid, "_") > 0 Or Dir$(bf) = "" Then Error 6102, "Batch file not found: " & bid
 	Set ws = New NotesUIWorkspace
@@ -3618,12 +3618,12 @@ Sub BR_BatchAction(act As String, bid As String, bdir As String)
 					If Not doc Is Nothing Then
 						If Not BR_IsRegistered(doc) Then
 							If IsElement(cols("batchid")) Then parts(cols("batchid")) = newId
-							line = ""
+							outLine = ""
 							For p = 0 To UBound(parts)
-								If p > 0 Then line = line & delim
-								line = line & Q(CStr(parts(p)))
+								If p > 0 Then outLine = outLine & delim
+								outLine = outLine & Q(CStr(parts(p)))
 							Next
-							Call BR_AppendLine(newFile, line)
+							Call BR_AppendLine(newFile, outLine)
 							nOut = nOut + 1
 						End If
 					End If
