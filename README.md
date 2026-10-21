@@ -1,7 +1,10 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 4.4.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+BulkReg 4.5.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
 **Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.html`, same version as the kit (4.4.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
+
+## What changed in 4.5.0
+- **Several machines in parallel:** `PartitionCount=2` on both machines, `PartitionIndex=1` on one and `2` on the other. Every user belongs to exactly one partition (hash of the Person UNID); 01/02 build only this machine's users, 08 repairs only them, 03 refuses a batch with users of another partition (`PartitionOverride=1` = deliberate take-over). Batch IDs carry the machine tag (`BATCH-<run>-<MachineId>-01`). No shared folder needed. Procedure: `PLAYBOOK-post-deploy-4.5.0.md` (HTML: `docs/BulkReg_PostDeploy_Playbook_4.5.0.html`), including the data to collect from each machine and how to copy it. Upgrade: `DEPLOY-4.5.0.md` (HTML: `docs/BulkReg_Deploy_4.5.0.html`). Helpers: `scripts/windows/BulkReg_CollectEvidence.ps1` and `BulkReg_CompareMachines.ps1` (read-only). HTML is rebuilt from the Markdown with `python3 scripts/build_docs_html.py`. Not compiled or run against Domino; the helpers were not run either.
 
 ## What changed in 4.4.0
 - **bulkreg.ini upgrades are incremental:** `scripts\windows\bulkreg.cmd IniCompare` shows what your file lacks (with the release that added each key), what is unknown or retired, which `<PLACEHOLDER>`s remain and which values differ from the template; `IniUpgrade` previews and `IniUpgrade -Yes` adds only the missing keys with their comments (backup, read-back check, diff). Your values are never changed. No administrator rights needed.
@@ -164,7 +167,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (4.4.0)   ·   CHANGELOG.md   release history
+VERSION      current release (4.5.0)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (the code of the manual agents)
              Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile,

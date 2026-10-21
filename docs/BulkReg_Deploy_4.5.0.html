@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BulkReg Deployment steps 4.5.0</title>
+<style>
+:root{
+  --bg:#F7F7FC; --surface:#FFFFFF; --fg:#14142B; --muted:#5B6275; --line:#DCE6F0;
+  --teal:#17707F; --teal2:#2EC0CB; --blue:#0F5FDC; --thead:#17707F; --thead-fg:#FFFFFF; --alt:#F4F7FA;
+  --code-bg:#ECF3F8; --code-fg:#0B3D7A; --note-bg:#E8F6F7; --warn-bg:#FFF4E0; --warn:#9A5B00;
+  --band:linear-gradient(135deg,#0B1D3A 0%,#17707F 55%,#2EC0CB 100%);
+  --font:Arial,"Helvetica Neue",Helvetica,sans-serif; --mono:ui-monospace,Consolas,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--font);margin:0}
+.band{background:var(--band);color:#fff;padding:28px 16px 26px}
+.band .in{max-width:1180px;margin:0 auto}
+.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;opacity:.85;font-weight:700}
+.band h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 8px;text-wrap:balance}
+.band p{margin:0;max-width:76ch;opacity:.94}
+.band a{color:#fff}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.meta span{font-size:12.5px;border:1px solid rgba(255,255,255,.45);border-radius:20px;padding:3px 10px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;display:grid;grid-template-columns:270px minmax(0,1fr);gap:40px}
+nav.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding-block:24px}
+.toc input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);font:inherit;font-size:14px;margin-bottom:12px}
+.toc ul{list-style:none;margin:0;padding:0}
+.toc>ul>li{margin:2px 0}
+.toc a{display:block;color:var(--fg);text-decoration:none;font-size:13.5px;padding:4px 8px;border-radius:5px;border-left:3px solid transparent}
+.toc a:hover,.toc a:focus-visible{background:var(--alt);outline:none}
+.toc a.on{border-left-color:var(--teal2);color:var(--teal);font-weight:700}
+.toc li ul a{font-size:12.5px;color:var(--muted);padding-left:20px}
+.toc .other{margin-top:14px;font-size:13px}
+.toc .other a{display:inline;padding:0;border:0;color:var(--blue)}
+main{min-width:0;padding-block:24px 64px;max-width:900px}
+h2{font-size:24px;color:var(--teal);margin:34px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--teal2);text-wrap:balance;scroll-margin-top:12px}
+h3{font-size:18px;color:var(--teal);margin:26px 0 8px;scroll-margin-top:12px}
+h4{font-size:15px;color:var(--blue);margin:20px 0 6px}
+p,li{max-width:80ch}
+ul,ol{padding-left:22px}
+li{margin:4px 0}
+a{color:var(--blue)}
+code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.cb{margin:12px 0}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:6px;padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.45;margin:0}
+pre code{background:none;padding:0;color:var(--fg);overflow-wrap:normal;white-space:pre}
+.cp{display:block;margin:0 0 4px auto;font:600 12px var(--font);background:var(--surface);color:var(--teal);border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer}
+.cp:hover,.cp:focus-visible{border-color:var(--teal2);outline:none}
+.cp.ok{color:#1A7F37;border-color:#1A7F37}
+details.script{border:1px solid var(--line);border-radius:6px;background:var(--surface);margin:12px 0}
+details.script>summary{cursor:pointer;padding:10px 14px;font-weight:700;color:var(--teal);list-style-position:inside}
+details.script>summary span{font-weight:400;color:var(--muted);font-size:12.5px;margin-left:8px}
+details.script .cb{margin:0;padding:0 10px 10px}
+.tw{overflow-x:auto;margin:10px 0 18px;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;background:var(--surface)}
+th{background:var(--thead);color:var(--thead-fg);text-align:left;padding:8px 10px;font-weight:700}
+td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top}
+tbody tr:nth-child(even) td{background:var(--alt)}
+.call{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:12px 14px;border-radius:6px;margin:14px 0;border-left:4px solid var(--teal2);background:var(--note-bg)}
+.call b.l{color:var(--teal);font-size:12px;text-transform:uppercase;letter-spacing:.08em;padding-top:2px}
+.call.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+.call.warn b.l{color:var(--warn)}
+.call p{margin:0 0 6px}
+.call p:last-child{margin:0}
+.tools{display:flex;gap:8px;margin-top:16px}
+.tools button,.menu{font:inherit;font-size:13px;color:#fff;background:transparent;border:1px solid rgba(255,255,255,.6);border-radius:6px;padding:5px 12px;cursor:pointer}
+.menu{display:none}
+footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px;margin-top:30px;max-width:900px}
+@media (max-width:860px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:0}
+  nav.toc{position:static;max-height:none;padding-block:12px 0}
+  .menu{display:inline-block}
+  nav.toc.closed ul,nav.toc.closed input{display:none}
+}
+@media print{
+  .band{background:#fff;color:#000;padding:0 0 10px}.band *{color:#000!important;border-color:#999!important}
+  nav.toc,.tools,.cp,.menu{display:none!important}.wrap{display:block}
+  details.script{display:block}details.script>*{display:block}
+  pre{white-space:pre-wrap}h2{break-after:avoid}.tw,pre,.call{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<header class="band"><div class="in">
+  <div class="eyebrow">HCL Software &middot; BulkReg 4.5.0</div>
+  <h1>BulkReg 4.5.0 – Deployment steps (several machines)</h1>
+  <p>Upgrade from 4.4.0 (or any release covered by <code>DEPLOY-4.4.0.md</code>; do those steps first when coming from older than 4.4.0). Only the two script libraries change: <code>BulkRegCommon</code> first, then <code>BulkRegAgents</code>. No new agent; the agent files only changed their version comment. Replace <code>bulkreg.ps1</code> and <code>bulkreg.cmd</code>, add the two new helper scripts, keep your own <code>bulkreg.ini</code> and <code>server_mapping.csv</code>.</p>
+  <div class="meta"><span>Version 4.5.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
+  <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
+</div></header>
+<div class="wrap">
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#1-get-exactly-the-same-kit-onto-every-machine">1. Get exactly the same kit onto every machine</a></li><li><a href="#2-before-you-change-anything-each-machine">2. Before you change anything (each machine)</a></li><li><a href="#3-paste-the-libraries-designer-each-machine">3. Paste the libraries (Designer, each machine)</a></li><li><a href="#4-configuration-each-machine">4. Configuration (each machine)</a></li><li><a href="#5-switch-partitioning-on-only-when-no-old-batch-is-still-open">5. Switch partitioning on (only when no old batch is still open)</a></li><li><a href="#6-check-that-both-machines-match">6. Check that both machines match</a></li><li><a href="#status-and-rollback">Status and rollback</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a></div></nav>
+<main>
+
+<p>Do this <strong>on every machine</strong> that runs BulkReg (each has its own local <code>bulkreg.nsf</code> and <code>bulkreg.ini</code>). <code>&lt;KIT&gt;</code> is the folder holding the 4.5.0 kit (<code>lotusscript\</code>, <code>config\</code>, <code>scripts\</code>). Run PowerShell in a normal (non-elevated) window. Full background and the data list: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html"><code>PLAYBOOK-post-deploy-4.5.0.md</code></a>.</p>
+<h2 id="1-get-exactly-the-same-kit-onto-every-machine">1. Get exactly the same kit onto every machine</h2>
+<p>On the machine that has the kit (A):</p>
+<div class="cb"><pre><code class="language-powershell">New-Item -ItemType Directory -Force 'C:\BulkReg\transfer' | Out-Null
+Compress-Archive -Path '&lt;KIT&gt;\*' -DestinationPath 'C:\BulkReg\transfer\bulkreg-kit-4.5.0.zip' -Force
+Get-FileHash 'C:\BulkReg\transfer\bulkreg-kit-4.5.0.zip' -Algorithm SHA256 | Format-List Hash, Path
+</code></pre></div>
+<p>Copy the zip to the other machine through an <strong>approved internal channel</strong> (internal file share or encrypted removable drive; not email or external services). On the other machine (B):</p>
+<div class="cb"><pre><code class="language-powershell">Get-FileHash '&lt;path&gt;\bulkreg-kit-4.5.0.zip' -Algorithm SHA256     # must equal the hash shown on A
+Expand-Archive '&lt;path&gt;\bulkreg-kit-4.5.0.zip' -DestinationPath '&lt;KIT&gt;' -Force
+</code></pre></div>
+<p>A different hash means a damaged or changed copy: delete it and copy again.</p>
+<h2 id="2-before-you-change-anything-each-machine">2. Before you change anything (each machine)</h2>
+<ol>
+<li>Run <strong>11 - Batch Manager</strong> and note every batch that is <code>OPEN</code>, <code>STOPPED</code> or <code>DONE_INCOMPLETE</code>. Finish or stop cleanly (<code>bulkreg Stop</code>) any running batch.</li>
+<li>Back up the local <code>bulkreg.nsf</code>, <code>config\bulkreg.ini</code>, <code>config\server_mapping.csv</code>, and the folders <code>batches\</code>, <code>audit\</code>, <code>secure\</code>, <code>ids\</code>, <code>reconcile\</code> (<code>robocopy</code>, see the playbook section 3). The backup holds passwords and ID files: encrypted disk, restricted access.</li>
+<li>Collect the evidence pack of the old version (<code>BulkReg_CollectEvidence.ps1</code>, playbook section 2.4).</li>
+</ol>
+<h2 id="3-paste-the-libraries-designer-each-machine">3. Paste the libraries (Designer, each machine)</h2>
+<p>Put a library on the clipboard without opening it in an editor that may change it:</p>
+<div class="cb"><pre><code class="language-powershell">Get-Content -LiteralPath '&lt;KIT&gt;\lotusscript\BulkRegCommon.lss' -Raw -Encoding UTF8 | Set-Clipboard
+</code></pre></div>
+<ol>
+<li>Open the local <code>bulkreg.nsf</code> in <strong>Domino Designer</strong>.</li>
+<li><strong>Script Libraries &gt; BulkRegCommon</strong>: click in the editor, <code>Ctrl+A</code>, <code>Ctrl+V</code>, <code>Ctrl+S</code>. <strong>Common first.</strong></li>
+<li>Repeat the clipboard command with <code>BulkRegAgents.lss</code>; <strong>Script Libraries &gt; BulkRegAgents</strong>: click in the editor, <code>Ctrl+A</code>, <code>Ctrl+V</code>, <code>Ctrl+S</code>.</li>
+<li><strong>Tools &gt; Recompile All LotusScript</strong>. On a compile error, note the exact message and line and stop; do not change the code on one machine only.</li>
+<li>Re-sign the database with the same ID as before (guide B17a).</li>
+<li>Run <strong>01 - Preflight</strong>: <code>RUN_INFO.txt</code> in the new audit folder must show <code>BulkReg 4.5.0</code> and a <code>Machines :</code> line.</li>
+</ol>
+<h2 id="4-configuration-each-machine">4. Configuration (each machine)</h2>
+<div class="cb"><pre><code class="language-powershell">cd '&lt;KIT&gt;\scripts\windows'
+.\bulkreg.cmd IniCompare
+.\bulkreg.cmd IniUpgrade          # preview
+.\bulkreg.cmd IniUpgrade -Yes     # adds MachineId, PartitionCount=1, PartitionIndex=1, PartitionOverride=0; your values stay
+</code></pre></div>
+<p>Leave <code>PartitionCount=1</code> until the clean-up of old batches is finished.</p>
+<h2 id="5-switch-partitioning-on-only-when-no-old-batch-is-still-open">5. Switch partitioning on (only when no old batch is still open)</h2>
+<ol>
+<li><strong>Finish or close every OPEN batch first</strong> (agent 11). Batches built before partitioning contain users of both partitions; 03 refuses them once <code>PartitionCount</code> is above 1. The compare script's <code>2_partition_preview.csv</code> shows which batches would be refused.</li>
+<li>
+<p>Same <code>PartitionCount</code> everywhere, a different <code>PartitionIndex</code> per machine:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Machine</th>
+<th>PartitionCount</th>
+<th>PartitionIndex</th>
+<th>MachineId (optional)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>2</td>
+<td>1</td>
+<td><code>A</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>2</td>
+<td>2</td>
+<td><code>B</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Adding a third machine later means changing <code>PartitionCount</code> to 3 on <strong>all</strong> machines at once, with no open batch.
+3. Run <strong>01 - Preflight</strong> on each machine. In <code>_batchplan.txt</code> the line <em>other machine's partition (excluded)</em> is about half of the candidates and the <em>Users to register</em> lines of the machines add up to the total.
+4. Pilot with <code>BatchSize=2</code>, <code>DryRun=1</code> on both machines at the same time: <code>BATCH-&lt;run&gt;-A-01.csv</code> and <code>BATCH-&lt;run&gt;-B-01.csv</code> must not share a single user (compare the <code>UNID</code> column).</p>
+</li>
+</ol>
+<h2 id="6-check-that-both-machines-match">6. Check that both machines match</h2>
+<div class="cb"><pre><code class="language-powershell">.\BulkReg_CollectEvidence.ps1 -Machine A -KitDir '&lt;KIT&gt;\lotusscript'      # on A; use -Machine B on B
+.\BulkReg_CompareMachines.ps1 -PackA '&lt;path&gt;\A_&lt;stamp&gt;' -PackB '&lt;path&gt;\B_&lt;stamp&gt;' -PartitionCount 2 -IndexA 1 -IndexB 2
+</code></pre></div>
+<p><code>3_config_compare.csv</code> and <code>4_kit_compare.csv</code> must show no <code>PROBLEM</code>, <code>DIFFERENT</code> or <code>MISSING</code>.</p>
+<h2 id="status-and-rollback">Status and rollback</h2>
+<p>Not tested against Domino; the helper scripts were written without PowerShell available to run them. The code was checked for block balance, and the partition rule was simulated outside Domino (20,000 random UNIDs: each in exactly one partition, 50/50 within 1 % for 2 machines). Treat step 5.4 as the acceptance test.</p>
+<p>Rollback: set <code>PartitionCount=1</code> on all machines (behaviour of 4.4.0), or paste the 4.4.0 libraries from git.</p>
+<footer>BulkReg 4.5.0 &middot; Deployment steps &middot; generated from <code>DEPLOY-4.5.0.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
+</main>
+</div>
+<script>
+(function(){
+  // copy buttons on every code block
+  document.querySelectorAll('.cb').forEach(function(box){
+    var b=document.createElement('button'); b.type='button'; b.className='cp'; b.textContent='Copy';
+    b.addEventListener('click',function(){
+      var t=box.querySelector('code').innerText;
+      var done=function(){b.textContent='Copied'; b.classList.add('ok'); setTimeout(function(){b.textContent='Copy'; b.classList.remove('ok');},1600);};
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,fallback);} else {fallback();}
+      function fallback(){var a=document.createElement('textarea'); a.value=t; document.body.appendChild(a); a.select(); try{document.execCommand('copy'); done();}catch(e){b.textContent='Select + Ctrl+C';} document.body.removeChild(a);}
+    });
+    box.insertBefore(b,box.firstChild);
+  });
+  // contents: filter + current section
+  var toc=document.querySelector('nav.toc'), q=toc.querySelector('input'), links=[].slice.call(toc.querySelectorAll('li a[href^="#"]'));
+  q.addEventListener('input',function(){var v=q.value.toLowerCase(); links.forEach(function(a){a.parentNode.style.display=(!v||a.textContent.toLowerCase().indexOf(v)>-1)?'':'none';});});
+  var map={}; links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a;});
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){links.forEach(function(a){a.classList.remove('on');}); var a=map[e.target.id]; if(a){a.classList.add('on');}}});},{rootMargin:'0px 0px -75% 0px'});
+    document.querySelectorAll('main h2[id],main h3[id]').forEach(function(h){io.observe(h);});
+  }
+  var m=document.querySelector('.menu'); if(m){m.addEventListener('click',function(){toc.classList.toggle('closed');}); if(window.innerWidth<=860){toc.classList.add('closed');}}
+  var pr=document.getElementById('print'); if(pr){pr.addEventListener('click',function(){document.querySelectorAll('details.script').forEach(function(d){d.open=true;}); window.print();});}
+})();
+</script>
+</body>
+</html>

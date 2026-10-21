@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 4.4.0
+' Script Library : BulkRegAgents            Version 4.5.0
 ' Purpose        : The code of the BulkReg agents (00 - 11). Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -70,7 +70,7 @@ Sub BR_RunPreflight()
 	Dim rl As Variant, rj As Integer, repCount List As Long
 	' batch segregation: Preflight plans ALL candidates but checks ONE batch in detail
 	Dim batchSize As Long, chkBatch As Long, scopeAll As Boolean, srvFilter As String, openIds List As String
-	Dim nElig As Long, nChecked As Long, nInOpen As Long, nOtherSrv As Long, nBatches As Long, bNo As Long, nNoCap As Long, nBuilt As Long
+	Dim nElig As Long, nChecked As Long, nInOpen As Long, nOtherSrv As Long, nBatches As Long, bNo As Long, nNoCap As Long, nBuilt As Long, nOtherMach As Long
 	Dim planBatch List As Long, loadBefore List As Long, planFile As String, homeIssue As String, planLine As String
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String
 
@@ -222,8 +222,19 @@ Sub BR_RunPreflight()
 	Call BR_DupIndexLoad(db)                                 ' duplicate guard (4.3.0)
 	Set col = BR_GetCandidates(db, True)
 	Set doc = col.GetFirstDocument()
+	If BR_PartitionCount() > 1 Then
+		BR_Log LVL_INFO, "Several machines: " & BR_PartitionText() & " - only the users of this partition are planned"
+		If Not CfgB("PartitionOverride", False) Then
+			BR_Log LVL_WARN, "Server capacity (HomeServerMaxUsers) counts registered users and the OPEN batches of THIS machine only. Open batches of the other machine(s) are not counted: register each batch promptly, or keep BatchSize x number of machines below the free capacity."
+			envWarn = envWarn + 1
+		End If
+	End If
 	Do While Not (doc Is Nothing)
 		t0 = Timer
+		If BR_NotMyPartition(CStr(doc.UniversalID)) Then
+			nOtherMach = nOtherMach + 1                           ' 4.5.0: belongs to another machine (PartitionIndex/PartitionCount)
+			GoTo NextCand
+		End If
 		Call BR_ReadUser(doc, u)
 		' ---- batch segregation (same order as 02 - Build Batch) ----
 		If IsElement(openIds(u.NoteID)) Then
@@ -340,6 +351,7 @@ NextCand:
 	Call BR_AppendLine(planFile, "  already in an OPEN batch (excluded)      : " & nInOpen)
 	Call BR_AppendLine(planFile, "  no Internet address, skipped + flagged   : " & BR_IIfStr(CfgB("SkipNoInternetAddress", True), CStr(nNoInet), "0 (SkipNoInternetAddress=0)"))
 	Call BR_AppendLine(planFile, "  other home server (BatchServerFilter)    : " & nOtherSrv)
+	Call BR_AppendLine(planFile, "  other machine's partition (excluded)     : " & nOtherMach & "   [" & BR_PartitionText() & "]")
 	Call BR_AppendLine(planFile, "Users to register                         : " & nElig & "  ->  " & nBatches & " batch(es) of max " & batchSize)
 	Call BR_AppendLine(planFile, "Internet address constructed (<shortname>@" & CfgS("InternetDomain", "?") & ") : " & nBuilt)
 	Call BR_AppendLine(planFile, "Users without a free home server           : " & nNoCap & BR_IIfStr(nNoCap > 0, "   <-- raise HomeServerMaxUsers or add a server to HomeServers", ""))
@@ -484,7 +496,7 @@ Sub BR_RunBuildBatch()
 	Dim seenShort List As String, seenMail List As String, seenMF List As String, checkMF As Boolean
 	Dim srvInc List As Long, srvExcl List As Long, polInc List As Long
 	Dim nRows As Long, nInc As Long, nWarn As Long, nErr As Long, nNoInet As Long, skipFile As String, skipNoInet As Boolean
-	Dim nInOpen As Long, nOtherSrv As Long, nLeft As Long, r As String, hk As String, pk As String
+	Dim nInOpen As Long, nOtherSrv As Long, nLeft As Long, r As String, hk As String, pk As String, nOtherMach As Long, mTag As String
 	Dim mfNames List As String, mfCounts List As Long, mfScanned List As String, newInFolder List As Long, aIssue As String, fkey As String
 	Dim repByHome List As String, rl As Variant, ri As Integer, foundOn As String
 	Dim homeIssue As String, bOther As Boolean, nBuilt As Long
@@ -502,8 +514,12 @@ Sub BR_RunBuildBatch()
 	If Not BR_DirWritable(bdir) Then Error 5001, "BatchDir missing or not writable: " & bdir
 	' One run builds ALL batches: BATCH-<run>-01.csv, BATCH-<run>-02.csv ... (BatchSize rows each).
 	' The files are created as they fill up; run-level reports use the base id BATCH-<run>.
-	baseID = "BATCH-" & gRunID
+	' 4.5.0: with several machines the batch ID carries the machine tag (BATCH-<run>-<tag>-01.csv), so batch files,
+	' results and password files of different machines can be told apart. No tag on a single machine (as before).
+	mTag = BR_MachineTag()
+	baseID = "BATCH-" & gRunID & BR_IIfStr(mTag <> "", "-" & mTag, "")
 	gBatchID = baseID
+	If BR_PartitionCount() > 1 Then BR_Log LVL_INFO, "Several machines: " & BR_PartitionText() & " - only the users of this partition are built into batches"
 	sumFile = bdir & baseID & "_summary.txt"
 	skipFile = bdir & baseID & "_skipped_no_internet_address.csv"
 	skipNoInet = CfgB("SkipNoInternetAddress", True)
@@ -519,6 +535,10 @@ Sub BR_RunBuildBatch()
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
 		t0 = Timer
+		If BR_NotMyPartition(CStr(doc.UniversalID)) Then
+			nOtherMach = nOtherMach + 1                             ' 4.5.0: belongs to another machine (PartitionIndex/PartitionCount)
+			GoTo NextBuildDoc
+		End If
 		Call BR_ReadUser(doc, u)
 		If IsElement(openIds(u.NoteID)) Then
 			nInOpen = nInOpen + 1                                   ' already in a pending batch
@@ -623,6 +643,7 @@ Sub BR_RunBuildBatch()
 			Call BR_Audit(u, "BUILD", "SELECT", chk, BR_Elapsed(t0), "Include=" & inc & " " & issues)
 			End If
 		End If
+NextBuildDoc:
 		Set doc = col.GetNextDocument(doc)
 	Loop
 
@@ -640,6 +661,7 @@ Sub BR_RunBuildBatch()
 	Next
 	Call BR_AppendLine(sumFile, "Selection       : " & BR_SelectionFormula(True))
 	Call BR_AppendLine(sumFile, "Server filter   : " & BR_IIfStr(srvFilter = "", "(none - all home servers)", srvFilter))
+	Call BR_AppendLine(sumFile, "Machines        : " & BR_PartitionText() & " | users of other machines (not built): " & nOtherMach)
 	Call BR_AppendLine(sumFile, "Batch size limit: " & batchMax)
 	If BR_HomePool() <> "" Then
 		Call BR_AppendLine(sumFile, "Home servers    : " & BR_HomePool() & "  (" & UCase$(Trim$(CfgS("HomeServerAssignment", "BALANCED"))) & ", max " & CfgL("HomeServerMaxUsers", 0) & " users per server)")
@@ -760,7 +782,7 @@ Sub BR_RunRegisterBatch()
 	Dim nOK As Long, nFail As Long, nSkip As Long, nConsec As Long, res As String, stopReason As String
 	Dim j As Long, summary As String
 	Dim chunk As Long, nChunks As Long, done As Long, tChunk As Double, pauseSec As Long, basePause As Long
-	Dim isResume As Boolean, flagFile As String
+	Dim isResume As Boolean, flagFile As String, nForeign As Long
 
 	If Not BR_Init("Register") Then Exit Sub
 	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
@@ -860,6 +882,20 @@ Sub BR_RunRegisterBatch()
 		Exit Sub
 	End If
 	If n > maxRows Then Error 6006, "Batch has " & n & " rows; MaxBatchRows is " & maxRows
+
+	' ---------- 4.5.0: several machines - never register users of ANOTHER machine's partition ----------
+	' Two machines must not register the same user. The partition is derived from the UNID of the Person
+	' document, so a batch file copied to the wrong machine (or built before partitioning was switched on) is
+	' refused as a whole. Rows without UNID (batches of old releases) cannot be checked.
+	If BR_PartitionCount() > 1 And Not CfgB("PartitionOverride", False) Then
+		For i = 0 To n - 1
+			If BR_NotMyPartition(un(i)) Then nForeign = nForeign + 1
+		Next
+		If nForeign > 0 Then
+			BR_Log LVL_ERROR, "Batch " & gBatchID & ": " & nForeign & " of " & n & " rows belong to another machine's partition (this machine: " & BR_PartitionText() & ")"
+			Error 6009, gBatchID & " contains " & nForeign & " user(s) of another machine's partition (this machine: " & BR_PartitionText() & "). Run it on the machine that built it. To take it over on purpose (the other machine is stopped and you checked with 11 - RECOVER), set PartitionOverride=1 for this run, then back to 0."
+		End If
+	End If
 
 	ForAll c In srvCount
 		srvText = srvText & "   " & ListTag(c) & " : " & c & Chr$(10)
@@ -1675,7 +1711,7 @@ Sub BR_RunRepairMail()
 	Dim k As String, nidTxt As String, unidTxt As String, u As BRUser, ok As Boolean
 	Dim i As Long, done As Long, nMade As Long, nExist As Long, nFix As Long, nSkip As Long, nFail As Long, nConsec As Long
 	Dim maxConsec As Long, pauseMs As Long, maxPer As Long, chunk As Long, basePause As Long, pauseSec As Long, tChunk As Double
-	Dim lastMark As Long, workDone As Long, checkExisting As Long
+	Dim lastMark As Long, workDone As Long, checkExisting As Long, nOtherMach As Long
 	Dim res As String, summary As String, stopReason As String
 
 	If Not BR_Init("RepairMail") Then Exit Sub
@@ -1766,6 +1802,14 @@ Sub BR_RunRepairMail()
 		If scopeFile <> "" Then
 			ok = IsElement(ids("n" & UCase$(CStr(doc.NoteID)))) Or IsElement(ids("u" & UCase$(CStr(doc.UniversalID))))
 		End If
+		' 4.5.0: several machines - each machine repairs only the users of its own partition, so two machines can
+		' use the same scope (all users, the same gap list) without ever touching the same user
+		If ok Then
+			If BR_NotMyPartition(CStr(doc.UniversalID)) Then
+				ok = False
+				nOtherMach = nOtherMach + 1
+			End If
+		End If
 		If ok Then
 			k = BR_RepairClass(doc, scopeSrv, inv, checkExisting)
 			Select Case k
@@ -1789,8 +1833,8 @@ Sub BR_RunRepairMail()
 		End If
 		Set doc = col.GetNextDocument(doc)
 	Loop
-	nHealthy = nScanned - nW - nNoMail
-	BR_Log LVL_INFO, "Plan: scanned " & nScanned & " | to create/confirm " & nPlanC & " | to check " & nPlanK & " | no mail item " & nNoMail & " | scope " & scopeLabel
+	nHealthy = nScanned - nW - nNoMail - nOtherMach
+	BR_Log LVL_INFO, "Plan: scanned " & nScanned & " | to create/confirm " & nPlanC & " | to check " & nPlanK & " | no mail item " & nNoMail & " | other machine's users (not touched) " & nOtherMach & " | scope " & scopeLabel
 	If nW = 0 Then
 		summary = gMode & " | " & scopeLabel & " | scanned=" & nScanned & " | nothing to create or check | no mail item in Person doc=" & nNoMail
 		BR_Close summary

@@ -1,0 +1,1061 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BulkReg Post-deploy playbook 4.5.0</title>
+<style>
+:root{
+  --bg:#F7F7FC; --surface:#FFFFFF; --fg:#14142B; --muted:#5B6275; --line:#DCE6F0;
+  --teal:#17707F; --teal2:#2EC0CB; --blue:#0F5FDC; --thead:#17707F; --thead-fg:#FFFFFF; --alt:#F4F7FA;
+  --code-bg:#ECF3F8; --code-fg:#0B3D7A; --note-bg:#E8F6F7; --warn-bg:#FFF4E0; --warn:#9A5B00;
+  --band:linear-gradient(135deg,#0B1D3A 0%,#17707F 55%,#2EC0CB 100%);
+  --font:Arial,"Helvetica Neue",Helvetica,sans-serif; --mono:ui-monospace,Consolas,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--font);margin:0}
+.band{background:var(--band);color:#fff;padding:28px 16px 26px}
+.band .in{max-width:1180px;margin:0 auto}
+.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;opacity:.85;font-weight:700}
+.band h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 8px;text-wrap:balance}
+.band p{margin:0;max-width:76ch;opacity:.94}
+.band a{color:#fff}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.meta span{font-size:12.5px;border:1px solid rgba(255,255,255,.45);border-radius:20px;padding:3px 10px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;display:grid;grid-template-columns:270px minmax(0,1fr);gap:40px}
+nav.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding-block:24px}
+.toc input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);font:inherit;font-size:14px;margin-bottom:12px}
+.toc ul{list-style:none;margin:0;padding:0}
+.toc>ul>li{margin:2px 0}
+.toc a{display:block;color:var(--fg);text-decoration:none;font-size:13.5px;padding:4px 8px;border-radius:5px;border-left:3px solid transparent}
+.toc a:hover,.toc a:focus-visible{background:var(--alt);outline:none}
+.toc a.on{border-left-color:var(--teal2);color:var(--teal);font-weight:700}
+.toc li ul a{font-size:12.5px;color:var(--muted);padding-left:20px}
+.toc .other{margin-top:14px;font-size:13px}
+.toc .other a{display:inline;padding:0;border:0;color:var(--blue)}
+main{min-width:0;padding-block:24px 64px;max-width:900px}
+h2{font-size:24px;color:var(--teal);margin:34px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--teal2);text-wrap:balance;scroll-margin-top:12px}
+h3{font-size:18px;color:var(--teal);margin:26px 0 8px;scroll-margin-top:12px}
+h4{font-size:15px;color:var(--blue);margin:20px 0 6px}
+p,li{max-width:80ch}
+ul,ol{padding-left:22px}
+li{margin:4px 0}
+a{color:var(--blue)}
+code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.cb{margin:12px 0}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:6px;padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.45;margin:0}
+pre code{background:none;padding:0;color:var(--fg);overflow-wrap:normal;white-space:pre}
+.cp{display:block;margin:0 0 4px auto;font:600 12px var(--font);background:var(--surface);color:var(--teal);border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer}
+.cp:hover,.cp:focus-visible{border-color:var(--teal2);outline:none}
+.cp.ok{color:#1A7F37;border-color:#1A7F37}
+details.script{border:1px solid var(--line);border-radius:6px;background:var(--surface);margin:12px 0}
+details.script>summary{cursor:pointer;padding:10px 14px;font-weight:700;color:var(--teal);list-style-position:inside}
+details.script>summary span{font-weight:400;color:var(--muted);font-size:12.5px;margin-left:8px}
+details.script .cb{margin:0;padding:0 10px 10px}
+.tw{overflow-x:auto;margin:10px 0 18px;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;background:var(--surface)}
+th{background:var(--thead);color:var(--thead-fg);text-align:left;padding:8px 10px;font-weight:700}
+td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top}
+tbody tr:nth-child(even) td{background:var(--alt)}
+.call{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:12px 14px;border-radius:6px;margin:14px 0;border-left:4px solid var(--teal2);background:var(--note-bg)}
+.call b.l{color:var(--teal);font-size:12px;text-transform:uppercase;letter-spacing:.08em;padding-top:2px}
+.call.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+.call.warn b.l{color:var(--warn)}
+.call p{margin:0 0 6px}
+.call p:last-child{margin:0}
+.tools{display:flex;gap:8px;margin-top:16px}
+.tools button,.menu{font:inherit;font-size:13px;color:#fff;background:transparent;border:1px solid rgba(255,255,255,.6);border-radius:6px;padding:5px 12px;cursor:pointer}
+.menu{display:none}
+footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px;margin-top:30px;max-width:900px}
+@media (max-width:860px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:0}
+  nav.toc{position:static;max-height:none;padding-block:12px 0}
+  .menu{display:inline-block}
+  nav.toc.closed ul,nav.toc.closed input{display:none}
+}
+@media print{
+  .band{background:#fff;color:#000;padding:0 0 10px}.band *{color:#000!important;border-color:#999!important}
+  nav.toc,.tools,.cp,.menu{display:none!important}.wrap{display:block}
+  details.script{display:block}details.script>*{display:block}
+  pre{white-space:pre-wrap}h2{break-after:avoid}.tw,pre,.call{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<header class="band"><div class="in">
+  <div class="eyebrow">HCL Software &middot; BulkReg 4.5.0</div>
+  <h1>BulkReg 4.5.0 – Post-deploy playbook (2 or more machines)</h1>
+  <p>Covers: what data to collect and how to copy it, upgrading both machines to the same code, cleaning up what the previous version (run from two Notes clients on two machines) left behind, switching on the multi-machine safety of 4.5.0, running in parallel, and handling duplicates, aborted batches and users registered without a mail file.</p>
+  <div class="meta"><span>Version 4.5.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
+  <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
+</div></header>
+<div class="wrap">
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#0-how-parallel-running-works-in-450">0. How parallel running works in 4.5.0</a></li><li><a href="#1-data-inventory-what-you-need-from-each-machine">1. Data inventory: what you need from each machine</a></li><li><a href="#2-how-to-copy-things-step-by-step">2. How to copy things, step by step</a><ul><li><a href="#21-get-the-same-kit-onto-machine-b">2.1 Get the same kit onto machine B</a></li><li><a href="#22-paste-the-two-libraries-into-designer-on-each-machine">2.2 Paste the two libraries into Designer (on each machine)</a></li><li><a href="#23-make-the-configuration-match-on-each-machine">2.3 Make the configuration match (on each machine)</a></li><li><a href="#24-collect-the-evidence-pack-once-per-machine">2.4 Collect the evidence pack (once per machine)</a></li><li><a href="#25-compare-the-two-machines">2.5 Compare the two machines</a></li><li><a href="#26-moving-a-batch-to-the-other-machine-on-purpose-takeover">2.6 Moving a batch to the other machine on purpose (takeover)</a></li><li><a href="#27-what-may-be-sent-to-someone-else-for-analysis">2.7 What may be sent to someone else for analysis</a></li></ul></li><li><a href="#3-freeze-and-back-up-before-upgrading">3. Freeze and back up (before upgrading)</a></li><li><a href="#4-upgrade-both-machines">4. Upgrade (both machines)</a></li><li><a href="#5-baseline-find-out-where-things-really-stand">5. Baseline: find out where things really stand</a></li><li><a href="#6-switch-on-partitioning-and-pilot">6. Switch on partitioning and pilot</a></li><li><a href="#7-duplicates">7. Duplicates</a></li><li><a href="#8-aborted-stopped-or-hung-batch">8. Aborted, stopped or hung batch</a></li><li><a href="#9-registered-but-no-mail-file">9. Registered, but no mail file</a></li><li><a href="#10-routine-in-production-both-machines-in-parallel">10. Routine in production (both machines in parallel)</a></li><li><a href="#11-housekeeping-and-escalation">11. Housekeeping and escalation</a></li><li><a href="#12-rollback">12. Rollback</a></li><li><a href="#appendix-helper-scripts">Appendix: helper scripts</a></li><li><a href="#sources-checked">Sources checked</a></li></ul><div class="other">Also: <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a></div></nav>
+<main>
+
+<div class="call warn"><b class="l">Read first</b><div>
+<p><strong>Status:</strong> the code is reviewed and checked for block balance, but <strong>not compiled or run against Domino</strong>. The two PowerShell helpers were written without a PowerShell available to run them. Keep <code>DryRun=1</code> until each step has been read, run the helpers first against a copy, and treat section 6 (pilot) as the acceptance test.
+All agents run from <code>bulkreg.nsf &gt; Actions &gt; BulkReg</code> in the Windows Domino Administrator client. <code>A</code> and <code>B</code> are your two machines. <code>&lt;KIT&gt;</code> is the folder holding the 4.5.0 kit (<code>lotusscript\</code>, <code>config\</code>, <code>scripts\</code>). Angle brackets are placeholders you replace.</p>
+</div></div>
+<h2 id="0-how-parallel-running-works-in-450">0. How parallel running works in 4.5.0</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Shared or per machine</th>
+<th>Consequence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Domino Directory, mail servers, ID vault, log database</td>
+<td><strong>Shared</strong></td>
+<td>Source of truth. 09 reads the directory, so it sees both machines' work; 04, 11 and <code>RECOVER</code> check each row of a <em>local</em> batch file against the directory.</td>
+</tr>
+<tr>
+<td><code>BatchDir</code>, <code>AuditDir</code>, <code>PasswordDir</code>, <code>IDFileDir</code>, <code>ReconcileDir</code> (default <code>C:\BulkReg\...</code>)</td>
+<td><strong>Per machine</strong></td>
+<td>Batch files, results, flags, <code>STOP.txt</code>, ID files and initial passwords of a batch exist <strong>only on the machine that ran it</strong>.</td>
+</tr>
+<tr>
+<td>Users</td>
+<td><strong>Split by partition</strong></td>
+<td><code>PartitionCount=2</code>: every user belongs to exactly one machine (hash of the Person UNID). Machine A never builds, registers or repairs machine B's users, and vice versa. No shared folder needed.</td>
+</tr>
+</tbody>
+</table></div>
+<p>What the partition changes (and does not):</p>
+<ul>
+<li><strong>01 / 02</strong> plan and build only this machine's users. <strong>03</strong> refuses a batch containing users of the other partition (error 6009). <strong>08</strong> repairs only this machine's users, so both machines can use the same scope or the same <code>RECON_*_gaps.csv</code>.</li>
+<li><strong>04, 09, 10, 11</strong> are not partitioned. 09 covers the whole directory; 04 and 11 cover the batch files of the machine they run on.</li>
+<li>Batch IDs carry the machine tag: <code>BATCH-&lt;run&gt;-A-01.csv</code>. Run IDs are unchanged.</li>
+<li><strong>Known limit:</strong> <code>HomeServerMaxUsers</code> capacity counts registered users plus the open batches of <em>this</em> machine only. Register every batch promptly after building it, or keep <code>BatchSize x machines</code> below the free capacity. Preflight prints a WARN about this when partitioning is on.</li>
+</ul>
+<h2 id="1-data-inventory-what-you-need-from-each-machine">1. Data inventory: what you need from each machine</h2>
+<p>Collect this <strong>from every machine that ever ran BulkReg</strong> (both A and B). Paths are the defaults; the real folders are the <code>BatchDir</code>, <code>AuditDir</code>, <code>PasswordDir</code>, <code>IDFileDir</code>, <code>ReconcileDir</code> values in that machine's <code>bulkreg.ini</code>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>What</th>
+<th>Default location / file name</th>
+<th>Needed for</th>
+<th>Personal data or secret?</th>
+<th>How it is handled</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>bulkreg.ini</code></td>
+<td><code>C:\BulkReg\config\bulkreg.ini</code></td>
+<td>Settings must match on both machines (servers, mail folders, naming, vault, log db)</td>
+<td>No secrets by design; internal server names</td>
+<td>Copied into the pack</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>server_mapping.csv</code></td>
+<td><code>C:\BulkReg\config\</code></td>
+<td>Same home-server rules on both</td>
+<td>No</td>
+<td>Copied into the pack</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Batch files</td>
+<td><code>BatchDir\BATCH-&lt;run&gt;[-&lt;tag&gt;]-NN.csv</code></td>
+<td>Which users each machine put into batches (overlap check, <code>RECOVER</code>, resume)</td>
+<td><strong>Yes</strong>: names, e-mail addresses</td>
+<td>Stay on the machine; only <strong>redacted rows</strong> (Include, UNID, NoteID, HomeServer, Check) go into the pack</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Results files</td>
+<td><code>BatchDir\&lt;batch&gt;_results.csv</code></td>
+<td>Who was really registered by which machine</td>
+<td><strong>Yes</strong></td>
+<td>Redacted rows only (Timestamp, Action, Result, NoteID, UNID, HomeServer)</td>
+</tr>
+<tr>
+<td>5</td>
+<td>In-progress flags, <code>STOP.txt</code></td>
+<td><code>BatchDir\&lt;batch&gt;_inprogress.flag</code>, <code>STOP.txt</code></td>
+<td>Shows stopped or hung runs</td>
+<td>No</td>
+<td>Listing in the pack; files copied only with <code>-Full</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>Reports of 03/04/08/11</td>
+<td><code>BatchDir\&lt;batch&gt;_dryrun_*.csv</code>, <code>_verify_*.csv</code>, <code>*_mailrepair_*.csv</code>, <code>RECOVER_*.csv</code>, <code>BATCHSTATUS_*.csv</code></td>
+<td>History of what was tried</td>
+<td><strong>Yes</strong></td>
+<td>Listing; copied only with <code>-Full</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td>Reconcile reports</td>
+<td><code>ReconcileDir\RECON_&lt;run&gt;_*.csv</code></td>
+<td>Gaps and duplicates seen so far</td>
+<td><strong>Yes</strong></td>
+<td>Listing; copied only with <code>-Full</code></td>
+</tr>
+<tr>
+<td>8</td>
+<td>Audit run folders</td>
+<td><code>AuditDir\&lt;date&gt;_&lt;agent&gt;_&lt;mode&gt;\</code> : <code>RUN_INFO.txt</code>, <code>*_audit.csv</code>, <code>*_debug.log</code></td>
+<td>Who ran what, when, in which mode</td>
+<td><code>*_audit.csv</code> and debug logs <strong>yes</strong> (names); <code>RUN_INFO.txt</code> no</td>
+<td>Listing; <code>RUN_INFO.txt</code> with <code>-Full</code>; <code>*_audit.csv</code> only with <code>-Full -IncludeAudit</code>. <strong>Debug logs are never collected.</strong></td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>Initial-password files</strong></td>
+<td><code>PasswordDir\BulkReg_InitialPasswords_&lt;batch&gt;_&lt;run&gt;.csv</code></td>
+<td>Know which batches have passwords on which machine</td>
+<td><strong>SECRET</strong></td>
+<td><strong>Never copied or opened.</strong> Listing with name, size, date and SHA256 only. Hand over and delete through your normal process</td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>User ID files</strong></td>
+<td><code>IDFileDir\&lt;shortname&gt;_&lt;NoteID&gt;.id</code> (and <code>_&lt;run&gt;</code> copies)</td>
+<td>Duplicate check (which users already have an ID on which machine)</td>
+<td><strong>SECRET</strong>; file names contain short names</td>
+<td><strong>Never copied.</strong> Listing with SHA256 only, in the full pack, not in the redacted data</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Kit files</td>
+<td><code>&lt;KIT&gt;\lotusscript\*.lss</code></td>
+<td>Both machines must run identical code</td>
+<td>No</td>
+<td>SHA256 per file (<code>-KitDir</code>)</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Facts only you know</td>
+<td>–</td>
+<td>Context</td>
+<td>–</td>
+<td>Write them in <code>machine_info.txt</code>: Notes client version, who ran what on which date, any ID file moved or deleted by hand, any manual change in the directory</td>
+</tr>
+</tbody>
+</table></div>
+<p>Rules that apply to everything above:</p>
+<ul>
+<li>Treat the pack as <strong>confidential company data</strong>. Keep it on approved internal storage with restricted access; do not email it, paste it into chat tools, or upload it to external services. The default pack contains no names, e-mail addresses, passwords or ID files, but UNID/NoteID are internal Domino identifiers.</li>
+<li><strong>Never copy</strong> <code>secure\</code> or <code>ids\</code> anywhere. If a password or ID file may have been exposed, rotate it and tell the security owner.</li>
+<li>Dry-run files and debug logs are noise for this exercise; do not copy them unless a specific question needs them.</li>
+</ul>
+<h2 id="2-how-to-copy-things-step-by-step">2. How to copy things, step by step</h2>
+<p>Run all PowerShell in a normal (non-elevated) window. If your company policy blocks local scripts, ask IT or security how scripts are approved; do not weaken the policy. If the files came from a download, <code>Unblock-File '&lt;path&gt;'</code> removes the web mark.</p>
+<h3 id="21-get-the-same-kit-onto-machine-b">2.1 Get the same kit onto machine B</h3>
+<p>On the machine that has the 4.5.0 kit (A):</p>
+<div class="cb"><pre><code class="language-powershell">New-Item -ItemType Directory -Force 'C:\BulkReg\transfer' | Out-Null
+Compress-Archive -Path '&lt;KIT&gt;\*' -DestinationPath 'C:\BulkReg\transfer\bulkreg-kit-4.5.0.zip' -Force
+Get-FileHash 'C:\BulkReg\transfer\bulkreg-kit-4.5.0.zip' -Algorithm SHA256 | Format-List Hash, Path
+</code></pre></div>
+<p>Move <code>bulkreg-kit-4.5.0.zip</code> to B through an <strong>approved internal channel</strong> (internal file share such as <code>\\&lt;fileserver&gt;\&lt;share&gt;\bulkreg</code>, or an encrypted removable drive). On B:</p>
+<div class="cb"><pre><code class="language-powershell">Get-FileHash '&lt;path&gt;\bulkreg-kit-4.5.0.zip' -Algorithm SHA256   # must equal the hash shown on A
+Expand-Archive '&lt;path&gt;\bulkreg-kit-4.5.0.zip' -DestinationPath '&lt;KIT&gt;' -Force
+</code></pre></div>
+<p>If the hashes differ, delete the copy and transfer again. Do not use a kit that does not match.</p>
+<h3 id="22-paste-the-two-libraries-into-designer-on-each-machine">2.2 Paste the two libraries into Designer (on each machine)</h3>
+<p>The libraries are plain UTF-8 text. Do not open them in Word. To put one on the clipboard without opening it:</p>
+<div class="cb"><pre><code class="language-powershell">Get-Content -LiteralPath '&lt;KIT&gt;\lotusscript\BulkRegCommon.lss' -Raw -Encoding UTF8 | Set-Clipboard
+</code></pre></div>
+<ol>
+<li>Back up first: copy the local <code>bulkreg.nsf</code> and <code>config\bulkreg.ini</code> somewhere safe (section 3).</li>
+<li>Open the local <code>bulkreg.nsf</code> in <strong>Domino Designer</strong>.</li>
+<li><strong>Script Libraries &gt; BulkRegCommon</strong>: click in the editor, <code>Ctrl+A</code>, <code>Ctrl+V</code> (the clipboard holds <code>BulkRegCommon.lss</code>), <code>Ctrl+S</code>. <strong>Do the Common library first.</strong></li>
+<li>Run the clipboard command again for <code>BulkRegAgents.lss</code>. <strong>Script Libraries &gt; BulkRegAgents</strong>: click in the editor, <code>Ctrl+A</code>, <code>Ctrl+V</code>, <code>Ctrl+S</code>.</li>
+<li><strong>Tools &gt; Recompile All LotusScript</strong>. If a compile error appears, note the exact message and line and stop; do not edit the code on one machine only.</li>
+<li>Re-sign the database with the same ID as before (guide B17a).</li>
+<li>Check the version: run <strong>01 - Preflight</strong> and open <code>RUN_INFO.txt</code> in the new audit folder: it must say <code>BulkReg 4.5.0</code> and a <code>Machines :</code> line. Do the same on B.</li>
+</ol>
+<p>Agents 00 to 11 need no change (only their header comment shows 4.5.0). If you come from before 4.4.0, create the missing agents as described in <code>DEPLOY-4.4.0.md</code>.</p>
+<h3 id="23-make-the-configuration-match-on-each-machine">2.3 Make the configuration match (on each machine)</h3>
+<p>Copy the working <code>bulkreg.ini</code> from A to B only if the two machines have the same layout; otherwise keep B's own file. Either way, add the new keys without retyping:</p>
+<div class="cb"><pre><code class="language-powershell">cd '&lt;KIT&gt;\scripts\windows'
+.\bulkreg.cmd IniCompare
+.\bulkreg.cmd IniUpgrade          # preview
+.\bulkreg.cmd IniUpgrade -Yes     # adds only the missing keys (backup + read-back check)
+</code></pre></div>
+<p>To compare B's file with A's, copy A's <code>bulkreg.ini</code> (it holds no secrets) to B and run <code>.\bulkreg.cmd IniCompare '&lt;path&gt;\A_bulkreg.ini'</code>; or use the compare script of section 2.5. Settings that must be <strong>equal</strong> on both machines and the two that must <strong>differ</strong> are listed in <code>3_config_compare.csv</code>.</p>
+<h3 id="24-collect-the-evidence-pack-once-per-machine">2.4 Collect the evidence pack (once per machine)</h3>
+<p>The collector is <strong>read-only</strong>: it never changes BulkReg or Domino, never copies <code>secure\</code> or <code>ids\</code>, and refuses to write into them. Script: <code>&lt;KIT&gt;\scripts\windows\BulkReg_CollectEvidence.ps1</code> (full listing in the appendix).</p>
+<p>On A:</p>
+<div class="cb"><pre><code class="language-powershell">cd '&lt;KIT&gt;\scripts\windows'
+.\BulkReg_CollectEvidence.ps1 -Machine A -KitDir '&lt;KIT&gt;\lotusscript'
+</code></pre></div>
+<p>On B:</p>
+<div class="cb"><pre><code class="language-powershell">cd '&lt;KIT&gt;\scripts\windows'
+.\BulkReg_CollectEvidence.ps1 -Machine B -KitDir '&lt;KIT&gt;\lotusscript'
+</code></pre></div>
+<p>Options: <code>-Base D:\BulkReg</code> (other install folder), <code>-Config &lt;path&gt;</code> (other ini), <code>-Out &lt;folder&gt;</code> (default <code>&lt;Base&gt;\evidence</code>), <code>-Full</code> (adds copies of batch files, results, reports, <code>RUN_INFO.txt</code>; contains names and e-mail addresses), <code>-IncludeAudit</code> (with <code>-Full</code>: adds <code>*_audit.csv</code>).</p>
+<p>Result: <code>&lt;Out&gt;\&lt;Machine&gt;_&lt;yyyyMMdd-HHmmss&gt;\</code> and a <code>.zip</code> next to it, plus <code>&lt;zip&gt;.sha256.txt</code>. What is inside:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>machine_info.txt</code></td>
+<td>Computer, user, date, folders used, ini excerpt, a line for the Notes client version (fill it in by hand)</td>
+</tr>
+<tr>
+<td><code>inventory\*_listing.csv</code></td>
+<td>Name, size, date (and SHA256 for <code>secure</code> and <code>ids</code>) of batches, reconcile, audit, secure, ids</td>
+</tr>
+<tr>
+<td><code>inventory\kit_hashes.csv</code></td>
+<td>SHA256 of each <code>.lss</code> file</td>
+</tr>
+<tr>
+<td><code>config\</code></td>
+<td><code>bulkreg.ini</code>, <code>server_mapping.csv</code></td>
+</tr>
+<tr>
+<td><code>redacted\batch_rows.csv</code></td>
+<td>Machine, BatchFile, Include, UNID, NoteID, HomeServer, Check</td>
+</tr>
+<tr>
+<td><code>redacted\results_rows.csv</code></td>
+<td>Machine, BatchFile, Timestamp, Action, Result, NoteID, UNID, HomeServer</td>
+</tr>
+</tbody>
+</table></div>
+<p>Open <code>machine_info.txt</code> and fill in the Notes client version and the free-text facts (row 12 of section 1). Then move the <strong>zip</strong> of B to A (or both to a neutral admin PC) through an approved channel and verify:</p>
+<div class="cb"><pre><code class="language-powershell">Get-FileHash '&lt;path&gt;\B_&lt;stamp&gt;.zip' -Algorithm SHA256        # compare with B_&lt;stamp&gt;.zip.sha256.txt
+Expand-Archive '&lt;path&gt;\B_&lt;stamp&gt;.zip' -DestinationPath '&lt;path&gt;\B_&lt;stamp&gt;' -Force
+</code></pre></div>
+<p>Keep your own full local backup (section 3) on the machine where it was made.</p>
+<h3 id="25-compare-the-two-machines">2.5 Compare the two machines</h3>
+<p>Script: <code>&lt;KIT&gt;\scripts\windows\BulkReg_CompareMachines.ps1</code>. It reads only the redacted files, the ini and the kit hashes of the two unzipped packs.</p>
+<div class="cb"><pre><code class="language-powershell">cd '&lt;KIT&gt;\scripts\windows'
+.\BulkReg_CompareMachines.ps1 -PackA '&lt;path&gt;\A_&lt;stamp&gt;' -PackB '&lt;path&gt;\B_&lt;stamp&gt;' -PartitionCount 2 -IndexA 1 -IndexB 2
+</code></pre></div>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Output</th>
+<th>Meaning</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>1_overlap.csv</code></td>
+<td>Users in a batch of <strong>both</strong> machines, with who registered them: <code>REGISTERED_ON_A</code>, <code>REGISTERED_ON_B</code>, <code>REGISTERED_ON_BOTH</code>, <code>OPEN_ON_BOTH</code></td>
+<td>Resolve every row (section 7) before partitioning is switched on. <code>REGISTERED_ON_BOTH</code> is a duplicate candidate: check 09</td>
+</tr>
+<tr>
+<td><code>2_partition_preview.csv</code></td>
+<td>For each batch with unregistered rows: how many belong to this machine's partition and how many to the other (<code>OtherPartition</code>), <code>Verdict</code> <code>REFUSED...</code> or <code>OK</code></td>
+<td>Finish a <code>REFUSED</code> batch first, with partitioning still off (section 8)</td>
+</tr>
+<tr>
+<td><code>3_config_compare.csv</code></td>
+<td>Settings that must be equal or must differ</td>
+<td>Fix every <code>PROBLEM</code></td>
+</tr>
+<tr>
+<td><code>4_kit_compare.csv</code></td>
+<td>SHA256 of each <code>.lss</code> on both machines</td>
+<td><code>DIFFERENT</code> = not the same code: paste the same kit on both (line endings alone can differ if one copy came through git)</td>
+</tr>
+<tr>
+<td><code>summary.txt</code></td>
+<td>The four results in words</td>
+<td>–</td>
+</tr>
+</tbody>
+</table></div>
+<p>Spot-check two or three overlap rows against the real batch files on A and B before acting on them.</p>
+<h3 id="26-moving-a-batch-to-the-other-machine-on-purpose-takeover">2.6 Moving a batch to the other machine on purpose (takeover)</h3>
+<p>Only when machine X is down for good or you consciously rebalance. The other machine (Y) must not be running that batch.</p>
+<ol>
+<li>
+<p>On X (or from its backup): copy the three files of the batch into Y's <code>BatchDir</code>:</p>
+<p><code>powershell
+$src = '&lt;X BatchDir&gt;'; $dst = '&lt;Y BatchDir&gt;'; $id = 'BATCH-&lt;run&gt;-&lt;tag&gt;-01'
+Copy-Item -LiteralPath "$src\$id.csv", "$src\${id}_results.csv", "$src\${id}_inprogress.flag" -Destination $dst   # the last two exist only if the batch was started</code></p>
+</li>
+<li>
+<p>On Y: <strong>11 - Batch Manager</strong>, then <code>RECOVER &lt;id&gt;</code> to see the real state.</p>
+</li>
+<li>Set <code>PartitionOverride=1</code> in Y's <code>bulkreg.ini</code> for this one run, run <strong>03</strong>, then set it back to <code>0</code>.</li>
+<li>Initial passwords for the users registered by this run are in <strong>Y's</strong> <code>PasswordDir</code>; passwords from the earlier part of the batch are still on X. Do not copy password files; hand them over from where they are.</li>
+</ol>
+<h3 id="27-what-may-be-sent-to-someone-else-for-analysis">2.7 What may be sent to someone else for analysis</h3>
+<p>Allowed (after your data owner agrees): the <strong>default</strong> packs, <code>compare_*\</code> reports, <code>summary.txt</code>. <strong>Not allowed</strong>: <code>-Full</code> packs, <code>*_audit.csv</code>, debug logs, anything from <code>secure\</code> or <code>ids\</code>, screenshots showing user names. Remove or mask names and addresses if a file contains them.</p>
+<h2 id="3-freeze-and-back-up-before-upgrading">3. Freeze and back up (before upgrading)</h2>
+<p>On <strong>each</strong> machine:</p>
+<ol>
+<li>Run <strong>11 - Batch Manager</strong> (leave the action empty). Keep the <code>BATCHSTATUS_&lt;run&gt;.csv</code> it writes. Note every batch that is <code>OPEN</code>, <code>STOPPED</code> or <code>DONE_INCOMPLETE</code>.</li>
+<li>Finish a running batch cleanly (create <code>&lt;BatchDir&gt;\STOP.txt</code>, wait for the current chunk). Delete <code>STOP.txt</code> after the upgrade.</li>
+<li>
+<p>Back up the whole install folder:</p>
+<p><code>powershell
+$stamp = Get-Date -Format 'yyyyMMdd-HHmm'
+robocopy 'C:\BulkReg' "D:\backup\BulkReg-$stamp" /E /COPY:DAT /R:1 /W:1 /XD 'C:\BulkReg\evidence'
+Copy-Item '&lt;path&gt;\bulkreg.nsf' "D:\backup\bulkreg-$stamp.nsf"       # the local database</code></p>
+<p>The backup contains <code>secure\</code> and <code>ids\</code>: put it on a <strong>locally encrypted</strong> disk and restrict access; do not move it off the machine.
+4. Run <strong>02 - Build Batch</strong> or <strong>03</strong> on only <strong>one machine at a time</strong> until section 6 is finished. The old setup has no protection against two machines registering the same user.
+5. Collect the evidence pack of each machine (section 2.4) <strong>before</strong> upgrading, so the state of the old version is on record.</p>
+</li>
+</ol>
+<h2 id="4-upgrade-both-machines">4. Upgrade (both machines)</h2>
+<p>Follow <a href="BulkReg_Deploy_4.5.0.html"><code>DEPLOY-4.5.0.md</code></a> and section 2.2 and 2.3. Leave <strong><code>PartitionCount=1</code></strong> (partitioning off) while you work through sections 5, 7, 8 and 9 (clean-up of what the old version left), and only then continue with section 6. If you are older than 4.4.0, do <code>DEPLOY-4.4.0.md</code> first (agents 08 to 11 must exist).</p>
+<h2 id="5-baseline-find-out-where-things-really-stand">5. Baseline: find out where things really stand</h2>
+<ol>
+<li><strong>01 - Preflight Check</strong> on one machine: no errors on config, servers, vault, log database.</li>
+<li><strong>09 - Reconcile</strong> on one machine. Read <code>RECON_&lt;run&gt;_summary.txt</code>, then <code>_gaps.csv</code>, <code>_duplicates.csv</code>, <code>_duplicate_ids.csv</code>, <code>_missing_mail.csv</code>.</li>
+<li>On <strong>each</strong> machine run <strong>11 - Batch Manager</strong>, then <code>RECOVER &lt;id&gt;</code> for every batch that is not <code>DONE_COMPLETE</code>.</li>
+<li><strong>Overlap check (the main risk of the old setup):</strong> run the compare script (section 2.5) on the two packs and read <code>1_overlap.csv</code>. Every row goes to section 7.</li>
+<li><strong>Passwords and ID files:</strong> for any user flagged <code>REGISTERED_NO_RESULT</code> or <code>IDFILE_MULTIPLE</code>, look in <code>secure\</code> and <code>ids\</code> on <strong>both</strong> machines (listings in <code>inventory\</code>) before deciding.</li>
+</ol>
+<h2 id="6-switch-on-partitioning-and-pilot">6. Switch on partitioning and pilot</h2>
+<p>Prerequisite: <code>2_partition_preview.csv</code> shows no <code>REFUSED</code> row, and no <code>OPEN</code> or <code>STOPPED</code> batch remains on either machine (section 8 finishes them).</p>
+<ol>
+<li>
+<p>Set in <code>bulkreg.ini</code> on both machines:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Machine A</th>
+<th>Machine B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PartitionCount</code></td>
+<td><code>2</code></td>
+<td><code>2</code></td>
+</tr>
+<tr>
+<td><code>PartitionIndex</code></td>
+<td><code>1</code></td>
+<td><code>2</code></td>
+</tr>
+<tr>
+<td><code>MachineId</code></td>
+<td><code>A</code></td>
+<td><code>B</code></td>
+</tr>
+<tr>
+<td><code>PartitionOverride</code></td>
+<td><code>0</code></td>
+<td><code>0</code></td>
+</tr>
+</tbody>
+</table></div>
+</li>
+<li>
+<p><strong>01 - Preflight</strong> on both. In <code>_batchplan.txt</code>: <em>other machine's partition (excluded)</em> is about half the candidates and the two machines' <em>Users to register</em> add up to the total. The log shows <code>Several machines: partition 1 of 2, machine A</code> and the capacity WARN.</p>
+</li>
+<li>Pilot on both machines at the same time: <code>BatchSize=2</code>, <code>DryRun=1</code> → <strong>02</strong> → open <code>BATCH-&lt;run&gt;-A-01.csv</code> and <code>BATCH-&lt;run&gt;-B-01.csv</code>: <strong>no UNID may appear in both</strong>. Then <strong>03</strong> dry run (<code>WOULD_REGISTER</code>), <code>DryRun=0</code>, <strong>03</strong> live on each, <strong>04 Verify</strong>, <strong>08</strong> dry run (nothing to repair).</li>
+<li>Negative test: copy A's batch file to B and start 03 on B. It must stop with <em>contains N user(s) of another machine's partition</em> and register nothing. Delete the copy afterwards.</li>
+<li>Duplicate-guard check from <code>DEPLOY-4.4.0.md</code> step 4 (a known ID file name in <code>IDFileDir</code>, or a user with a known vault ID): 03 must skip exactly that user.</li>
+<li>Only then raise <code>BatchSize</code> (e.g. 1000).</li>
+</ol>
+<h2 id="7-duplicates">7. Duplicates</h2>
+<p><strong>Detect:</strong> 01/02 flag <code>ERROR:DUPLICATE_*</code>, 03 skips (<code>SKIPPED_DUPLICATE</code>). Reports of 09:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Meaning</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_duplicates.csv</code></td>
+<td>Several Person documents share an Internet address, short name, objectGUID, common name or mail file (<code>mail:</code> key); rows KEEP / DO_NOT_REGISTER / REVIEW.</td>
+<td>Review with the business owner. <strong>BulkReg deletes nothing</strong>: remove the unwanted identity via the Administration Process after review.</td>
+</tr>
+<tr>
+<td><code>_duplicate_ids.csv</code> <code>IDFILE_MULTIPLE</code></td>
+<td>More than one ID file for a user. <strong>Only the ID files of the machine you ran 09 on are seen</strong>; run 09 on A and on B and compare the <code>ids_listing.csv</code> of both packs.</td>
+<td>Keep the ID that is in the vault / was handed out, archive the others manually.</td>
+</tr>
+<tr>
+<td><code>IDFILE_UNREGISTERED</code></td>
+<td>ID file exists, the Person has no certificate (an earlier attempt).</td>
+<td>Check the registration log and the vault <strong>before</strong> registering again. 03 skips the user.</td>
+</tr>
+<tr>
+<td><code>VAULT_UNREGISTERED</code> (<code>ReconcileCheckVault=1</code>)</td>
+<td>ID in the vault, Person has no certificate.</td>
+<td><strong>Do not register again.</strong> The vault admin locates the ID; repair the Person document.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Rows of <code>1_overlap.csv</code>: <code>REGISTERED_ON_A</code> / <code>_ON_B</code>: remove the user from the other machine's open batch (set <code>Include=N</code> or rebuild); <code>OPEN_ON_BOTH</code>: keep the user in one machine's batch only; <code>REGISTERED_ON_BOTH</code>: treat as a duplicate candidate.</p>
+<p><strong>Verify the fix:</strong> re-run 09; the group is gone; 02 no longer shows <code>ERROR:DUPLICATE_*</code> for the user.</p>
+<h2 id="8-aborted-stopped-or-hung-batch">8. Aborted, stopped or hung batch</h2>
+<ol>
+<li><strong>11 - Batch Manager</strong> on the machine that <strong>built</strong> the batch (it only lists its own batch files). States: <code>OPEN</code>, <code>STOPPED</code>, <code>DONE_INCOMPLETE</code>, <code>DONE_COMPLETE</code>.</li>
+<li><code>RECOVER &lt;id&gt;</code> (read-only) → <code>RECOVER_&lt;id&gt;_&lt;run&gt;.csv</code>:</li>
+</ol>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>State</th>
+<th>Next step</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>NOT_REGISTERED</code></td>
+<td><strong>03</strong> again on the owning machine (resumes; registered users are skipped), or <code>REMAINDER &lt;id&gt;</code>.</td>
+</tr>
+<tr>
+<td><code>REGISTERED_NO_RESULT</code></td>
+<td>The run died after <code>RegisterNewUser</code>. The initial password is in <code>BulkReg_InitialPasswords_&lt;id&gt;_*.csv</code> in <code>PasswordDir</code> <strong>of the owning machine</strong>; then 08 and 04 for this user.</td>
+</tr>
+<tr>
+<td><code>NO_MAIL</code></td>
+<td>Section 9.</td>
+</tr>
+<tr>
+<td><code>NOT_IN_VAULT</code></td>
+<td>Vault/policy action. <strong>Never run 03</strong> for this user.</td>
+</tr>
+<tr>
+<td><code>DUPLICATE</code></td>
+<td>Section 7.</td>
+</tr>
+<tr>
+<td><code>GONE</code></td>
+<td>Person document deleted: nothing to do.</td>
+</tr>
+<tr>
+<td><code>OK</code></td>
+<td>None.</td>
+</tr>
+</tbody>
+</table></div>
+<ol start="3">
+<li><strong>Resume rules with two machines:</strong> resume a batch only on the machine that owns it. The <code>StaleRunMinutes</code> check (flag younger than 30 minutes) sees only the local flag file, so confirm with the other operator that nobody is running it. Other 11 actions (each needs <code>YES</code>): <code>RESUME &lt;id&gt;</code> (re-open a <code>DONE_INCOMPLETE</code> batch), <code>REMAINDER &lt;id&gt;</code> (writes <code>BATCH-&lt;id&gt;-R1.csv</code>, review, then 03), <code>CLOSE &lt;id&gt;</code>.</li>
+<li><code>bulkreg Stop</code> creates <code>STOP.txt</code> in <strong>that machine's</strong> <code>BatchDir</code>. Create it on every machine that is running.</li>
+<li><strong>Taking over a dead machine's batch:</strong> section 2.6.</li>
+<li>Finish with <strong>04 Verify</strong>, then <strong>09</strong>.</li>
+</ol>
+<h2 id="9-registered-but-no-mail-file">9. Registered, but no mail file</h2>
+<p>Causes: <code>MailFileDeferred=1</code> (by design), an aborted run, a server or path error.</p>
+<ol>
+<li><strong>09 - Reconcile</strong> → <code>RECON_&lt;run&gt;_missing_mail.csv</code>: <code>REGISTERED_MAIL_MISSING</code>, <code>REGISTERED_MAIL_INCOMPLETE</code>, <code>REGISTERED_NO_MAILFILE_ITEM</code> (the last needs MailServer/MailFile set in the Person document first).</li>
+<li><code>MailTemplate</code> must be set in <code>bulkreg.ini</code> on every machine that runs 08.</li>
+<li><strong>08 - Repair Missing Mail Files</strong>, <code>DryRun=1</code>, scope empty (all) or the same <code>RECON_&lt;run&gt;_gaps.csv</code>. With partitioning on, run it on <strong>both machines</strong>: each repairs only its own users, so they never collide. Read <code>&lt;scope&gt;_mailrepair_DRYRUN_&lt;run&gt;.csv</code> (<code>WOULD_CREATE</code>) on each.</li>
+<li><code>DryRun=0</code>, run 08 live, type <code>REPAIR</code>. Results <code>MAIL_CREATED</code> or <code>CREATED_PENDING</code> (replicas still being created by AdminP).</li>
+<li><strong>04 Verify</strong> (repeat until replicas are OK), then <strong>09</strong>: <code>missing_mail.csv</code> must be empty. A user in the partition of a machine that is down stays unrepaired until that machine runs 08 or you use <code>PartitionOverride=1</code>.</li>
+</ol>
+<p>08 never overwrites an existing mail file and never touches one that holds documents.</p>
+<h2 id="10-routine-in-production-both-machines-in-parallel">10. Routine in production (both machines in parallel)</h2>
+<p>Each machine, on its own batches: <code>02</code> → review → <code>03</code> dry run → <code>DryRun=0</code> → <code>03</code> live → <code>04</code> → <code>08</code> (dry run, then live) when <code>MailFileDeferred=1</code> → set <code>DryRun=1</code>. Then, from either machine: <strong>09</strong> and check <code>_gaps.csv</code>, <code>_duplicates.csv</code>, <code>_duplicate_ids.csv</code> are empty. Hand over passwords from <strong>each</strong> machine's <code>secure\</code> folder and delete them there.</p>
+<h2 id="11-housekeeping-and-escalation">11. Housekeeping and escalation</h2>
+<ul>
+<li><strong>10 - Audit Log Maintenance</strong> with <code>DryRun=1</code> first. <strong>Agree <code>LogEntryRetentionDays</code>, <code>LogAuditRetentionDays</code> and <code>AuditFolderRetentionDays</code> with the audit/compliance owner before the first live run</strong> (purge is destructive). Run it per machine for <code>AuditDir</code>, once for the shared log database.</li>
+<li>Keep <code>LogDbLevel=WARN</code> and <code>LogDbAudit=CHANGES</code>.</li>
+<li>Log documents carry a <code>Machine</code> item (A, B, ...), so the shared log database shows which machine did what.</li>
+<li><strong>Suspected security incident</strong>, unexpected certificates/IDs, a password or ID file that left its folder, or vault inconsistencies across many users: stop all runs on all machines (<code>STOP.txt</code> on each) and escalate to the Domino/security owner instead of re-running registrations.</li>
+</ul>
+<h2 id="12-rollback">12. Rollback</h2>
+<p><code>PartitionCount=1</code> on all machines returns to the 4.4.0 behaviour (and the original "one machine at a time" rule). To go back to the 4.4.0 libraries, paste them from git. Users already registered stay registered.</p>
+<h2 id="appendix-helper-scripts">Appendix: helper scripts</h2>
+<p>Both are read-only and live in <code>&lt;KIT&gt;\scripts\windows\</code>. Not run by the author: read them and test on a copy first.</p>
+<details class="script"><summary>scripts/windows/BulkReg_CollectEvidence.ps1<span>228 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&lt;#
+=====================================================================
+ BulkReg_CollectEvidence.ps1 - BulkReg 4.5.0 - READ-ONLY evidence pack of ONE machine
+ Run it once on EACH machine that ever ran BulkReg (normal, non-elevated PowerShell).
+
+ It never changes BulkReg, Domino or any BulkReg file. It only reads, and writes a new pack folder.
+
+ Default pack (least data, safe to move between the machines):
+   machine_info.txt          computer, user, date, PowerShell version, ini excerpt
+   inventory\                file listings (name, size, date) of batches, audit, reconcile, secure, ids.
+                             secure and ids: names, sizes, dates and SHA256 ONLY - the files are never copied or opened for any other purpose.
+   config\                   bulkreg.ini and server_mapping.csv (no secrets by design)
+   redacted\batch_rows.csv   one row per batch row: Machine, BatchFile, Include, UNID, NoteID, HomeServer, Check (NO names, NO e-mail)
+   redacted\results_rows.csv one row per registration result: Machine, BatchFile, Timestamp, Action, Result, NoteID, UNID, HomeServer
+   inventory\kit_hashes.csv  SHA256 of the .lss files (only with -KitDir)
+ With -Full the pack also gets COPIES of: batch files, results, flags, RECOVER/BATCHSTATUS/mailrepair reports, RECON_* reports,
+ RUN_INFO.txt of every audit run. These contain user names and e-mail addresses (personal data): keep them in an approved,
+ access-restricted location; do not send them to external tools.
+ With -IncludeAudit (needs -Full) the *_audit.csv of every run is copied as well (large, personal data).
+
+ Usage examples:
+   .\BulkReg_CollectEvidence.ps1 -Machine A -KitDir C:\BulkReg\kit\lotusscript
+   .\BulkReg_CollectEvidence.ps1 -Machine B -Base D:\BulkReg -Out D:\evidence -Full
+
+ NOT run against a real BulkReg folder by the author (no PowerShell was available when it was written): run it first
+ on a copy or read it through, then check the pack it writes.
+=====================================================================
+#&gt;
+[CmdletBinding()]
+param(
+    [string]$Base = &#x27;C:\BulkReg&#x27;,
+    [string]$Config,                       # default &lt;Base&gt;\config\bulkreg.ini
+    [string]$Out,                          # default &lt;Base&gt;\evidence
+    [string]$Machine = $env:COMPUTERNAME,  # label of this machine inside the pack (letters/digits)
+    [string]$KitDir,                       # folder with BulkRegCommon.lss / BulkRegAgents.lss (optional, for hashes)
+    [switch]$Full,
+    [switch]$IncludeAudit
+)
+Set-StrictMode -Version 2
+$ErrorActionPreference = &#x27;Stop&#x27;
+
+function Get-IniMap([string]$Path) {
+    $m = @{}
+    if (-not (Test-Path -LiteralPath $Path)) { return $m }
+    foreach ($line in (Get-Content -LiteralPath $Path -Encoding UTF8)) {
+        $t = $line.Trim().TrimStart([char]0xFEFF)
+        if ($t.Length -eq 0 -or $t.StartsWith(&#x27;#&#x27;) -or $t.StartsWith(&#x27;;&#x27;) -or $t.StartsWith(&#x27;[&#x27;)) { continue }
+        $p = $t.IndexOf(&#x27;=&#x27;)
+        if ($p -lt 1) { continue }
+        $m[$t.Substring(0, $p).Trim().ToLower()] = $t.Substring($p + 1).Trim()
+    }
+    return $m
+}
+function Get-IniDir($Map, [string]$Key, [string]$Default) {
+    if ($Map.ContainsKey($Key.ToLower()) -and $Map[$Key.ToLower()] -ne &#x27;&#x27;) { return $Map[$Key.ToLower()] }
+    return $Default
+}
+function Get-Prop($Obj, [string]$Name) {
+    $p = $Obj.PSObject.Properties[$Name]
+    if ($p -and $null -ne $p.Value) { return [string]$p.Value }
+    return &#x27;&#x27;
+}
+# BulkReg files may be saved by Excel with &#x27;;&#x27; - detect the delimiter from the header line
+function Import-BulkCsv([string]$Path) {
+    $first = Get-Content -LiteralPath $Path -TotalCount 1 -Encoding UTF8
+    if ($null -eq $first) { return @() }
+    $first = ([string]$first).TrimStart([char]0xFEFF)
+    $d = &#x27;,&#x27;
+    if ($first.Split(&#x27;;&#x27;).Count -gt $first.Split(&#x27;,&#x27;).Count) { $d = &#x27;;&#x27; }
+    return @(Import-Csv -LiteralPath $Path -Delimiter $d -Encoding UTF8)
+}
+function Save-Listing([string]$Dir, [string]$File, [switch]$Hash, [switch]$Recurse) {
+    if (-not (Test-Path -LiteralPath $Dir)) {
+        [pscustomobject]@{ Name = &quot;(folder missing: $Dir)&quot;; Length = &#x27;&#x27;; LastWriteUtc = &#x27;&#x27;; Sha256 = &#x27;&#x27; } | Export-Csv -LiteralPath $File -NoTypeInformation -Encoding UTF8
+        return
+    }
+    $root = (Resolve-Path -LiteralPath $Dir).Path.TrimEnd(&#x27;\&#x27;)
+    $files = @(Get-ChildItem -LiteralPath $Dir -File -Recurse:$Recurse)
+    $rows = @(foreach ($fi in $files) {
+            $h = &#x27;&#x27;
+            if ($Hash) { $h = (Get-FileHash -LiteralPath $fi.FullName -Algorithm SHA256).Hash }
+            [pscustomobject]@{
+                Name         = $fi.FullName.Substring($root.Length).TrimStart(&#x27;\&#x27;)
+                Length       = $fi.Length
+                LastWriteUtc = $fi.LastWriteTimeUtc.ToString(&#x27;yyyy-MM-dd HH:mm:ss&#x27;)
+                Sha256       = $h
+            }
+        })
+    if ($rows.Count -eq 0) { $rows = @([pscustomobject]@{ Name = &#x27;(empty)&#x27;; Length = &#x27;&#x27;; LastWriteUtc = &#x27;&#x27;; Sha256 = &#x27;&#x27; }) }
+    $rows | Export-Csv -LiteralPath $File -NoTypeInformation -Encoding UTF8
+}
+
+# ---------- folders from bulkreg.ini (same defaults as the agents: &lt;BaseDir&gt;\&lt;name&gt;) ----------
+if (-not $Config) { $Config = Join-Path $Base &#x27;config\bulkreg.ini&#x27; }
+if (-not (Test-Path -LiteralPath $Config)) { throw &quot;bulkreg.ini not found: $Config  (use -Config &lt;path&gt;)&quot; }
+$ini = Get-IniMap $Config
+$baseDir = (Get-IniDir $ini &#x27;BaseDir&#x27; ($Base.TrimEnd(&#x27;\&#x27;) + &#x27;\&#x27;)).TrimEnd(&#x27;\&#x27;)
+$dirBatch = (Get-IniDir $ini &#x27;BatchDir&#x27; (Join-Path $baseDir &#x27;batches&#x27;)).TrimEnd(&#x27;\&#x27;)
+$dirAudit = (Get-IniDir $ini &#x27;AuditDir&#x27; (Join-Path $baseDir &#x27;audit&#x27;)).TrimEnd(&#x27;\&#x27;)
+$dirSecure = (Get-IniDir $ini &#x27;PasswordDir&#x27; (Join-Path $baseDir &#x27;secure&#x27;)).TrimEnd(&#x27;\&#x27;)
+$dirIds = (Get-IniDir $ini &#x27;IDFileDir&#x27; (Join-Path $baseDir &#x27;ids&#x27;)).TrimEnd(&#x27;\&#x27;)
+$dirRecon = (Get-IniDir $ini &#x27;ReconcileDir&#x27; (Join-Path $baseDir &#x27;reconcile&#x27;)).TrimEnd(&#x27;\&#x27;)
+$mapFile = Get-IniDir $ini &#x27;MappingFile&#x27; (Join-Path $baseDir &#x27;config\server_mapping.csv&#x27;)
+
+$Machine = ($Machine -replace &#x27;[^A-Za-z0-9]&#x27;, &#x27;&#x27;)
+if ($Machine -eq &#x27;&#x27;) { throw &#x27;Machine label must contain letters or digits.&#x27; }
+if (-not $Out) { $Out = Join-Path $baseDir &#x27;evidence&#x27; }
+$stamp = Get-Date -Format &#x27;yyyyMMdd-HHmmss&#x27;
+$pack = Join-Path $Out (&quot;{0}_{1}&quot; -f $Machine, $stamp)
+
+# the pack must never be written inside the secure or ids folder
+foreach ($forbidden in @($dirSecure, $dirIds)) {
+    $o = [IO.Path]::GetFullPath($Out).TrimEnd(&#x27;\&#x27;) + &#x27;\&#x27;
+    $f = [IO.Path]::GetFullPath($forbidden).TrimEnd(&#x27;\&#x27;) + &#x27;\&#x27;
+    if ($o.StartsWith($f, [StringComparison]::OrdinalIgnoreCase)) { throw &quot;Refusing to write the pack inside $forbidden - choose another -Out.&quot; }
+}
+New-Item -ItemType Directory -Path (Join-Path $pack &#x27;inventory&#x27;), (Join-Path $pack &#x27;config&#x27;), (Join-Path $pack &#x27;redacted&#x27;) -Force | Out-Null
+Write-Host &quot;Pack folder: $pack&quot;
+
+# ---------- machine_info.txt ----------
+$info = @()
+$info += &quot;BulkReg evidence pack (read-only collection)&quot;
+$info += &quot;Machine label   : $Machine&quot;
+$info += &quot;Computer name   : $env:COMPUTERNAME&quot;
+$info += &quot;Windows user    : $env:USERDOMAIN\$env:USERNAME&quot;
+$info += &quot;Collected (local): $(Get-Date -Format &#x27;yyyy-MM-dd HH:mm:ss&#x27;)   (UTC $((Get-Date).ToUniversalTime().ToString(&#x27;yyyy-MM-dd HH:mm:ss&#x27;)))&quot;
+$info += &quot;PowerShell       : $($PSVersionTable.PSVersion)&quot;
+$info += &quot;Mode            : $(if ($Full) { &#x27;FULL (copies of batch/report files)&#x27; } else { &#x27;DEFAULT (listings + redacted rows only)&#x27; })&quot;
+$info += &quot;Config file     : $Config&quot;
+$info += &quot;BatchDir        : $dirBatch&quot;
+$info += &quot;AuditDir        : $dirAudit&quot;
+$info += &quot;PasswordDir     : $dirSecure   (names/sizes/hashes only, never copied)&quot;
+$info += &quot;IDFileDir       : $dirIds   (names/sizes/hashes only, never copied)&quot;
+$info += &quot;ReconcileDir    : $dirRecon&quot;
+$info += &quot;Notes client version: (write it in by hand: Help &gt; About Notes)&quot;
+$info += &quot;&quot;
+$info += &quot;ini excerpt (no secrets are kept in bulkreg.ini by design):&quot;
+foreach ($k in &#x27;PartitionCount&#x27;, &#x27;PartitionIndex&#x27;, &#x27;MachineId&#x27;, &#x27;PartitionOverride&#x27;, &#x27;DryRun&#x27;, &#x27;BatchSize&#x27;, &#x27;RegistrationServer&#x27;, &#x27;DirectoryServer&#x27;, &#x27;CertifierName&#x27;, &#x27;HomeServers&#x27;, &#x27;HomeServerMaxUsers&#x27;, &#x27;HomeServerAssignment&#x27;, &#x27;MailFileDeferred&#x27;, &#x27;MailFolderMax&#x27;, &#x27;VaultServer&#x27;, &#x27;LogServer&#x27;, &#x27;LogDb&#x27;, &#x27;DuplicateGuard&#x27;) {
+    $v = &#x27;(not set)&#x27;
+    if ($ini.ContainsKey($k.ToLower())) { $v = $ini[$k.ToLower()] }
+    $info += (&quot;  {0,-22}= {1}&quot; -f $k, $v)
+}
+$info | Set-Content -LiteralPath (Join-Path $pack &#x27;machine_info.txt&#x27;) -Encoding UTF8
+
+# ---------- inventory (no content copied) ----------
+Save-Listing $dirBatch (Join-Path $pack &#x27;inventory\batches_listing.csv&#x27;)
+Save-Listing $dirRecon (Join-Path $pack &#x27;inventory\reconcile_listing.csv&#x27;)
+Save-Listing $dirAudit (Join-Path $pack &#x27;inventory\audit_listing.csv&#x27;) -Recurse
+Save-Listing $dirSecure (Join-Path $pack &#x27;inventory\secure_listing.csv&#x27;) -Hash
+Save-Listing $dirIds (Join-Path $pack &#x27;inventory\ids_listing.csv&#x27;) -Hash
+if ($KitDir) {
+    if (-not (Test-Path -LiteralPath $KitDir)) { throw &quot;KitDir not found: $KitDir&quot; }
+    @(Get-ChildItem -LiteralPath $KitDir -Filter &#x27;*.lss&#x27; -File | Sort-Object Name | ForEach-Object {
+            [pscustomobject]@{ Name = $_.Name; Length = $_.Length; Sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+        }) | Export-Csv -LiteralPath (Join-Path $pack &#x27;inventory\kit_hashes.csv&#x27;) -NoTypeInformation -Encoding UTF8
+}
+
+# ---------- config ----------
+Copy-Item -LiteralPath $Config -Destination (Join-Path $pack &#x27;config\bulkreg.ini&#x27;)
+if (Test-Path -LiteralPath $mapFile) { Copy-Item -LiteralPath $mapFile -Destination (Join-Path $pack &#x27;config\server_mapping.csv&#x27;) }
+
+# ---------- redacted rows: batch files (the batch itself has no &#x27;_&#x27; in its name) ----------
+$batchRows = New-Object System.Collections.ArrayList
+if (Test-Path -LiteralPath $dirBatch) {
+    foreach ($bf in (Get-ChildItem -LiteralPath $dirBatch -Filter &#x27;BATCH-*.csv&#x27; -File | Where-Object { $_.Name -notmatch &#x27;_&#x27; } | Sort-Object Name)) {
+        foreach ($r in (Import-BulkCsv $bf.FullName)) {
+            [void]$batchRows.Add([pscustomobject]@{
+                    Machine = $Machine; BatchFile = $bf.BaseName; Include = (Get-Prop $r &#x27;Include&#x27;)
+                    UNID = (Get-Prop $r &#x27;UNID&#x27;); NoteID = (Get-Prop $r &#x27;NoteID&#x27;); HomeServer = (Get-Prop $r &#x27;HomeServer&#x27;); Check = (Get-Prop $r &#x27;Check&#x27;)
+                })
+        }
+    }
+}
+if ($batchRows.Count -eq 0) { [void]$batchRows.Add([pscustomobject]@{ Machine = $Machine; BatchFile = &#x27;(none)&#x27;; Include = &#x27;&#x27;; UNID = &#x27;&#x27;; NoteID = &#x27;&#x27;; HomeServer = &#x27;&#x27;; Check = &#x27;&#x27; }) }
+$batchRows | Export-Csv -LiteralPath (Join-Path $pack &#x27;redacted\batch_rows.csv&#x27;) -NoTypeInformation -Encoding UTF8
+
+# ---------- redacted rows: live results (&lt;batch&gt;_results.csv; dry runs are NOT results) ----------
+$resRows = New-Object System.Collections.ArrayList
+if (Test-Path -LiteralPath $dirBatch) {
+    foreach ($rf in (Get-ChildItem -LiteralPath $dirBatch -Filter &#x27;BATCH-*_results.csv&#x27; -File | Sort-Object Name)) {
+        $bid = $rf.BaseName -replace &#x27;_results$&#x27;, &#x27;&#x27;
+        foreach ($r in (Import-BulkCsv $rf.FullName)) {
+            [void]$resRows.Add([pscustomobject]@{
+                    Machine = $Machine; BatchFile = $bid; Timestamp = (Get-Prop $r &#x27;Timestamp&#x27;); Action = (Get-Prop $r &#x27;Action&#x27;)
+                    Result = (Get-Prop $r &#x27;Result&#x27;); NoteID = (Get-Prop $r &#x27;NoteID&#x27;); UNID = (Get-Prop $r &#x27;UNID&#x27;); HomeServer = (Get-Prop $r &#x27;HomeServer&#x27;)
+                })
+        }
+    }
+}
+if ($resRows.Count -eq 0) { [void]$resRows.Add([pscustomobject]@{ Machine = $Machine; BatchFile = &#x27;(none)&#x27;; Timestamp = &#x27;&#x27;; Action = &#x27;&#x27;; Result = &#x27;&#x27;; NoteID = &#x27;&#x27;; UNID = &#x27;&#x27;; HomeServer = &#x27;&#x27; }) }
+$resRows | Export-Csv -LiteralPath (Join-Path $pack &#x27;redacted\results_rows.csv&#x27;) -NoTypeInformation -Encoding UTF8
+
+# ---------- optional: copies (personal data) ----------
+if ($Full) {
+    $dBatch = Join-Path $pack &#x27;batches&#x27;; $dRecon = Join-Path $pack &#x27;reconcile&#x27;; $dAudit = Join-Path $pack &#x27;audit&#x27;
+    New-Item -ItemType Directory -Path $dBatch, $dRecon, $dAudit -Force | Out-Null
+    if (Test-Path -LiteralPath $dirBatch) {
+        foreach ($pat in &#x27;BATCH-*&#x27;, &#x27;*_mailrepair_*&#x27;, &#x27;BATCHSTATUS_*&#x27;, &#x27;RECOVER_*&#x27;, &#x27;STOP.txt&#x27;) {
+            Get-ChildItem -LiteralPath $dirBatch -Filter $pat -File | Copy-Item -Destination $dBatch -Force
+        }
+    }
+    if (Test-Path -LiteralPath $dirRecon) { Get-ChildItem -LiteralPath $dirRecon -Filter &#x27;RECON_*&#x27; -File | Copy-Item -Destination $dRecon -Force }
+    if (Test-Path -LiteralPath $dirAudit) {
+        foreach ($rd in (Get-ChildItem -LiteralPath $dirAudit -Directory)) {
+            $t = Join-Path $dAudit $rd.Name
+            New-Item -ItemType Directory -Path $t -Force | Out-Null
+            Get-ChildItem -LiteralPath $rd.FullName -Filter &#x27;RUN_INFO.txt&#x27; -File | Copy-Item -Destination $t -Force
+            if ($IncludeAudit) { Get-ChildItem -LiteralPath $rd.FullName -Filter &#x27;*_audit.csv&#x27; -File | Copy-Item -Destination $t -Force }
+        }
+    }
+}
+
+# ---------- zip + hash ----------
+$zip = &quot;$pack.zip&quot;
+Compress-Archive -Path (Join-Path $pack &#x27;*&#x27;) -DestinationPath $zip -Force
+$zh = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+&quot;$zh  $(Split-Path $zip -Leaf)&quot; | Set-Content -LiteralPath &quot;$zip.sha256.txt&quot; -Encoding ASCII
+
+Write-Host &#x27;&#x27;
+Write-Host &quot;Batch rows (redacted): $($batchRows.Count)   Result rows (redacted): $($resRows.Count)&quot; -ForegroundColor Green
+Write-Host &quot;Pack folder : $pack&quot;
+Write-Host &quot;Pack zip    : $zip&quot;
+Write-Host &quot;SHA256      : $zh   (also in $zip.sha256.txt)&quot;
+Write-Host &#x27;&#x27;
+if ($Full) { Write-Host &#x27;FULL pack: contains names and e-mail addresses. Store only in an approved, access-restricted location.&#x27; -ForegroundColor Yellow }
+else { Write-Host &#x27;Default pack: no names, no e-mail addresses, no passwords, no ID files. UNID/NoteID are internal Domino identifiers.&#x27; -ForegroundColor Yellow }
+Write-Host &#x27;secure\ and ids\ were NOT copied (listing + SHA256 only).&#x27;
+</code></pre></div></details>
+
+<details class="script"><summary>scripts/windows/BulkReg_CompareMachines.ps1<span>215 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&lt;#
+=====================================================================
+ BulkReg_CompareMachines.ps1 - BulkReg 4.5.0 - compare the evidence packs of two machines (READ-ONLY)
+
+ Input : the two pack folders written by BulkReg_CollectEvidence.ps1 (unzip them first). Only the REDACTED files
+         (redacted\batch_rows.csv, redacted\results_rows.csv), config\bulkreg.ini and inventory\kit_hashes.csv are read:
+         no names, no e-mail addresses, no passwords.
+ Output: a report folder with
+   1_overlap.csv          users that are in a batch of BOTH machines, and who registered them
+   2_partition_preview.csv what 4.5.0 would do with the still-unregistered rows once partitioning is on (REFUSED = 03 would stop)
+   3_config_compare.csv   the settings that must be equal / different on the two machines
+   4_kit_compare.csv      the .lss files of both machines (same SHA256 = same code)
+   summary.txt            the same in words
+ It changes nothing in Domino and nothing in the packs.
+
+ Usage:
+   .\BulkReg_CompareMachines.ps1 -PackA C:\evidence\A_20261021-101500 -PackB C:\evidence\B_20261021-101700
+   .\BulkReg_CompareMachines.ps1 -PackA ... -PackB ... -PartitionCount 2 -IndexA 1 -IndexB 2 -Out C:\evidence\compare
+
+ NOT run by the author (no PowerShell was available when it was written): run it on the two packs and spot-check
+ a few overlap rows against the batch files before you rely on the result.
+=====================================================================
+#&gt;
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$PackA,
+    [Parameter(Mandatory = $true)][string]$PackB,
+    [string]$Out,                      # default: &lt;PackA parent&gt;\compare_&lt;time&gt;
+    [int]$PartitionCount = 2,          # the PartitionCount you are going to use (same on every machine)
+    [int]$IndexA = 1,                  # PartitionIndex machine A will get
+    [int]$IndexB = 2                   # PartitionIndex machine B will get
+)
+Set-StrictMode -Version 2
+$ErrorActionPreference = &#x27;Stop&#x27;
+
+function Get-Prop($Obj, [string]$Name) {
+    $p = $Obj.PSObject.Properties[$Name]
+    if ($p -and $null -ne $p.Value) { return [string]$p.Value }
+    return &#x27;&#x27;
+}
+function Import-PackCsv([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { throw &quot;Missing file: $Path (is this a BulkReg_CollectEvidence pack?)&quot; }
+    return @(Import-Csv -LiteralPath $Path -Encoding UTF8)
+}
+function Get-IniMap([string]$Path) {
+    $m = @{}
+    if (-not (Test-Path -LiteralPath $Path)) { return $m }
+    foreach ($line in (Get-Content -LiteralPath $Path -Encoding UTF8)) {
+        $t = $line.Trim().TrimStart([char]0xFEFF)
+        if ($t.Length -eq 0 -or $t.StartsWith(&#x27;#&#x27;) -or $t.StartsWith(&#x27;;&#x27;) -or $t.StartsWith(&#x27;[&#x27;)) { continue }
+        $p = $t.IndexOf(&#x27;=&#x27;)
+        if ($p -lt 1) { continue }
+        $m[$t.Substring(0, $p).Trim().ToLower()] = $t.Substring($p + 1).Trim()
+    }
+    return $m
+}
+# Same rule as BR_PartitionOf in BulkRegCommon.lss: polynomial hash of the UPPER-CASE UNID, modulo 1000003, then modulo N
+function Get-PartitionOf([string]$Unid, [int]$N) {
+    if ($N -le 1) { return 1 }
+    [long]$h = 0
+    foreach ($c in $Unid.Trim().ToUpper().ToCharArray()) { $h = ($h * 31 + [int]$c) % 1000003 }
+    return [int]($h % $N) + 1
+}
+function Read-Pack([string]$Pack) {
+    $r = @{}
+    $r.Info = Get-Content -LiteralPath (Join-Path $Pack &#x27;machine_info.txt&#x27;) -Encoding UTF8 -TotalCount 2
+    $r.Batch = Import-PackCsv (Join-Path $Pack &#x27;redacted\batch_rows.csv&#x27;)
+    $r.Res = Import-PackCsv (Join-Path $Pack &#x27;redacted\results_rows.csv&#x27;)
+    $r.Ini = Get-IniMap (Join-Path $Pack &#x27;config\bulkreg.ini&#x27;)
+    $r.Kit = @()
+    $kf = Join-Path $Pack &#x27;inventory\kit_hashes.csv&#x27;
+    if (Test-Path -LiteralPath $kf) { $r.Kit = @(Import-Csv -LiteralPath $kf -Encoding UTF8) }
+    $r.Label = (Split-Path $Pack -Leaf)
+    # registered users (same test as BR_ResultsDoneIds: Action=REGISTER and Result starts with REGISTERED)
+    $reg = @{}
+    foreach ($x in $r.Res) {
+        if ($x.BatchFile -eq &#x27;(none)&#x27;) { continue }
+        if ((Get-Prop $x &#x27;Action&#x27;).ToUpper() -eq &#x27;REGISTER&#x27; -and (Get-Prop $x &#x27;Result&#x27;).ToUpper().StartsWith(&#x27;REGISTERED&#x27;)) {
+            $k = Get-Prop $x &#x27;UNID&#x27;
+            if ($k -eq &#x27;&#x27;) { $k = &#x27;N:&#x27; + (Get-Prop $x &#x27;NoteID&#x27;) }
+            $reg[$k] = $x.BatchFile
+        }
+    }
+    $r.Reg = $reg
+    # users in batches (Include=Y), key = UNID (NoteID for rows without UNID), with the batch files they are in
+    $inb = @{}
+    $unidOf = @{}
+    foreach ($x in $r.Batch) {
+        if ($x.BatchFile -eq &#x27;(none)&#x27;) { continue }
+        if ((Get-Prop $x &#x27;Include&#x27;).ToUpper() -ne &#x27;Y&#x27;) { continue }
+        $k = Get-Prop $x &#x27;UNID&#x27;
+        if ($k -eq &#x27;&#x27;) { $k = &#x27;N:&#x27; + (Get-Prop $x &#x27;NoteID&#x27;) }
+        if ($inb.ContainsKey($k)) { $inb[$k] = $inb[$k] + &#x27;;&#x27; + $x.BatchFile } else { $inb[$k] = $x.BatchFile }
+        $unidOf[$k] = (Get-Prop $x &#x27;UNID&#x27;)
+    }
+    $r.InBatch = $inb
+    $r.UnidOf = $unidOf
+    return $r
+}
+
+foreach ($p in $PackA, $PackB) { if (-not (Test-Path -LiteralPath $p)) { throw &quot;Pack folder not found: $p (unzip the pack first)&quot; } }
+if ($PartitionCount -lt 2 -or $PartitionCount -gt 20) { throw &#x27;PartitionCount must be 2 to 20 for a comparison.&#x27; }
+if ($IndexA -eq $IndexB -or $IndexA -lt 1 -or $IndexB -lt 1 -or $IndexA -gt $PartitionCount -or $IndexB -gt $PartitionCount) { throw &#x27;IndexA and IndexB must be different numbers between 1 and PartitionCount.&#x27; }
+if (-not $Out) { $Out = Join-Path (Split-Path (Resolve-Path -LiteralPath $PackA).Path -Parent) (&#x27;compare_&#x27; + (Get-Date -Format &#x27;yyyyMMdd-HHmmss&#x27;)) }
+New-Item -ItemType Directory -Path $Out -Force | Out-Null
+
+$A = Read-Pack $PackA
+$B = Read-Pack $PackB
+$sum = New-Object System.Collections.ArrayList
+[void]$sum.Add(&quot;BulkReg machine comparison  $(Get-Date -Format &#x27;yyyy-MM-dd HH:mm:ss&#x27;)&quot;)
+[void]$sum.Add(&quot;A = $($A.Label)   B = $($B.Label)&quot;)
+[void]$sum.Add(&quot;Users in batches (Include=Y)  A: $($A.InBatch.Count)   B: $($B.InBatch.Count)&quot;)
+[void]$sum.Add(&quot;Users registered per results  A: $($A.Reg.Count)   B: $($B.Reg.Count)&quot;)
+
+# ---------- 1. overlap ----------
+$ov = New-Object System.Collections.ArrayList
+foreach ($k in $A.InBatch.Keys) {
+    if (-not $B.InBatch.ContainsKey($k)) { continue }
+    $regA = $A.Reg.ContainsKey($k); $regB = $B.Reg.ContainsKey($k)
+    $what = &#x27;&#x27;
+    if ($regA -and $regB) { $what = &#x27;REGISTERED_ON_BOTH: both results files say REGISTERED. Check 09 duplicates / IDFILE_MULTIPLE for this user&#x27; }
+    elseif ($regA) { $what = &#x27;REGISTERED_ON_A: B must NOT register its row (03 would skip it as already registered, but remove it from B)&#x27; }
+    elseif ($regB) { $what = &#x27;REGISTERED_ON_B: A must NOT register its row (remove it from A)&#x27; }
+    else { $what = &#x27;OPEN_ON_BOTH: neither registered yet; only one machine may register this user&#x27; }
+    [void]$ov.Add([pscustomobject]@{
+            UNID = $A.UnidOf[$k]; Key = $k; BatchesA = $A.InBatch[$k]; BatchesB = $B.InBatch[$k]
+            RegisteredA = $regA; RegisteredB = $regB; Assessment = $what
+        })
+}
+if ($ov.Count -eq 0) { [void]$ov.Add([pscustomobject]@{ UNID = &#x27;&#x27;; Key = &#x27;&#x27;; BatchesA = &#x27;&#x27;; BatchesB = &#x27;&#x27;; RegisteredA = &#x27;&#x27;; RegisteredB = &#x27;&#x27;; Assessment = &#x27;NO OVERLAP: no user is in a batch of both machines&#x27; }) }
+$ov | Export-Csv -LiteralPath (Join-Path $Out &#x27;1_overlap.csv&#x27;) -NoTypeInformation -Encoding UTF8
+$nOv = @($ov | Where-Object { $_.Key -ne &#x27;&#x27; }).Count
+[void]$sum.Add(&#x27;&#x27;)
+[void]$sum.Add(&quot;1. OVERLAP: $nOv user(s) are in a batch of both machines&quot; + $(if ($nOv -gt 0) { &#x27; -&gt; see 1_overlap.csv, resolve every row before you switch partitioning on&#x27; } else { &#x27; (good)&#x27; }))
+
+# ---------- 2. partition preview: rows not registered yet and what 03 would do with them under 4.5.0 ----------
+$pv = New-Object System.Collections.ArrayList
+foreach ($side in @(@{ P = $A; Name = &#x27;A&#x27;; Idx = $IndexA }, @{ P = $B; Name = &#x27;B&#x27;; Idx = $IndexB })) {
+    $open = @{}      # batch file -&gt; counters
+    foreach ($k in $side.P.InBatch.Keys) {
+        if ($side.P.Reg.ContainsKey($k)) { continue }
+        $u = $side.P.UnidOf[$k]
+        foreach ($bf in $side.P.InBatch[$k].Split(&#x27;;&#x27;)) {
+            if (-not $open.ContainsKey($bf)) { $open[$bf] = @{ Open = 0; Mine = 0; Other = 0; NoUnid = 0 } }
+            $open[$bf].Open++
+            if ($u -eq &#x27;&#x27;) { $open[$bf].NoUnid++ }
+            elseif ((Get-PartitionOf $u $PartitionCount) -eq $side.Idx) { $open[$bf].Mine++ }
+            else { $open[$bf].Other++ }
+        }
+    }
+    foreach ($bf in ($open.Keys | Sort-Object)) {
+        $c = $open[$bf]
+        $verdict = &#x27;OK: all open rows belong to this machine&#x27;
+        if ($c.Other -gt 0) { $verdict = &#x27;REFUSED by 03 once partitioning is on: finish this batch first (partitioning off) or rebuild it&#x27; }
+        [void]$pv.Add([pscustomobject]@{
+                Machine = $side.Name; PartitionIndex = $side.Idx; BatchFile = $bf; OpenRows = $c.Open
+                OwnPartition = $c.Mine; OtherPartition = $c.Other; RowsWithoutUnid = $c.NoUnid; Verdict = $verdict
+            })
+    }
+}
+if ($pv.Count -eq 0) { [void]$pv.Add([pscustomobject]@{ Machine = &#x27;&#x27;; PartitionIndex = &#x27;&#x27;; BatchFile = &#x27;(none)&#x27;; OpenRows = 0; OwnPartition = 0; OtherPartition = 0; RowsWithoutUnid = 0; Verdict = &#x27;No batch has an unregistered row: partitioning can be switched on&#x27; }) }
+$pv | Export-Csv -LiteralPath (Join-Path $Out &#x27;2_partition_preview.csv&#x27;) -NoTypeInformation -Encoding UTF8
+$nRef = @($pv | Where-Object { $_.Verdict -like &#x27;REFUSED*&#x27; }).Count
+[void]$sum.Add(&quot;2. PARTITION PREVIEW (PartitionCount=$PartitionCount, A=$IndexA, B=$IndexB): $nRef batch(es) with unregistered rows of the other partition&quot; + $(if ($nRef -gt 0) { &#x27; -&gt; finish them BEFORE switching partitioning on&#x27; } else { &#x27; (good)&#x27; }))
+
+# ---------- 3. config ----------
+$mustEqual = &#x27;RegistrationServer&#x27;, &#x27;DirectoryServer&#x27;, &#x27;CertifierName&#x27;, &#x27;HomeServers&#x27;, &#x27;HomeServerMaxUsers&#x27;, &#x27;HomeServerAssignment&#x27;, &#x27;MailFolderPrefix&#x27;, &#x27;MailFilesPerFolder&#x27;, &#x27;MailFolderMax&#x27;, &#x27;MailFileDeferred&#x27;, &#x27;MailTemplate&#x27;, &#x27;VaultServer&#x27;, &#x27;InternetDomain&#x27;, &#x27;LogServer&#x27;, &#x27;LogDb&#x27;, &#x27;LastNameField&#x27;, &#x27;LastNameSuffixFields&#x27;, &#x27;LastNameSeparator&#x27;, &#x27;DuplicateGuard&#x27;, &#x27;DuplicateCheckMailFile&#x27;, &#x27;DuplicateCheckIDFile&#x27;, &#x27;DuplicateCheckVault&#x27;, &#x27;PartitionCount&#x27;, &#x27;PartitionOverride&#x27;
+$mustDiffer = &#x27;PartitionIndex&#x27;, &#x27;MachineId&#x27;
+$cfg = New-Object System.Collections.ArrayList
+foreach ($k in ($mustEqual + $mustDiffer)) {
+    $va = &#x27;(not set)&#x27;; $vb = &#x27;(not set)&#x27;
+    if ($A.Ini.ContainsKey($k.ToLower())) { $va = $A.Ini[$k.ToLower()] }
+    if ($B.Ini.ContainsKey($k.ToLower())) { $vb = $B.Ini[$k.ToLower()] }
+    $rule = &#x27;MUST BE EQUAL&#x27;; $status = &#x27;OK&#x27;
+    if ($mustDiffer -contains $k) {
+        $rule = &#x27;MUST DIFFER&#x27;
+        if ($va -eq $vb -and $va -ne &#x27;(not set)&#x27; -and $va -ne &#x27;&#x27;) { $status = &#x27;PROBLEM: same value on both machines&#x27; }
+        elseif ($k -eq &#x27;PartitionIndex&#x27; -and ($va -eq &#x27;(not set)&#x27; -or $vb -eq &#x27;(not set)&#x27;)) { $status = &#x27;NOT SET YET (4.5.0 key missing: run IniUpgrade)&#x27; }
+    }
+    elseif ($va -ne $vb) { $status = &#x27;PROBLEM: different&#x27; }
+    if ($va -match &#x27;&lt;.*&gt;&#x27; -or $vb -match &#x27;&lt;.*&gt;&#x27;) { $status = $status + &#x27; | placeholder still in the value&#x27; }
+    [void]$cfg.Add([pscustomobject]@{ Key = $k; Rule = $rule; MachineA = $va; MachineB = $vb; Status = $status })
+}
+$cfg | Export-Csv -LiteralPath (Join-Path $Out &#x27;3_config_compare.csv&#x27;) -NoTypeInformation -Encoding UTF8
+$nCfg = @($cfg | Where-Object { $_.Status -like &#x27;PROBLEM*&#x27; }).Count
+[void]$sum.Add(&quot;3. CONFIG: $nCfg setting(s) with a problem&quot; + $(if ($nCfg -gt 0) { &#x27; -&gt; see 3_config_compare.csv&#x27; } else { &#x27; (good)&#x27; }))
+
+# ---------- 4. kit hashes ----------
+$kit = New-Object System.Collections.ArrayList
+if ($A.Kit.Count -gt 0 -and $B.Kit.Count -gt 0) {
+    $ha = @{}; foreach ($x in $A.Kit) { $ha[$x.Name] = $x.Sha256 }
+    $hb = @{}; foreach ($x in $B.Kit) { $hb[$x.Name] = $x.Sha256 }
+    foreach ($n in ((@($ha.Keys) + @($hb.Keys)) | Sort-Object -Unique)) {
+        $sa = &#x27;&#x27;; $sb = &#x27;&#x27;
+        if ($ha.ContainsKey($n)) { $sa = $ha[$n] }
+        if ($hb.ContainsKey($n)) { $sb = $hb[$n] }
+        $st = &#x27;SAME&#x27;
+        if ($sa -eq &#x27;&#x27; -or $sb -eq &#x27;&#x27;) { $st = &#x27;MISSING on one machine&#x27; } elseif ($sa -ne $sb) { $st = &#x27;DIFFERENT (line endings or content: compare the files)&#x27; }
+        [void]$kit.Add([pscustomobject]@{ File = $n; Status = $st; Sha256A = $sa; Sha256B = $sb })
+    }
+    $nKit = @($kit | Where-Object { $_.Status -ne &#x27;SAME&#x27; }).Count
+    [void]$sum.Add(&quot;4. KIT FILES: $nKit file(s) differ or are missing&quot; + $(if ($nKit -gt 0) { &#x27; -&gt; see 4_kit_compare.csv (paste the same kit version on both machines)&#x27; } else { &#x27; (same code on both machines)&#x27; }))
+}
+else {
+    [void]$kit.Add([pscustomobject]@{ File = &#x27;(no kit_hashes.csv in one or both packs)&#x27;; Status = &#x27;Run the collector with -KitDir on both machines&#x27;; Sha256A = &#x27;&#x27;; Sha256B = &#x27;&#x27; })
+    [void]$sum.Add(&#x27;4. KIT FILES: not compared (collect with -KitDir on both machines)&#x27;)
+}
+$kit | Export-Csv -LiteralPath (Join-Path $Out &#x27;4_kit_compare.csv&#x27;) -NoTypeInformation -Encoding UTF8
+
+$sum | Set-Content -LiteralPath (Join-Path $Out &#x27;summary.txt&#x27;) -Encoding UTF8
+Write-Host &#x27;&#x27;
+$sum | ForEach-Object { Write-Host $_ }
+Write-Host &#x27;&#x27;
+Write-Host &quot;Report folder: $Out&quot; -ForegroundColor Green
+</code></pre></div></details>
+
+<h2 id="sources-checked">Sources checked</h2>
+<p><a href="BulkReg_Deploy_4.5.0.html"><code>DEPLOY-4.5.0.md</code></a>, <code>DEPLOY-4.4.0.md</code>, <code>README.md</code>, <code>config/bulkreg.ini</code>, <code>lotusscript/BulkRegCommon.lss</code> (<code>BR_PartitionOf</code>, <code>BR_NotMyPartition</code>, <code>BR_MachineTag</code>, <code>BR_BATCH_COLS</code>, <code>BR_AuditHeader</code>, <code>BR_ResultsDoneIds</code>, <code>BR_OpenBatchNoteIDs</code>, <code>BR_DupIdFileLoad</code>), <code>lotusscript/BulkRegAgents.lss</code> (01/02/03/08, <code>BR_RecoverBatch</code>, reconcile statuses).</p>
+<footer>BulkReg 4.5.0 &middot; Post-deploy playbook &middot; generated from <code>PLAYBOOK-post-deploy-4.5.0.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
+</main>
+</div>
+<script>
+(function(){
+  // copy buttons on every code block
+  document.querySelectorAll('.cb').forEach(function(box){
+    var b=document.createElement('button'); b.type='button'; b.className='cp'; b.textContent='Copy';
+    b.addEventListener('click',function(){
+      var t=box.querySelector('code').innerText;
+      var done=function(){b.textContent='Copied'; b.classList.add('ok'); setTimeout(function(){b.textContent='Copy'; b.classList.remove('ok');},1600);};
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,fallback);} else {fallback();}
+      function fallback(){var a=document.createElement('textarea'); a.value=t; document.body.appendChild(a); a.select(); try{document.execCommand('copy'); done();}catch(e){b.textContent='Select + Ctrl+C';} document.body.removeChild(a);}
+    });
+    box.insertBefore(b,box.firstChild);
+  });
+  // contents: filter + current section
+  var toc=document.querySelector('nav.toc'), q=toc.querySelector('input'), links=[].slice.call(toc.querySelectorAll('li a[href^="#"]'));
+  q.addEventListener('input',function(){var v=q.value.toLowerCase(); links.forEach(function(a){a.parentNode.style.display=(!v||a.textContent.toLowerCase().indexOf(v)>-1)?'':'none';});});
+  var map={}; links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a;});
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){links.forEach(function(a){a.classList.remove('on');}); var a=map[e.target.id]; if(a){a.classList.add('on');}}});},{rootMargin:'0px 0px -75% 0px'});
+    document.querySelectorAll('main h2[id],main h3[id]').forEach(function(h){io.observe(h);});
+  }
+  var m=document.querySelector('.menu'); if(m){m.addEventListener('click',function(){toc.classList.toggle('closed');}); if(window.innerWidth<=860){toc.classList.add('closed');}}
+  var pr=document.getElementById('print'); if(pr){pr.addEventListener('click',function(){document.querySelectorAll('details.script').forEach(function(d){d.open=true;}); window.print();});}
+})();
+</script>
+</body>
+</html>

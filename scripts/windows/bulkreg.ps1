@@ -1,6 +1,6 @@
 <#
 =====================================================================
- bulkreg.ps1  -  BulkReg 4.4.0 OPTIONAL helper for the Windows admin workstation
+ bulkreg.ps1  -  BulkReg 4.5.0 OPTIONAL helper for the Windows admin workstation
                  (the machine running the HCL Domino Administrator client)
 
  Registration runs entirely inside the Domino Administrator client
@@ -38,7 +38,7 @@ param(
 )
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$Version = '4.4.0'
+$Version = '4.5.0'
 if (-not $Config) { $Config = if ($env:BULKREG_CONFIG) { $env:BULKREG_CONFIG } else { Join-Path $Base 'config\bulkreg.ini' } }
 $KitConfig = Join-Path $PSScriptRoot '..\..\config'
 $script:Fails = 0; $script:Warns = 0
