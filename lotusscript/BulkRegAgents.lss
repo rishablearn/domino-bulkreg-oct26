@@ -2546,6 +2546,494 @@ Sub BR_ReconDupIdRow(fhDid As Integer, fhGap As Integer, nid As String, unid As 
 	Print #fhGap, Q("N") & "," & Q(nid) & "," & Q(unid) & "," & Q(fullN) & "," & Q(inet) & "," & Q("DUPLICATE_" & kind) & "," & Q("09 *_duplicate_ids.csv (manual)") & "," & Q(detail)
 End Sub
 
+'=====================================================================
+' 12 - REMOVE DUPLICATES  (added after 4.5.0 - see CHANGELOG "Unreleased")
+'
+' Input : RECON_<run>_duplicates.csv written by 09 - Reconcile. Only rows recommended DO_NOT_REGISTER (an UNREGISTERED
+'         Person document that duplicates a REGISTERED keeper) are ever candidates. REVIEW rows (a second REGISTERED
+'         identity) and KEEP rows are never touched: they stay a manual AdminP decision.
+' Each candidate is re-checked LIVE against the directory (the CSV can be old) and is removed only when ALL hold:
+'   - the candidate still exists, is a Person document and has NO certificate (not registered)
+'   - the keeper still exists, IS registered and its mail file exists on its mail server
+'   - the candidate is a FULL duplicate of the keeper: every field listed in DuplicateMustMatch is the same
+'     (name = common name, short = ShortName / ops number, inet = Internet address, first, last; blanks and
+'     case are ignored). One different field = SKIP_NOT_FULL_DUPLICATE, nothing is removed.
+'   - the candidate is not in an OPEN batch, has no ID file in IDFileDir, owns no mail file of its own
+'   - it was not already sent to AdminP by an earlier run (DEDUP_requested.txt)
+' Methods (DuplicateDeleteMethod): ADMINP (default) = AdminP DeleteUser request, mail file and ID vault untouched,
+'   needs a hierarchical name that exists only once in ($Users); DIRECT = delete exactly this Person document by
+'   NoteID (for flat DirSync names or names shared with the keeper, where AdminP would be ambiguous); AUTO = ADMINP
+'   when possible, else DIRECT.
+' Safety: DryRun=1 (default) only writes the plan; LIVE needs DryRun=0 and typing REMOVE; at most DuplicateMaxDelete
+'   per run; a DXL snapshot of each Person document is written to <PasswordDir>\DEDUP_<run>\ BEFORE it is removed
+'   (no snapshot = no removal); STOP.txt in BatchDir stops after the current chunk; every row goes to the audit.
+'   Mail files and ID files are NEVER deleted by this agent.
+'=====================================================================
+Sub BR_RunRemoveDuplicates()
+	On Error GoTo ErrH
+	gMode = "": gStopRun = ""
+	Dim ws As NotesUIWorkspace, ans As Variant
+	Dim db As NotesDatabase, dDoc As NotesDocument
+	Dim inFile As String, bname As String, outDir As String, snapDir As String, reqFile As String
+	Dim fh As Integer, txt As String, isFirst As Boolean, cols List As Integer, delim As String, parts As Variant
+	Dim keepOf List As String, batchOf List As String, seen List As String
+	Dim cGrp() As String, cNid() As String, cKeep() As String, cRes() As String, cWhy() As String, cVia() As String, cName() As String
+	Dim nC As Long, capC As Long
+	Dim method As String, must As String, maxDel As Long, chunk As Long, basePause As Long, pauseSec As Long
+	Dim pauseMs As Long, maxConsec As Long, tChunk As Double
+	Dim i As Long, nOk As Long, nSkip As Long, nGone As Long, nDone As Long, nFail As Long, nConsec As Long, nDeferred As Long, sinceChunk As Long
+	Dim res As String, why As String, via As String, delName As String, reqId As String, snapErr As String
+	Dim summary As String, stopReason As String, rec As String, grp As String, nid As String, pairKey As String, t1 As Double
+	Dim tWhy As String, tVia As String, tName As String
+
+	If Not BR_Init("RemoveDup") Then Exit Sub
+	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
+	method = UCase$(Trim$(CfgS("DuplicateDeleteMethod", "ADMINP")))
+	If method <> "ADMINP" And method <> "DIRECT" And method <> "AUTO" Then Error 12001, "DuplicateDeleteMethod must be ADMINP, DIRECT or AUTO (found: " & method & ")"
+	must = "," & LCase$(Replace(Trim$(CfgS("DuplicateMustMatch", "name,short,inet,first,last")), " ", "")) & ","
+	If must = ",," Then Error 12002, "DuplicateMustMatch is empty: at least one field is required (name, short, inet, first, last)"
+	maxDel = CfgL("DuplicateMaxDelete", 25)               ' 0 = no limit
+	chunk = CfgL("DuplicateRemoveChunkSize", 5)
+	basePause = CfgL("ChunkPauseSec", 5)
+	If basePause < 0 Then basePause = 0
+	pauseSec = basePause
+	pauseMs = CfgL("PauseMs", 500)
+	maxConsec = CfgL("MaxConsecutiveErrors", 5)
+	If Dir$(BR_StopFile()) <> "" Then
+		BR_Close "STOP.txt present"
+		BR_Msg "STOP.txt exists in " & BR_BatchDir() & ". Delete it to run again.", 48
+		Exit Sub
+	End If
+
+	' ---------- input: the duplicates report of 09 ----------
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Remove Duplicates (" & gMode & ")", _
+	"Path of RECON_<run>_duplicates.csv (written by 09 - Reconcile)." & Chr$(10) & _
+	"Only DO_NOT_REGISTER rows are considered, and each one is re-checked live before anything is removed.", "")
+	If IsEmpty(ans) Then
+		BR_Close "Cancelled"
+		Exit Sub
+	End If
+	inFile = BR_LocalPath(Trim$(CStr(ans)))
+	bname = StrRightBack(inFile, gSep)
+	If Left$(bname, 6) <> "RECON_" Or LCase$(Right$(bname, 15)) <> "_duplicates.csv" Then Error 12003, "Choose RECON_<run>_duplicates.csv from 09 - Reconcile: " & bname
+	If Dir$(inFile) = "" Then Error 12004, "File not found: " & inFile
+
+	capC = 200
+	ReDim cGrp(capC), cNid(capC), cKeep(capC), cRes(capC), cWhy(capC), cVia(capC), cName(capC)
+	fh = FreeFile()
+	Open inFile For Input As #fh Charset = "UTF-8"
+	isFirst = True
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		txt = Replace(txt, Uchr$(&HFEFF), "")
+		If isFirst Then
+			Call BR_CsvHeader(txt, delim, cols)
+			isFirst = False
+			If Not IsElement(cols("recommendation")) Or Not IsElement(cols("noteid")) Or Not IsElement(cols("group")) Then Error 12005, "Not a duplicates report of 09 (columns Group, NoteID, Recommendation missing): " & bname
+		ElseIf Trim$(txt) <> "" Then
+			parts = BR_CsvSplit(txt, delim)
+			rec = BR_CsvGet(parts, cols, "Recommendation")
+			grp = BR_CsvGet(parts, cols, "Group")
+			nid = BR_CsvGet(parts, cols, "NoteID")
+			If rec = "KEEP" Then
+				keepOf(grp) = nid
+			ElseIf Left$(rec, 15) = "DO_NOT_REGISTER" Then
+				If nC >= capC Then
+					capC = capC * 2
+					ReDim Preserve cGrp(capC), cNid(capC), cKeep(capC), cRes(capC), cWhy(capC), cVia(capC), cName(capC)
+				End If
+				cGrp(nC) = grp: cNid(nC) = nid: nC = nC + 1
+			End If
+		End If
+	Loop
+	Close #fh
+	If nC = 0 Then
+		BR_Close "No DO_NOT_REGISTER rows"
+		BR_Msg "No DO_NOT_REGISTER rows in " & bname & ". Nothing to do.", 64
+		Exit Sub
+	End If
+
+	' ---------- directory, open batches, ID files, results file ----------
+	Set db = BR_OpenDirectory()
+	Call BR_ReconBatchMap(batchOf)
+	Erase gIdFileIdx
+	If CfgB("DuplicateCheckIDFile", True) Then Call BR_DupIdFileLoad()
+	outDir = BR_CfgDir("ReconcileDir", "reconcile")
+	On Error Resume Next
+	MkDir Left$(outDir, Len(outDir) - 1)
+	Err = 0
+	On Error GoTo ErrH
+	If Not BR_DirWritable(outDir) Then outDir = gRunDir
+	reqFile = outDir & "DEDUP_requested.txt"
+	gResultsFile = outDir & "DEDUP_" & gMode & "_" & gRunID & ".csv"
+	Call BR_AppendLine(gResultsFile, Uchr$(&HFEFF) & BR_AuditHeader())
+
+	' ---------- pass 1: live verification of every candidate (read-only) ----------
+	For i = 0 To nC - 1
+		If IsElement(keepOf(cGrp(i))) Then cKeep(i) = keepOf(cGrp(i)) Else cKeep(i) = ""
+		pairKey = cNid(i) & "|" & cKeep(i)
+		If IsElement(seen(pairKey)) Then
+			cRes(i) = "DUPLICATE_ROW": cWhy(i) = "same candidate and keeper already listed in another group"
+		Else
+			seen(pairKey) = "1"
+			cRes(i) = BR_DupEval(db, cNid(i), cKeep(i), method, must, batchOf, reqFile, tWhy, tVia, tName)
+			cWhy(i) = tWhy: cVia(i) = tVia: cName(i) = tName
+		End If
+		If cRes(i) = "OK" Then nOk = nOk + 1
+	Next
+
+	' ---------- LIVE: explicit confirmation ----------
+	If gMode = "LIVE" And nOk > 0 Then
+		ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Remove Duplicates (LIVE)", _
+		nOk & " unregistered duplicate Person document(s) pass every check and WILL BE REMOVED" & _
+		BR_IIfStr(maxDel > 0 And nOk > maxDel, " (this run: the first " & maxDel & ", DuplicateMaxDelete)", "") & "." & Chr$(10) & _
+		"Method: " & method & ". Mail files, ID files and the keepers are not touched." & Chr$(10) & _
+		"A DXL snapshot of each document is written to the secure folder first. Run DryRun=1 first and read the plan." & Chr$(10) & Chr$(10) & _
+		"Type REMOVE to continue:", "")
+		If IsEmpty(ans) Then ans = ""
+		If CStr(ans) <> "REMOVE" Then
+			BR_Close "Cancelled (REMOVE not typed)"
+			Exit Sub
+		End If
+		snapDir = BR_CfgDir("PasswordDir", "secure") & "DEDUP_" & gRunID & gSep
+		On Error Resume Next
+		MkDir Left$(snapDir, Len(snapDir) - 1)
+		Err = 0
+		On Error GoTo ErrH
+		If Not BR_DirWritable(snapDir) Then Error 12006, "Snapshot folder is not writable (PasswordDir): " & snapDir
+	End If
+
+	' ---------- pass 2: plan rows (DRYRUN) or removal (LIVE) ----------
+	tChunk = Timer
+	For i = 0 To nC - 1
+		t1 = Timer
+		res = cRes(i): why = cWhy(i)
+		If res = "OK" Then
+			If gMode = "DRYRUN" Then
+				res = "WOULD_REMOVE": why = "via " & cVia(i) & IIf2(cVia(i) = "ADMINP", " (" & cName(i) & ")", "")
+			ElseIf stopReason <> "" Then
+				res = "NOT_PROCESSED_STOPPED": why = stopReason: nDeferred = nDeferred + 1
+			ElseIf maxDel > 0 And (nDone + nFail) >= maxDel Then
+				res = "NOT_PROCESSED_CAP": why = "DuplicateMaxDelete=" & maxDel & " reached: run again": nDeferred = nDeferred + 1
+			Else
+				' LIVE: verify once more immediately before removing (the directory may have changed since pass 1)
+				res = BR_DupEval(db, cNid(i), cKeep(i), method, must, batchOf, reqFile, why, tVia, tName)
+				cVia(i) = tVia: cName(i) = tName
+				If res = "OK" Then
+					Set dDoc = db.GetDocumentByID(cNid(i))
+					snapErr = BR_DupSnapshot(dDoc, snapDir, cNid(i))
+					If snapErr <> "" Then
+						res = "FAILED_SNAPSHOT": why = "no snapshot, nothing removed: " & snapErr
+						nFail = nFail + 1: nConsec = nConsec + 1
+					Else
+						res = BR_DupRemove(db, dDoc, cNid(i), cVia(i), cName(i), reqFile, reqId, why)
+						If Left$(res, 6) = "FAILED" Then
+							nFail = nFail + 1: nConsec = nConsec + 1
+						Else
+							nDone = nDone + 1: nConsec = 0
+						End If
+					End If
+					sinceChunk = sinceChunk + 1
+					If pauseMs > 0 Then Sleep pauseMs / 1000
+				End If
+			End If
+		End If
+		If res = "GONE" Then nGone = nGone + 1
+		If Left$(res, 4) = "SKIP" Then nSkip = nSkip + 1
+		Call BR_DupAuditRow(db, cNid(i), cGrp(i), cKeep(i), res, why, Timer - t1)
+		If gMode = "LIVE" And stopReason = "" Then
+			If maxConsec > 0 And nConsec >= maxConsec Then
+				stopReason = nConsec & " consecutive failures (MaxConsecutiveErrors) - run stopped"
+			ElseIf chunk > 0 And sinceChunk >= chunk Then
+				stopReason = BR_ChunkEnd("RemoveDup", nDone + nFail, nOk, chunk, tChunk, pauseSec, basePause, nDone, nFail)
+				sinceChunk = 0
+			End If
+		End If
+	Next
+
+	summary = "REMOVEDUP " & gMode & " | candidates=" & nC & " pass=" & nOk & " removed/requested=" & nDone & " failed=" & nFail & " skipped=" & nSkip & " gone=" & nGone & " not processed=" & nDeferred
+	BR_Log LVL_WARN, summary
+	BR_Close summary
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & gResultsFile & Chr$(10) & _
+	BR_IIfStr(gMode = "DRYRUN", "Dry run: nothing was changed. Read the WOULD_REMOVE and SKIP_* rows, then set DryRun=0 and run again.", _
+	"Run 09 - Reconcile again: _duplicates.csv must no longer list the removed documents (AdminP requests need a few minutes). Snapshots: " & snapDir) & _
+	BR_IIfStr(stopReason <> "", Chr$(10) & stopReason, ""), 64
+	Exit Sub
+ErrH:
+	On Error Resume Next
+	Close #fh
+	BR_Log LVL_ERROR, "Remove Duplicates aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Remove Duplicates aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
+	Exit Sub
+End Sub
+
+' Live verification of ONE candidate. Returns "OK" or a status (GONE, SKIP_*); why = reason, via = ADMINP | DIRECT,
+' delName = hierarchical name for the AdminP request. Reads only: changes nothing.
+Function BR_DupEval(db As NotesDatabase, dNid As String, kNid As String, method As String, must As String, batchOf List As String, reqFile As String, why As String, via As String, delName As String) As String
+	On Error GoTo ErrH
+	Dim d As NotesDocument, k As NotesDocument, bad As String, nm As Long, v As Variant, i As Integer
+	Dim ksrv As String, kmf As String, dsrv As String, dmf As String, su As BRUser, idb As String
+	why = "": via = "": delName = ""
+	If kNid = "" Then
+		BR_DupEval = "SKIP_NO_KEEPER": why = "no registered keeper in the group: fix the AD data / register first"
+		Exit Function
+	End If
+	On Error Resume Next
+	Set d = db.GetDocumentByID(dNid)
+	Set k = db.GetDocumentByID(kNid)
+	Err = 0
+	On Error GoTo ErrH
+	If d Is Nothing Then
+		BR_DupEval = "GONE": why = "candidate no longer exists": Exit Function
+	End If
+	If d.IsDeleted Then
+		BR_DupEval = "GONE": why = "candidate no longer exists": Exit Function
+	End If
+	If k Is Nothing Then
+		BR_DupEval = "SKIP_KEEPER_GONE": why = "keeper NoteID " & kNid & " no longer exists": Exit Function
+	End If
+	If k.IsDeleted Then
+		BR_DupEval = "SKIP_KEEPER_GONE": why = "keeper NoteID " & kNid & " no longer exists": Exit Function
+	End If
+	If BR_Item(d, "Form") <> "Person" Or BR_Item(k, "Form") <> "Person" Then
+		BR_DupEval = "SKIP_NOT_PERSON": why = "candidate or keeper is not a Person document": Exit Function
+	End If
+	If BR_IsRegistered(d) Then
+		BR_DupEval = "SKIP_CANDIDATE_REGISTERED": why = "candidate has a certificate: a second REGISTERED identity is a manual AdminP decision": Exit Function
+	End If
+	If Not BR_IsRegistered(k) Then
+		BR_DupEval = "SKIP_KEEPER_NOT_REGISTERED": why = "keeper has no certificate": Exit Function
+	End If
+	ksrv = BR_SrvAbbr(BR_Item(k, "MailServer")): kmf = BR_MailPathNorm(BR_Item(k, "MailFile"))
+	If ksrv = "" Or kmf = "" Then
+		BR_DupEval = "SKIP_KEEPER_NO_MAILFILE": why = "keeper has no MailServer/MailFile item": Exit Function
+	End If
+	If Not BR_MailFileExists(ksrv, kmf) Then
+		BR_DupEval = "SKIP_KEEPER_MAIL_MISSING": why = "keeper's mail file " & ksrv & "!!" & kmf & " does not exist: run 08 first": Exit Function
+	End If
+	dsrv = BR_SrvAbbr(BR_Item(d, "MailServer")): dmf = BR_MailPathNorm(BR_Item(d, "MailFile"))
+	If dsrv <> "" And dmf <> "" Then
+		If Not (LCase$(dsrv) = LCase$(ksrv) And LCase$(BR_Path(dmf)) = LCase$(BR_Path(kmf))) Then
+			If BR_MailFileExists(dsrv, dmf) Then
+				BR_DupEval = "SKIP_CANDIDATE_HAS_OWN_MAILFILE": why = "candidate points at its own existing mail file " & dsrv & "!!" & dmf & ": review manually": Exit Function
+			End If
+		End If
+	End If
+	If IsElement(batchOf("n" & UCase$(dNid))) Then
+		If InStr(batchOf("n" & UCase$(dNid)), "(OPEN)") > 0 Then
+			BR_DupEval = "SKIP_IN_OPEN_BATCH": why = "candidate is in " & batchOf("n" & UCase$(dNid)) & ": close or rebuild that batch first (11 - Batch Manager)": Exit Function
+		End If
+	End If
+	If CfgB("DuplicateCheckIDFile", True) Then
+		Call BR_ClearUser(su)
+		su.ShortName = BR_PickShortName(d): su.NoteID = dNid
+		idb = LCase$(BR_SafeFile(su))
+		If IsElement(gIdFileIdx(idb)) Then
+			BR_DupEval = "SKIP_CANDIDATE_HAS_IDFILE": why = "ID file " & gIdFileIdx(idb) & " exists for the candidate: check the registration log and the vault first": Exit Function
+		End If
+	End If
+	If BR_DupWasRequested(reqFile, dNid) Then
+		BR_DupEval = "SKIP_ALREADY_REQUESTED": why = "an AdminP delete request was already sent for this NoteID (see " & reqFile & "); remove its line there only if the document still exists after AdminP ran": Exit Function
+	End If
+
+	' ---- full-duplicate test: EVERY listed field must be the same ----
+	If InStr(must, ",name,") > 0 Then
+		If Not BR_DupItemOverlap(d, k, "FullName", True) Then bad = bad & "name,"
+	End If
+	If InStr(must, ",short,") > 0 Then
+		If Not BR_DupItemOverlap(d, k, "ShortName", False) Then bad = bad & "short,"
+	End If
+	If InStr(must, ",inet,") > 0 Then
+		If BR_NormKey(BR_Clean(BR_Item(d, "InternetAddress"))) <> BR_NormKey(BR_Clean(BR_Item(k, "InternetAddress"))) Then bad = bad & "inet,"
+	End If
+	If InStr(must, ",first,") > 0 Then
+		If BR_NormKey(BR_Item(d, "FirstName")) <> BR_NormKey(BR_Item(k, "FirstName")) Then bad = bad & "first,"
+	End If
+	If InStr(must, ",last,") > 0 Then
+		If BR_NormKey(BR_Item(d, "LastName")) <> BR_NormKey(BR_Item(k, "LastName")) Then bad = bad & "last,"
+	End If
+	If bad <> "" Then
+		BR_DupEval = "SKIP_NOT_FULL_DUPLICATE": why = "differs from keeper NoteID " & kNid & " in: " & Left$(bad, Len(bad) - 1) & " (required: " & Mid$(must, 2, Len(must) - 2) & ")": Exit Function
+	End If
+
+	' ---- removal method ----
+	If method = "DIRECT" Then
+		via = "DIRECT"
+		BR_DupEval = "OK": why = "full duplicate of keeper NoteID " & kNid
+		Exit Function
+	End If
+	If d.HasItem("FullName") Then
+		v = d.GetItemValue("FullName")
+		For i = 0 To UBound(v)
+			If delName = "" And InStr(CStr(v(i)), "/") > 0 Then delName = Trim$(CStr(v(i)))
+		Next
+	End If
+	If delName = "" Then
+		If method = "AUTO" Then
+			via = "DIRECT": BR_DupEval = "OK": why = "full duplicate of keeper NoteID " & kNid & " (flat name: DIRECT)"
+		Else
+			BR_DupEval = "SKIP_NEEDS_DIRECT": why = "FullName is flat (no /Org): AdminP DeleteUser needs a hierarchical name. After review set DuplicateDeleteMethod=DIRECT (or AUTO)"
+		End If
+		Exit Function
+	End If
+	nm = BR_DupNameCount(db, delName)
+	If nm <> 1 Then
+		If method = "AUTO" Then
+			via = "DIRECT": BR_DupEval = "OK": why = "full duplicate of keeper NoteID " & kNid & " (name not unique: DIRECT)"
+		Else
+			BR_DupEval = "SKIP_AMBIGUOUS_NAME": why = "the name " & delName & " is found " & nm & " time(s) in ($Users) (-1 = cannot check): an AdminP request by name could hit the keeper. After review use DuplicateDeleteMethod=DIRECT (or AUTO)"
+		End If
+		Exit Function
+	End If
+	via = "ADMINP"
+	BR_DupEval = "OK": why = "full duplicate of keeper NoteID " & kNid
+	Exit Function
+ErrH:
+	BR_DupEval = "SKIP_CHECK_ERROR": why = "check failed, nothing removed: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	Exit Function
+End Function
+
+' True when the two documents share at least one non-empty value of the item (blanks and case ignored).
+' asCn = compare the common names of hierarchical values (FullName)
+Function BR_DupItemOverlap(a As NotesDocument, b As NotesDocument, itemName As String, asCn As Boolean) As Boolean
+	Dim va As Variant, vb As Variant, i As Integer, j As Integer, ka As String, kb As String
+	If Not a.HasItem(itemName) Or Not b.HasItem(itemName) Then Exit Function
+	va = a.GetItemValue(itemName)
+	vb = b.GetItemValue(itemName)
+	For i = 0 To UBound(va)
+		If asCn Then ka = BR_NormKey(BR_CnOf(CStr(va(i)))) Else ka = BR_NormKey(CStr(va(i)))
+		If ka <> "" Then
+			For j = 0 To UBound(vb)
+				If asCn Then kb = BR_NormKey(BR_CnOf(CStr(vb(j)))) Else kb = BR_NormKey(CStr(vb(j)))
+				If ka = kb Then
+					BR_DupItemOverlap = True
+					Exit Function
+				End If
+			Next
+		End If
+	Next
+End Function
+
+' How many Person documents carry exactly this name in the directory view ($Users). -1 = cannot be checked.
+Function BR_DupNameCount(db As NotesDatabase, nm As String) As Long
+	On Error GoTo ErrH
+	Dim vw As NotesView, col As NotesDocumentCollection
+	BR_DupNameCount = -1
+	Set vw = db.GetView("($Users)")
+	If vw Is Nothing Then Exit Function
+	Set col = vw.GetAllDocumentsByKey(nm, True)
+	BR_DupNameCount = col.Count
+	Exit Function
+ErrH:
+	BR_DupNameCount = -1
+	Exit Function
+End Function
+
+' DXL snapshot of the Person document (rollback evidence). Returns "" when written, else the error text.
+' The file can hold password hashes and certificates: it goes to PasswordDir (restricted folder), not to ReconcileDir.
+Function BR_DupSnapshot(d As NotesDocument, folder As String, nid As String) As String
+	On Error GoTo ErrH
+	Dim dxlEx As NotesDXLExporter, dxl As String, fh As Integer
+	Set dxlEx = gSession.CreateDXLExporter()
+	dxl = dxlEx.Export(d)
+	If Len(dxl) < 50 Then
+		BR_DupSnapshot = "DXL export returned no content"
+		Exit Function
+	End If
+	fh = FreeFile()
+	Open folder & "PERSON_" & nid & ".dxl" For Output As #fh Charset = "UTF-8"
+	Print #fh, dxl
+	Close #fh
+	Exit Function
+ErrH:
+	BR_DupSnapshot = Error$ & " (err " & Err & ")"
+	On Error Resume Next
+	Close #fh
+	Exit Function
+End Function
+
+' Removes ONE verified duplicate. ADMINP: DeleteUser request (documented signature: username, immediate, mailfileaction,
+' denygroup, deletewindowsuser, idvaultaction): immediate=False (AdminP does the deletion), mail file 0 = MAILFILE_DELETE_NONE,
+' no deny group, no Windows user, vault 0 = VAULT_RETAIN. DIRECT: Remove(True) of exactly this document.
+Function BR_DupRemove(db As NotesDatabase, d As NotesDocument, nid As String, via As String, delName As String, reqFile As String, reqId As String, why As String) As String
+	On Error GoTo ErrH
+	Dim ok As Boolean
+	reqId = ""
+	If via = "ADMINP" Then
+		If gAdminP Is Nothing Then Set gAdminP = gSession.CreateAdministrationProcess(CfgS("RegistrationServer", ""))
+		reqId = gAdminP.DeleteUser(delName, False, 0, "", False, 0)
+		Call BR_AppendLine(reqFile, nid & "," & Format$(Now, "yyyy-mm-dd hh:nn:ss") & "," & gRunID & "," & reqId & "," & delName)
+		BR_DupRemove = "ADMINP_REQUESTED"
+		why = "AdminP DeleteUser request " & reqId & " for " & delName & " (mail file and vault untouched); the document disappears when AdminP has processed it"
+	Else
+		ok = d.Remove(True)
+		If ok Then
+			BR_DupRemove = "REMOVED"
+			why = "Person document removed (DIRECT); DXL snapshot kept in the secure folder"
+		Else
+			BR_DupRemove = "FAILED_REMOVE"
+			why = "Remove returned False (document changed or access denied)"
+		End If
+	End If
+	Exit Function
+ErrH:
+	BR_DupRemove = "FAILED_REMOVE"
+	why = Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Log LVL_ERROR, "Remove Duplicates: " & nid & " failed: " & why
+	Exit Function
+End Function
+
+' NoteIDs already sent to AdminP by an earlier run (first column of DEDUP_requested.txt): idempotency
+Function BR_DupWasRequested(reqFile As String, nid As String) As Boolean
+	On Error GoTo ErrH
+	Dim fh As Integer, txt As String
+	If Dir$(reqFile) = "" Then Exit Function
+	fh = FreeFile()
+	Open reqFile For Input As #fh Charset = "UTF-8"
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		If StrLeft(Replace(txt, Uchr$(&HFEFF), ""), ",") = nid Then
+			BR_DupWasRequested = True
+			Exit Do
+		End If
+	Loop
+	Close #fh
+	Exit Function
+ErrH:
+	On Error Resume Next
+	Close #fh
+	Exit Function
+End Function
+
+' One audit row (results CSV of the run + audit CSV + central log) per candidate
+Sub BR_DupAuditRow(db As NotesDatabase, nid As String, grp As String, kNid As String, res As String, why As String, dur As Double)
+	On Error GoTo ErrH
+	Dim d As NotesDocument, u As BRUser
+	Call BR_ClearUser(u)
+	u.NoteID = nid
+	On Error Resume Next
+	Set d = db.GetDocumentByID(nid)
+	Err = 0
+	On Error GoTo ErrH
+	If Not (d Is Nothing) Then
+		If Not d.IsDeleted Then
+			u.UNID = d.UniversalID
+			u.GUID = BR_Item(d, "objectGUID")
+			u.FullNameBefore = BR_Item(d, "FullName")
+			u.ShortName = BR_PickShortName(d)
+			u.InternetAddress = BR_Item(d, "InternetAddress")
+		End If
+	End If
+	If dur < 0 Then dur = 0
+	Call BR_Audit(u, gMode, "DELETE_DUPLICATE", res, dur, "group " & grp & " keeper NoteID " & kNid & ": " & why)
+	Exit Sub
+ErrH:
+	BR_Log LVL_WARN, "Audit row for " & nid & " failed: " & Error$
+	Exit Sub
+End Sub
+
 ' Number of directory users that ARE registered, from the per-status counters
 Function BR_RegisteredCount(cnt List As Long) As Long
 	Dim n As Long

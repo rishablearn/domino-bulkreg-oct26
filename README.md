@@ -18,6 +18,7 @@ BulkReg 4.5.0 · run from the **HCL Domino Administrator client on Windows** · 
 - **09 - Reconcile:** CSV files (`RECON_<run>_all / _missing_users / _missing_mail / _orphan_mail / _gaps / _duplicates`) for missing users, registered-but-no-mailbox, orphan mail files and stray blanks in names.
 - **10 - Audit Log Maintenance:** archive to CSV, verify, then purge old log documents; deletes old debug logs. `LogDbLevel=WARN` / `LogDbAudit=CHANGES` stop the log database growing. Retention periods are defaults: agree them with audit/compliance.
 - **11 - Batch Manager (4.3.0):** state of every batch, resume stopped or hung runs (run 03 again; RESUME / REMAINDER / CLOSE for batches that finished incomplete), CSV report. `bulkreg Stop` / `Unstop` for a clean stop. The `FullNameAfter` of the reviewed batch row is the name the user is created with.
+- **12 - Remove Duplicates (unreleased, after 4.5.0):** removes unregistered Person documents that are full duplicates (name, ops number / short name, Internet address, first and last name) of a registered user. Input: `RECON_<run>_duplicates.csv` of 09 (only `DO_NOT_REGISTER` rows). DryRun first (`DEDUP_DRYRUN_<run>.csv`), then DryRun=0 and type `REMOVE`; method `DuplicateDeleteMethod` = ADMINP / DIRECT / AUTO; DXL snapshot before each removal; never deletes mail files, ID files or the keeper. Run 09 again afterwards.
 - **4.3.0 - gaps, duplicates, aborted batches:** 09 writes `_gaps.csv` (not registered / no mail / no vault / duplicate) that 08 accepts as scope; `DuplicateGuard=1` stops a second identity being registered (`SKIPPED_DUPLICATE`), `_duplicates.csv` lists them for manual resolution; Agent 11 `RECOVER <batch id>` analyses an aborted batch (read-only).
 
 ## What changed in 4.1.0
@@ -172,7 +173,7 @@ config/      bulkreg.ini, server_mapping.csv (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (the code of the manual agents)
              Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile,
              Agent06_InstallWelcomePage, Agent08_RepairMailFiles, Agent09_Reconcile,
-             Agent10_AuditMaintenance (.lss)
+             Agent10_AuditMaintenance, Agent11_BatchManager, Agent12_RemoveDuplicates (.lss)
                                                  (3 + 3 lines each: Use + Call BR_Run...)
 scripts/     windows/bulkreg.ps1 + bulkreg.cmd                 (optional helper)
 tools/       BulkReg_AuditViewer.html                          (optional, offline)

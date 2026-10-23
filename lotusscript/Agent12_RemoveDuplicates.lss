@@ -1,0 +1,37 @@
+'=====================================================================
+' Agent name : BulkReg\12 - Remove Duplicates
+' Version    : 4.5.0 + unreleased addition (see CHANGELOG "Unreleased"; libraries BulkRegCommon + BulkRegAgents)
+' Code       : ALL logic is in the script library BulkRegAgents (BR_RunRemoveDuplicates).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: open the agent, click in the editor, Ctrl+A, Delete, paste this
+'              WHOLE file, Ctrl+S. Designer puts each part in its place automatically.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (NOT 'All selected documents' - Designer's default - or Notes asks for a selected document)
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegAgents > BR_RunRemoveDuplicates):
+'
+' Removes UNREGISTERED Person documents that are FULL duplicates of a registered user.
+' Input: RECON_<run>_duplicates.csv from 09 - Reconcile. Only DO_NOT_REGISTER rows are candidates.
+' Every candidate is re-checked live; it is removed only if name, short name (ops number), Internet address,
+' first and last name (DuplicateMustMatch) are the same as the keeper's, the keeper is registered with an
+' existing mail file, and the candidate is in no open batch, has no ID file and no mail file of its own.
+'   DryRun=1 (default): writes DEDUP_DRYRUN_<run>.csv (WOULD_REMOVE / SKIP_* per row), changes nothing.
+'   DryRun=0          : asks you to type REMOVE, writes a DXL snapshot of each document to <PasswordDir>\DEDUP_<run>\,
+'                       then removes it (DuplicateDeleteMethod: ADMINP request, DIRECT delete, or AUTO).
+' Never deletes mail files, ID files, vault IDs or the keeper. STOP.txt in BatchDir stops it after the current chunk.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunRemoveDuplicates()
+End Sub

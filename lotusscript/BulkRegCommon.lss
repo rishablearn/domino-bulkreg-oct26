@@ -316,6 +316,7 @@ Function BR_ToolLabel(toolName As String) As String
 	Case "reconcile": BR_ToolLabel = "09-Reconcile"
 	Case "auditmaint": BR_ToolLabel = "10-AuditMaintenance"
 	Case "batchmgr": BR_ToolLabel = "11-BatchManager"
+	Case "removedup": BR_ToolLabel = "12-RemoveDuplicates"
 	Case Else: BR_ToolLabel = toolName
 	End Select
 End Function
@@ -323,7 +324,7 @@ End Function
 ' Mode label: only 03 - Register Batch changes Domino, so only it is DRYRUN or LIVE-PRODUCTION
 Function BR_RunModeLabel(toolName As String) As String
 	Select Case LCase$(toolName)
-	Case "register", "repairmail", "auditmaint": BR_RunModeLabel = BR_IIfStr(CfgB("DryRun", True), "DRYRUN", "LIVE-PRODUCTION")
+	Case "register", "repairmail", "auditmaint", "removedup": BR_RunModeLabel = BR_IIfStr(CfgB("DryRun", True), "DRYRUN", "LIVE-PRODUCTION")
 	Case "setuplog": BR_RunModeLabel = "SETUP"
 	Case "verify": BR_RunModeLabel = "VERIFY"            ' read-only, except the optional title fix it asks for
 	Case Else: BR_RunModeLabel = "READ-ONLY"
