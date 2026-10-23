@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BulkReg Guide: merge to one machine 4.5.0</title>
+<style>
+:root{
+  --bg:#F7F7FC; --surface:#FFFFFF; --fg:#14142B; --muted:#5B6275; --line:#DCE6F0;
+  --teal:#17707F; --teal2:#2EC0CB; --blue:#0F5FDC; --thead:#17707F; --thead-fg:#FFFFFF; --alt:#F4F7FA;
+  --code-bg:#ECF3F8; --code-fg:#0B3D7A; --note-bg:#E8F6F7; --warn-bg:#FFF4E0; --warn:#9A5B00;
+  --band:linear-gradient(135deg,#0B1D3A 0%,#17707F 55%,#2EC0CB 100%);
+  --font:Arial,"Helvetica Neue",Helvetica,sans-serif; --mono:ui-monospace,Consolas,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--font);margin:0}
+.band{background:var(--band);color:#fff;padding:28px 16px 26px}
+.band .in{max-width:1180px;margin:0 auto}
+.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;opacity:.85;font-weight:700}
+.band h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 8px;text-wrap:balance}
+.band p{margin:0;max-width:76ch;opacity:.94}
+.band a{color:#fff}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.meta span{font-size:12.5px;border:1px solid rgba(255,255,255,.45);border-radius:20px;padding:3px 10px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;display:grid;grid-template-columns:270px minmax(0,1fr);gap:40px}
+nav.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding-block:24px}
+.toc input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);font:inherit;font-size:14px;margin-bottom:12px}
+.toc ul{list-style:none;margin:0;padding:0}
+.toc>ul>li{margin:2px 0}
+.toc a{display:block;color:var(--fg);text-decoration:none;font-size:13.5px;padding:4px 8px;border-radius:5px;border-left:3px solid transparent}
+.toc a:hover,.toc a:focus-visible{background:var(--alt);outline:none}
+.toc a.on{border-left-color:var(--teal2);color:var(--teal);font-weight:700}
+.toc li ul a{font-size:12.5px;color:var(--muted);padding-left:20px}
+.toc .other{margin-top:14px;font-size:13px}
+.toc .other a{display:inline;padding:0;border:0;color:var(--blue)}
+main{min-width:0;padding-block:24px 64px;max-width:900px}
+h2{font-size:24px;color:var(--teal);margin:34px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--teal2);text-wrap:balance;scroll-margin-top:12px}
+h3{font-size:18px;color:var(--teal);margin:26px 0 8px;scroll-margin-top:12px}
+h4{font-size:15px;color:var(--blue);margin:20px 0 6px}
+p,li{max-width:80ch}
+ul,ol{padding-left:22px}
+li{margin:4px 0}
+a{color:var(--blue)}
+code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.cb{margin:12px 0}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:6px;padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.45;margin:0}
+pre code{background:none;padding:0;color:var(--fg);overflow-wrap:normal;white-space:pre}
+.cp{display:block;margin:0 0 4px auto;font:600 12px var(--font);background:var(--surface);color:var(--teal);border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer}
+.cp:hover,.cp:focus-visible{border-color:var(--teal2);outline:none}
+.cp.ok{color:#1A7F37;border-color:#1A7F37}
+details.script{border:1px solid var(--line);border-radius:6px;background:var(--surface);margin:12px 0}
+details.script>summary{cursor:pointer;padding:10px 14px;font-weight:700;color:var(--teal);list-style-position:inside}
+details.script>summary span{font-weight:400;color:var(--muted);font-size:12.5px;margin-left:8px}
+details.script .cb{margin:0;padding:0 10px 10px}
+.tw{overflow-x:auto;margin:10px 0 18px;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;background:var(--surface)}
+th{background:var(--thead);color:var(--thead-fg);text-align:left;padding:8px 10px;font-weight:700}
+td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top}
+tbody tr:nth-child(even) td{background:var(--alt)}
+.call{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:12px 14px;border-radius:6px;margin:14px 0;border-left:4px solid var(--teal2);background:var(--note-bg)}
+.call b.l{color:var(--teal);font-size:12px;text-transform:uppercase;letter-spacing:.08em;padding-top:2px}
+.call.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+.call.warn b.l{color:var(--warn)}
+.call p{margin:0 0 6px}
+.call p:last-child{margin:0}
+.tools{display:flex;gap:8px;margin-top:16px}
+.tools button,.menu{font:inherit;font-size:13px;color:#fff;background:transparent;border:1px solid rgba(255,255,255,.6);border-radius:6px;padding:5px 12px;cursor:pointer}
+.menu{display:none}
+footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px;margin-top:30px;max-width:900px}
+@media (max-width:860px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:0}
+  nav.toc{position:static;max-height:none;padding-block:12px 0}
+  .menu{display:inline-block}
+  nav.toc.closed ul,nav.toc.closed input{display:none}
+}
+@media print{
+  .band{background:#fff;color:#000;padding:0 0 10px}.band *{color:#000!important;border-color:#999!important}
+  nav.toc,.tools,.cp,.menu{display:none!important}.wrap{display:block}
+  details.script{display:block}details.script>*{display:block}
+  pre{white-space:pre-wrap}h2{break-after:avoid}.tw,pre,.call{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<header class="band"><div class="in">
+  <div class="eyebrow">HCL Software &middot; BulkReg 4.5.0</div>
+  <h1>Merge machine B into machine A (then work from one machine only)</h1>
+  <p>Machine <strong>A</strong> is the one you keep. Machine <strong>B</strong> is retired. Copy B's folders into A, check, then never run BulkReg on B again. Nothing is deleted or overwritten by the merge.</p>
+  <div class="meta"><span>Version 4.5.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
+  <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
+</div></header>
+<div class="wrap">
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#what-gets-merged">What gets merged</a></li><li><a href="#steps">Steps</a></li><li><a href="#manual-merge-without-the-script">Manual merge (without the script)</a></li><li><a href="#rules-from-now-on">Rules from now on</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a></div></nav>
+<main>
+
+<div class="call warn"><b class="l">Read first</b><div>
+<p><strong>Status:</strong> the merge script <code>scripts/windows/BulkReg_MergeFromMachine.ps1</code> was not run by its author (no PowerShell was available). Try it on copies of both folders first and read the dry-run report before the real run.</p>
+</div></div>
+<h2 id="what-gets-merged">What gets merged</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>B folder</th>
+<th>Goes to (A's ini setting)</th>
+<th>Contains</th>
+<th>Sensitive</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>batches\</code></td>
+<td><code>BatchDir</code></td>
+<td>batch files, <code>_results.csv</code>, in-progress flags, reports</td>
+<td>names, e-mail</td>
+</tr>
+<tr>
+<td><code>audit\</code></td>
+<td><code>AuditDir</code></td>
+<td>one folder per run, <code>RUN_INFO.txt</code>, <code>*_audit.csv</code></td>
+<td>names</td>
+</tr>
+<tr>
+<td><code>reconcile\</code></td>
+<td><code>ReconcileDir</code></td>
+<td><code>RECON_*</code> reports</td>
+<td>names</td>
+</tr>
+<tr>
+<td><code>secure\</code></td>
+<td><code>PasswordDir</code></td>
+<td>initial-password files</td>
+<td><strong>SECRET</strong></td>
+</tr>
+<tr>
+<td><code>ids\</code></td>
+<td><code>IDFileDir</code></td>
+<td>user ID files</td>
+<td><strong>SECRET</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Same file name and same content: skipped. Same name, different content: <strong>not overwritten</strong>, the B version goes to <code>C:\BulkReg\merge_conflicts\B\</code> for you to decide.</p>
+<h2 id="steps">Steps</h2>
+<p><strong>1. Stop B.</strong> On B: create <code>STOP.txt</code> in B's <code>BatchDir</code>, wait for the current chunk to end, close Notes. Run <strong>11 - Batch Manager</strong> (empty action) and keep <code>BATCHSTATUS_&lt;run&gt;.csv</code>. Leave <code>STOP.txt</code> in place: it keeps BulkReg from running on B by mistake.</p>
+<p><strong>2. Copy B's folder to encrypted media.</strong> The copy contains secrets: use a locally encrypted disk or share with restricted access. Copy, do not move:</p>
+<div class="cb"><pre><code class="language-powershell">foreach ($d in 'batches','audit','reconcile','secure','ids') {
+    robocopy &quot;C:\BulkReg\$d&quot; &quot;E:\BulkReg_B\$d&quot; /E /COPY:DAT /R:1 /W:1
+}
+</code></pre></div>
+<p><strong>3. Back up A.</strong> Copy <code>C:\BulkReg</code> (and take your usual <code>names.nsf</code> backup) before the merge.</p>
+<p><strong>4. Dry run on A.</strong> Nothing is copied. Open the report it names. <em>No script? Use the section "Manual merge (without the script)" below instead of steps 4 and 5.</em></p>
+<div class="cb"><pre><code class="language-powershell">cd C:\BulkReg\scripts\windows
+.\BulkReg_MergeFromMachine.ps1 -Source E:\BulkReg_B -Label B -IncludeSecrets
+</code></pre></div>
+<p>Read <code>C:\BulkReg\merge_reports\merge_B_DRYRUN_&lt;time&gt;.csv</code>. <code>COPY</code> = will be copied. <code>SAME</code> = already on A. <code>CONFLICT</code> = same name, different content. The report shows file names and hashes only.</p>
+<p><strong>5. Apply.</strong> Type <code>MERGE</code> when asked. A failed file is reported; run it again, copied files then show <code>SAME</code>.</p>
+<div class="cb"><pre><code class="language-powershell">.\BulkReg_MergeFromMachine.ps1 -Source E:\BulkReg_B -Label B -IncludeSecrets -Apply
+</code></pre></div>
+<p><strong>6. Set A's <code>bulkreg.ini</code> for one machine.</strong></p>
+<div class="cb"><pre><code>PartitionCount=1
+PartitionIndex=1
+PartitionOverride=0
+MachineId=
+DryRun=1
+</code></pre></div>
+<p><strong>7. Check the result on A.</strong></p>
+<ul>
+<li><code>CONFLICT</code> rows: compare <code>merge_conflicts\B\...</code> with A's file by hand. Never copy over blindly.</li>
+<li>A batch with an in-progress flag was stopped half way: run <strong>11 - Batch Manager</strong>, action <code>RECOVER &lt;batch id&gt;</code>, then resume it on A (<code>RESUME &lt;batch id&gt;</code>, then 03). B's old batch IDs (<code>BATCH-&lt;run&gt;-B-01</code>) work as they are.</li>
+<li>Run <strong>09 - Reconcile</strong>, then follow <a href="BulkReg_Guide_Reconcile_Duplicates.html"><code>GUIDE-reconcile-duplicates.md</code></a>.</li>
+</ul>
+<p><strong>8. Retire B.</strong> When reconcile is clean and passwords are handed over:</p>
+<ol>
+<li>Delete the <code>E:\BulkReg_B</code> copy and B's own <code>secure\</code> and <code>ids\</code> through your normal secure-deletion process (the script never deletes).</li>
+<li>Keep B's <code>STOP.txt</code>. Do not run agents on B again.</li>
+</ol>
+<h2 id="manual-merge-without-the-script">Manual merge (without the script)</h2>
+<p>Use this instead of steps 4 and 5. Windows <code>robocopy</code> does the same job: it copies only files that are <strong>not yet on A</strong> and never overwrites, never deletes. Run in PowerShell on A. <code>E:\BulkReg_B</code> is the copy of B from step 2.</p>
+<div class="call"><b class="l">Note</b><div>
+<p><strong>Never</strong> add <code>/MIR</code>, <code>/PURGE</code> or <code>/MOVE</code>: they delete files or overwrite.</p>
+</div></div>
+<p><strong>M1. Dry run</strong> (<code>/L</code> = list only, nothing is copied). Drop <code>'secure','ids'</code> to leave out the secrets. If A's folders are not under <code>C:\BulkReg</code>, use the paths from A's <code>bulkreg.ini</code> (<code>BatchDir</code>, <code>AuditDir</code>, <code>ReconcileDir</code>, <code>PasswordDir</code>, <code>IDFileDir</code>).</p>
+<div class="cb"><pre><code class="language-powershell">$map = @{ batches='C:\BulkReg\batches'; audit='C:\BulkReg\audit'; reconcile='C:\BulkReg\reconcile'; secure='C:\BulkReg\secure'; ids='C:\BulkReg\ids' }
+foreach ($d in 'batches','audit','reconcile','secure','ids') {
+    robocopy &quot;E:\BulkReg_B\$d&quot; $map[$d] /E /XC /XN /XO /XF STOP.txt *.lock /L /NP /NJH /NJS /FP
+}
+</code></pre></div>
+<p>Every line listed is a file that will be copied. <code>/XC /XN /XO</code> skip every file that already exists on A, so existing files are never replaced.</p>
+<p><strong>M2. Find conflicts</strong> (same name on A and B, different content). This lists only files that exist on both sides and differ in size or date:</p>
+<div class="cb"><pre><code class="language-powershell">foreach ($d in 'batches','audit','reconcile','secure','ids') {
+    robocopy &quot;E:\BulkReg_B\$d&quot; $map[$d] /E /XL /XF STOP.txt *.lock /L /NP /NJH /NJS /NDL /FP
+}
+</code></pre></div>
+<p>No output = no conflicts. A listed file stays untouched on A: compare it with B's version by hand (open both, or <code>Get-FileHash &lt;file&gt;</code> on each). If you need B's version, copy it under another name, for example <code>&lt;name&gt;.fromB</code>. Never copy over A's file.</p>
+<p><strong>M3. Copy</strong> (the same command without <code>/L</code>, with a log):</p>
+<div class="cb"><pre><code class="language-powershell">foreach ($d in 'batches','audit','reconcile','secure','ids') {
+    robocopy &quot;E:\BulkReg_B\$d&quot; $map[$d] /E /XC /XN /XO /XF STOP.txt *.lock /COPY:DAT /R:1 /W:1 /NP /LOG+:C:\BulkReg\merge_B.log
+}
+</code></pre></div>
+<p>Robocopy exit codes 0 to 3 mean success (1 = files copied). 8 or more = an error: read <code>merge_B.log</code>.</p>
+<p><strong>M4. Verify.</strong> Every file of B must now exist on A with the same content. This prints nothing when all is well, and one line per missing or different file:</p>
+<div class="cb"><pre><code class="language-powershell">foreach ($d in 'batches','audit','reconcile','secure','ids') {
+    $s = (Resolve-Path &quot;E:\BulkReg_B\$d&quot;).Path
+    Get-ChildItem $s -Recurse -File | Where-Object { $_.Name -notin 'STOP.txt' -and $_.Extension -ne '.lock' } | ForEach-Object {
+        $t = Join-Path $map[$d] $_.FullName.Substring($s.Length).TrimStart('\')
+        if (-not (Test-Path $t)) { &quot;MISSING  $t&quot; }
+        elseif ((Get-FileHash $t).Hash -ne (Get-FileHash $_.FullName).Hash) { &quot;DIFFERS  $t&quot; }
+    }
+}
+</code></pre></div>
+<p><code>DIFFERS</code> rows are the conflicts from M2. <code>MISSING</code> rows: run M3 again.</p>
+<p><strong>M5. Incomplete batches.</strong> A batch stopped half way has an in-progress flag. List them, then handle each with <strong>11 - Batch Manager</strong>, action <code>RECOVER &lt;batch id&gt;</code> (see step 7):</p>
+<div class="cb"><pre><code class="language-powershell">Get-ChildItem C:\BulkReg\batches -Filter *_inprogress.flag
+</code></pre></div>
+<p>Then continue with step 6 (ini) and step 7.</p>
+<p>Plain Explorer works too (copy B's folders over A's and choose <strong>Skip</strong> or <strong>Don't replace</strong> on every name clash), but it gives no list of conflicts and no verification: use robocopy and M4.</p>
+<h2 id="rules-from-now-on">Rules from now on</h2>
+<ul>
+<li>One machine runs BulkReg. Never two at once.</li>
+<li>New batch IDs have no machine tag (<code>MachineId</code> empty).</li>
+<li>If a password or ID file turns up outside <code>secure\</code> or <code>ids\</code>, rotate it and tell the security owner.</li>
+</ul>
+<footer>BulkReg 4.5.0 &middot; Guide: merge to one machine &middot; generated from <code>GUIDE-merge-to-single-machine.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
+</main>
+</div>
+<script>
+(function(){
+  // copy buttons on every code block
+  document.querySelectorAll('.cb').forEach(function(box){
+    var b=document.createElement('button'); b.type='button'; b.className='cp'; b.textContent='Copy';
+    b.addEventListener('click',function(){
+      var t=box.querySelector('code').innerText;
+      var done=function(){b.textContent='Copied'; b.classList.add('ok'); setTimeout(function(){b.textContent='Copy'; b.classList.remove('ok');},1600);};
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,fallback);} else {fallback();}
+      function fallback(){var a=document.createElement('textarea'); a.value=t; document.body.appendChild(a); a.select(); try{document.execCommand('copy'); done();}catch(e){b.textContent='Select + Ctrl+C';} document.body.removeChild(a);}
+    });
+    box.insertBefore(b,box.firstChild);
+  });
+  // contents: filter + current section
+  var toc=document.querySelector('nav.toc'), q=toc.querySelector('input'), links=[].slice.call(toc.querySelectorAll('li a[href^="#"]'));
+  q.addEventListener('input',function(){var v=q.value.toLowerCase(); links.forEach(function(a){a.parentNode.style.display=(!v||a.textContent.toLowerCase().indexOf(v)>-1)?'':'none';});});
+  var map={}; links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a;});
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){links.forEach(function(a){a.classList.remove('on');}); var a=map[e.target.id]; if(a){a.classList.add('on');}}});},{rootMargin:'0px 0px -75% 0px'});
+    document.querySelectorAll('main h2[id],main h3[id]').forEach(function(h){io.observe(h);});
+  }
+  var m=document.querySelector('.menu'); if(m){m.addEventListener('click',function(){toc.classList.toggle('closed');}); if(window.innerWidth<=860){toc.classList.add('closed');}}
+  var pr=document.getElementById('print'); if(pr){pr.addEventListener('click',function(){document.querySelectorAll('details.script').forEach(function(d){d.open=true;}); window.print();});}
+})();
+</script>
+</body>
+</html>

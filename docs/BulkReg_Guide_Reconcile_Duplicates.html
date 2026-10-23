@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BulkReg Guide: reconcile and duplicates 4.5.0</title>
+<style>
+:root{
+  --bg:#F7F7FC; --surface:#FFFFFF; --fg:#14142B; --muted:#5B6275; --line:#DCE6F0;
+  --teal:#17707F; --teal2:#2EC0CB; --blue:#0F5FDC; --thead:#17707F; --thead-fg:#FFFFFF; --alt:#F4F7FA;
+  --code-bg:#ECF3F8; --code-fg:#0B3D7A; --note-bg:#E8F6F7; --warn-bg:#FFF4E0; --warn:#9A5B00;
+  --band:linear-gradient(135deg,#0B1D3A 0%,#17707F 55%,#2EC0CB 100%);
+  --font:Arial,"Helvetica Neue",Helvetica,sans-serif; --mono:ui-monospace,Consolas,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--font);margin:0}
+.band{background:var(--band);color:#fff;padding:28px 16px 26px}
+.band .in{max-width:1180px;margin:0 auto}
+.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;opacity:.85;font-weight:700}
+.band h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 8px;text-wrap:balance}
+.band p{margin:0;max-width:76ch;opacity:.94}
+.band a{color:#fff}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.meta span{font-size:12.5px;border:1px solid rgba(255,255,255,.45);border-radius:20px;padding:3px 10px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;display:grid;grid-template-columns:270px minmax(0,1fr);gap:40px}
+nav.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding-block:24px}
+.toc input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);font:inherit;font-size:14px;margin-bottom:12px}
+.toc ul{list-style:none;margin:0;padding:0}
+.toc>ul>li{margin:2px 0}
+.toc a{display:block;color:var(--fg);text-decoration:none;font-size:13.5px;padding:4px 8px;border-radius:5px;border-left:3px solid transparent}
+.toc a:hover,.toc a:focus-visible{background:var(--alt);outline:none}
+.toc a.on{border-left-color:var(--teal2);color:var(--teal);font-weight:700}
+.toc li ul a{font-size:12.5px;color:var(--muted);padding-left:20px}
+.toc .other{margin-top:14px;font-size:13px}
+.toc .other a{display:inline;padding:0;border:0;color:var(--blue)}
+main{min-width:0;padding-block:24px 64px;max-width:900px}
+h2{font-size:24px;color:var(--teal);margin:34px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--teal2);text-wrap:balance;scroll-margin-top:12px}
+h3{font-size:18px;color:var(--teal);margin:26px 0 8px;scroll-margin-top:12px}
+h4{font-size:15px;color:var(--blue);margin:20px 0 6px}
+p,li{max-width:80ch}
+ul,ol{padding-left:22px}
+li{margin:4px 0}
+a{color:var(--blue)}
+code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.cb{margin:12px 0}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:6px;padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.45;margin:0}
+pre code{background:none;padding:0;color:var(--fg);overflow-wrap:normal;white-space:pre}
+.cp{display:block;margin:0 0 4px auto;font:600 12px var(--font);background:var(--surface);color:var(--teal);border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer}
+.cp:hover,.cp:focus-visible{border-color:var(--teal2);outline:none}
+.cp.ok{color:#1A7F37;border-color:#1A7F37}
+details.script{border:1px solid var(--line);border-radius:6px;background:var(--surface);margin:12px 0}
+details.script>summary{cursor:pointer;padding:10px 14px;font-weight:700;color:var(--teal);list-style-position:inside}
+details.script>summary span{font-weight:400;color:var(--muted);font-size:12.5px;margin-left:8px}
+details.script .cb{margin:0;padding:0 10px 10px}
+.tw{overflow-x:auto;margin:10px 0 18px;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;background:var(--surface)}
+th{background:var(--thead);color:var(--thead-fg);text-align:left;padding:8px 10px;font-weight:700}
+td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top}
+tbody tr:nth-child(even) td{background:var(--alt)}
+.call{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:12px 14px;border-radius:6px;margin:14px 0;border-left:4px solid var(--teal2);background:var(--note-bg)}
+.call b.l{color:var(--teal);font-size:12px;text-transform:uppercase;letter-spacing:.08em;padding-top:2px}
+.call.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+.call.warn b.l{color:var(--warn)}
+.call p{margin:0 0 6px}
+.call p:last-child{margin:0}
+.tools{display:flex;gap:8px;margin-top:16px}
+.tools button,.menu{font:inherit;font-size:13px;color:#fff;background:transparent;border:1px solid rgba(255,255,255,.6);border-radius:6px;padding:5px 12px;cursor:pointer}
+.menu{display:none}
+footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px;margin-top:30px;max-width:900px}
+@media (max-width:860px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:0}
+  nav.toc{position:static;max-height:none;padding-block:12px 0}
+  .menu{display:inline-block}
+  nav.toc.closed ul,nav.toc.closed input{display:none}
+}
+@media print{
+  .band{background:#fff;color:#000;padding:0 0 10px}.band *{color:#000!important;border-color:#999!important}
+  nav.toc,.tools,.cp,.menu{display:none!important}.wrap{display:block}
+  details.script{display:block}details.script>*{display:block}
+  pre{white-space:pre-wrap}h2{break-after:avoid}.tw,pre,.call{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<header class="band"><div class="in">
+  <div class="eyebrow">HCL Software &middot; BulkReg 4.5.0</div>
+  <h1>Reconcile and remove duplicates (one machine)</h1>
+  <p>Run this on machine A after the merge. Order: <strong>check, reconcile, review, duplicates, repair mail, check again.</strong> Keep <code>DryRun=1</code> except for the live steps.</p>
+  <div class="meta"><span>Version 4.5.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
+  <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
+</div></header>
+<div class="wrap">
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#before-you-start">Before you start</a></li><li><a href="#step-1-read-only-baseline">Step 1: read-only baseline</a></li><li><a href="#step-2-fix-each-state-from-recover">Step 2: fix each state from RECOVER</a></li><li><a href="#step-3-duplicates">Step 3: duplicates</a></li><li><a href="#step-4-registered-but-no-mail-file">Step 4: registered but no mail file</a></li><li><a href="#step-5-close-out">Step 5: close out</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a></div></nav>
+<main>
+
+<div class="call warn"><b class="l">Read first</b><div>
+<p><strong>Status:</strong> agent <strong>12 - Remove Duplicates</strong> was added after 4.5.0 and has <strong>not been compiled or run against Domino</strong>. Compile it in Designer and do a dry run first. Removing Person documents is destructive: get written approval from the business owner and take a <code>names.nsf</code> backup before any live run.</p>
+</div></div>
+<h2 id="before-you-start">Before you start</h2>
+<ul>
+<li>No batch is running. No <code>STOP.txt</code> in <code>BatchDir</code> (unless you put it there to stop a run).</li>
+<li><code>bulkreg.ini</code>: <code>DryRun=1</code>, <code>PartitionCount=1</code>, no <code>&lt;PLACEHOLDER&gt;</code> left.</li>
+<li><code>names.nsf</code> and <code>C:\BulkReg</code> are backed up.</li>
+</ul>
+<h2 id="step-1-read-only-baseline">Step 1: read-only baseline</h2>
+<ol>
+<li><strong>01 - Preflight Check.</strong> Expect no errors.</li>
+<li><strong>11 - Batch Manager</strong>, empty action. Note every batch that is not <code>DONE_COMPLETE</code>. For each, action <code>RECOVER &lt;batch id&gt;</code> and read <code>RECOVER_&lt;id&gt;_&lt;run&gt;.csv</code>.</li>
+<li><strong>09 - Reconcile.</strong> Open <code>RECON_&lt;run&gt;_summary.txt</code>, then these files:</li>
+</ol>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_gaps.csv</code></td>
+<td>users not registered, or registered without a mail file</td>
+</tr>
+<tr>
+<td><code>_duplicates.csv</code></td>
+<td>duplicate Person documents: <code>KEEP</code>, <code>DO_NOT_REGISTER</code>, <code>REVIEW</code></td>
+</tr>
+<tr>
+<td><code>_duplicate_ids.csv</code></td>
+<td>duplicate ID files or vault entries</td>
+</tr>
+<tr>
+<td><code>_missing_mail.csv</code></td>
+<td>registered users with no mail file</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="step-2-fix-each-state-from-recover">Step 2: fix each state from <code>RECOVER</code></h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>State</th>
+<th>Do this</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>NOT_REGISTERED</code></td>
+<td>run 03 again (resumes), or <code>REMAINDER &lt;id&gt;</code>, review, run 03</td>
+</tr>
+<tr>
+<td><code>REGISTERED_NO_RESULT</code></td>
+<td>initial password is in <code>secure\</code>; then 08 and 04 for that user</td>
+</tr>
+<tr>
+<td><code>NO_MAIL</code></td>
+<td>step 4 (agent 08)</td>
+</tr>
+<tr>
+<td><code>NOT_IN_VAULT</code></td>
+<td>vault or policy action; never run 03 for this user</td>
+</tr>
+<tr>
+<td><code>DUPLICATE</code></td>
+<td>step 3</td>
+</tr>
+<tr>
+<td><code>GONE</code>, <code>OK</code></td>
+<td>nothing</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="step-3-duplicates">Step 3: duplicates</h2>
+<p><strong>Rules of thumb:</strong> a duplicate is a second Person document for the same person. The registered one with a mail file is the <strong>keeper</strong>. Only an <strong>unregistered, full duplicate</strong> is removed. A second registered identity is never touched by agent 12.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th><code>_duplicates.csv</code> row</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>KEEP</code></td>
+<td>stays</td>
+</tr>
+<tr>
+<td><code>DO_NOT_REGISTER</code></td>
+<td>unregistered duplicate: agent 12 can remove it</td>
+</tr>
+<tr>
+<td><code>REVIEW</code></td>
+<td>second registered identity: manual AdminP decision by the Domino owner</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>_duplicate_ids.csv</code>:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>IDFILE_MULTIPLE</code></td>
+<td>keep the ID that is in the vault or was handed out; archive the others by hand</td>
+</tr>
+<tr>
+<td><code>IDFILE_UNREGISTERED</code>, <code>VAULT_UNREGISTERED</code></td>
+<td>do not register again; check the log and the vault first</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Remove duplicates (agent 12):</strong></p>
+<ol>
+<li>Confirm in <code>bulkreg.ini</code>: <code>DuplicateDeleteMethod=ADMINP</code>, <code>DuplicateMustMatch=name,short,inet,first,last</code>, <code>DuplicateMaxDelete=25</code>.</li>
+<li>Run <strong>12 - Remove Duplicates</strong> with <code>DryRun=1</code>, input <code>RECON_&lt;run&gt;_duplicates.csv</code>. Read <code>DEDUP_DRYRUN_&lt;run&gt;.csv</code>: <code>WOULD_REMOVE</code> is the plan. Every <code>SKIP_*</code> row says why:</li>
+</ol>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Skip</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SKIP_NOT_FULL_DUPLICATE</code></td>
+<td>a field differs: review by hand</td>
+</tr>
+<tr>
+<td><code>SKIP_NEEDS_DIRECT</code>, <code>SKIP_AMBIGUOUS_NAME</code></td>
+<td>flat or shared name: AdminP is unsafe; decide on DIRECT after review</td>
+</tr>
+<tr>
+<td><code>SKIP_IN_OPEN_BATCH</code></td>
+<td>finish the batch first</td>
+</tr>
+<tr>
+<td><code>SKIP_KEEPER_MAIL_MISSING</code></td>
+<td>repair mail first (step 4)</td>
+</tr>
+</tbody>
+</table></div>
+<ol start="3">
+<li>Business owner approves the <code>WOULD_REMOVE</code> list. Write down name and date.</li>
+<li>Set <code>DryRun=0</code>, run 12, type <code>REMOVE</code>. It stops after <code>DuplicateMaxDelete</code> removals: dry run and live run again for the rest.</li>
+<li>Snapshots of each removed document are in <code>&lt;PasswordDir&gt;\DEDUP_&lt;run&gt;\</code>. This folder is sensitive (it can hold password hashes): keep it restricted. AdminP needs a few minutes: check the Administration Requests database.</li>
+<li>Set <code>DryRun=1</code> again.</li>
+</ol>
+<h2 id="step-4-registered-but-no-mail-file">Step 4: registered but no mail file</h2>
+<ol>
+<li><code>MailTemplate</code> is set in <code>bulkreg.ini</code>.</li>
+<li><strong>08 - Repair Missing Mail Files</strong>, <code>DryRun=1</code>, scope empty or <code>RECON_&lt;run&gt;_gaps.csv</code>. Read <code>*_mailrepair_DRYRUN_&lt;run&gt;.csv</code> (<code>WOULD_CREATE</code>).</li>
+<li><code>DryRun=0</code>, run 08, type <code>REPAIR</code>. Results: <code>MAIL_CREATED</code> or <code>CREATED_PENDING</code> (AdminP still working).</li>
+<li><strong>04 - Verify Registration and Vault.</strong> Repeat until every user is <code>IN_VAULT</code>, <code>MAILFILE_OK</code>, <code>REPLICAS_OK</code>.</li>
+</ol>
+<h2 id="step-5-close-out">Step 5: close out</h2>
+<ol>
+<li><strong>09 - Reconcile</strong> again: <code>_gaps.csv</code>, <code>_duplicates.csv</code>, <code>_duplicate_ids.csv</code>, <code>_missing_mail.csv</code> are empty. Anything left gets a written owner.</li>
+<li>Hand over the initial passwords from <code>secure\</code>, then delete them there through your normal process.</li>
+<li><code>DryRun=1</code>. Delete <code>STOP.txt</code> if you created one.</li>
+</ol>
+<h2 id="stop-and-escalate">Stop and escalate</h2>
+<p>On a suspected security incident (unexpected certificates or IDs, a password or ID file outside its folder, vault inconsistencies across many users), do not self-remediate. Create <code>STOP.txt</code> in <code>BatchDir</code> and contact the Domino or security owner.</p>
+<footer>BulkReg 4.5.0 &middot; Guide: reconcile and duplicates &middot; generated from <code>GUIDE-reconcile-duplicates.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
+</main>
+</div>
+<script>
+(function(){
+  // copy buttons on every code block
+  document.querySelectorAll('.cb').forEach(function(box){
+    var b=document.createElement('button'); b.type='button'; b.className='cp'; b.textContent='Copy';
+    b.addEventListener('click',function(){
+      var t=box.querySelector('code').innerText;
+      var done=function(){b.textContent='Copied'; b.classList.add('ok'); setTimeout(function(){b.textContent='Copy'; b.classList.remove('ok');},1600);};
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,fallback);} else {fallback();}
+      function fallback(){var a=document.createElement('textarea'); a.value=t; document.body.appendChild(a); a.select(); try{document.execCommand('copy'); done();}catch(e){b.textContent='Select + Ctrl+C';} document.body.removeChild(a);}
+    });
+    box.insertBefore(b,box.firstChild);
+  });
+  // contents: filter + current section
+  var toc=document.querySelector('nav.toc'), q=toc.querySelector('input'), links=[].slice.call(toc.querySelectorAll('li a[href^="#"]'));
+  q.addEventListener('input',function(){var v=q.value.toLowerCase(); links.forEach(function(a){a.parentNode.style.display=(!v||a.textContent.toLowerCase().indexOf(v)>-1)?'':'none';});});
+  var map={}; links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a;});
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){links.forEach(function(a){a.classList.remove('on');}); var a=map[e.target.id]; if(a){a.classList.add('on');}}});},{rootMargin:'0px 0px -75% 0px'});
+    document.querySelectorAll('main h2[id],main h3[id]').forEach(function(h){io.observe(h);});
+  }
+  var m=document.querySelector('.menu'); if(m){m.addEventListener('click',function(){toc.classList.toggle('closed');}); if(window.innerWidth<=860){toc.classList.add('closed');}}
+  var pr=document.getElementById('print'); if(pr){pr.addEventListener('click',function(){document.querySelectorAll('details.script').forEach(function(d){d.open=true;}); window.print();});}
+})();
+</script>
+</body>
+</html>

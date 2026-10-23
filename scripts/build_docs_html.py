@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Builds the self-contained HTML versions of the 4.5.0 playbook and deployment steps from their Markdown sources.
+Builds the self-contained HTML versions of the 4.5.0 playbook, deployment steps and the two short guides from their Markdown sources.
 
     python3 scripts/build_docs_html.py
 
@@ -23,10 +23,14 @@ VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 DOCS = [
     ("PLAYBOOK-post-deploy-4.5.0.md", "docs/BulkReg_PostDeploy_Playbook_4.5.0.html", "Post-deploy playbook"),
     ("DEPLOY-4.5.0.md", "docs/BulkReg_Deploy_4.5.0.html", "Deployment steps"),
+    ("GUIDE-merge-to-single-machine.md", "docs/BulkReg_Guide_Merge_To_Single_Machine.html", "Guide: merge to one machine"),
+    ("GUIDE-reconcile-duplicates.md", "docs/BulkReg_Guide_Reconcile_Duplicates.html", "Guide: reconcile and duplicates"),
 ]
 LINKS = {  # file names mentioned in the text -> the HTML version next to it
     "PLAYBOOK-post-deploy-4.5.0.md": "BulkReg_PostDeploy_Playbook_4.5.0.html",
     "DEPLOY-4.5.0.md": "BulkReg_Deploy_4.5.0.html",
+    "GUIDE-merge-to-single-machine.md": "BulkReg_Guide_Merge_To_Single_Machine.html",
+    "GUIDE-reconcile-duplicates.md": "BulkReg_Guide_Reconcile_Duplicates.html",
 }
 
 CSS = """
@@ -181,7 +185,7 @@ def blockquotes_to_callouts(h: str) -> str:
     return re.sub(r"<blockquote>(.*?)</blockquote>", repl, h, flags=re.S)
 
 
-def toc_html(tokens, other_link: str, other_title: str) -> str:
+def toc_html(tokens, others) -> str:
     out = ['<ul>']
     for t in tokens:
         if t["level"] == 1:
@@ -196,7 +200,7 @@ def toc_html(tokens, other_link: str, other_title: str) -> str:
             out.append("</ul>")
         out.append("</li>")
     out.append("</ul>")
-    out.append(f'<div class="other">Also: <a href="{other_link}">{html.escape(other_title)}</a></div>')
+    out.append('<div class="other">Also: ' + " &middot; ".join(f'<a href="{l}">{html.escape(t)}</a>' for l, t in others) + '</div>')
     return "".join(out)
 
 
@@ -247,7 +251,7 @@ def build(src_name: str, out_name: str, title_kind: str, other):
   <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
 </div></header>
 <div class="wrap">
-<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents">{toc_html(tokens, other[0], other[1])}</nav>
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents">{toc_html(tokens, other)}</nav>
 <main>
 {body}
 <footer>BulkReg {VERSION} &middot; {html.escape(title_kind)} &middot; generated from <code>{src_name}</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
@@ -264,8 +268,8 @@ def build(src_name: str, out_name: str, title_kind: str, other):
 
 def main():
     for i, (src, out, kind) in enumerate(DOCS):
-        o_src, o_out, o_kind = DOCS[1 - i]
-        build(src, out, kind, (pathlib.Path(o_out).name, o_kind))
+        others = [(pathlib.Path(o_out).name, o_kind) for j, (_, o_out, o_kind) in enumerate(DOCS) if j != i]
+        build(src, out, kind, others)
 
 
 if __name__ == "__main__":
