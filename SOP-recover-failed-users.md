@@ -54,6 +54,10 @@ Install: new library `BulkRegRecover` (paste `lotusscript/BulkRegRecover.lss`), 
 
 Optional ini keys (defaults are built in, you normally set none): `RecoverMaxCreates` (cap per run), `RecoverMaxMinutes` (120), `RecoverCheckReplicas` (0; set 1 once at the end on a cluster to find missing replicas).
 
+## Get changes from GitHub (Windows)
+
+In PowerShell: `powershell -ExecutionPolicy Bypass -File scripts\windows\BulkReg_SyncFromGitHub.ps1 -DryRun` shows what is new; run it without `-DryRun` to pull. It only fast-forwards, never overwrites local changes, never touches `C:\BulkReg`, and lists the `.lss` files you must paste into Designer afterwards.
+
 ## Send changes to GitHub (Mac)
 
 Run `scripts/mac/sync_to_github.sh` from Terminal. It shows what changed and asks before anything is committed or pushed. Details in the script header.
