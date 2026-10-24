@@ -13,11 +13,10 @@
 '
 ' What it does (details: BulkRegRecover.lss header and SOP-recover-failed-users.md):
 '
-' Works ONLY from the Domino Directory (single source of truth) and the mail servers. Classifies every user,
-' writes RECOVER_<run>_plan.csv, and (DryRun=0, type RECOVER) creates the missing mail files, replaces empty
-' shells, then verifies them and requests the cluster replicas. Safe to run again at any time: it recomputes
-' the plan every run and never overwrites a mail file. Registration of NOT_REGISTERED users stays with 02 + 03.
-' Several machines: PartitionCount / PartitionIndex (same as 4.5.0) + a guard in the central log database.
+' Checks every user against the Domino Directory (single source of truth) and the mail-file lists of the servers,
+' writes RECOVER_<run>_plan.csv, and (DryRun=0, type RECOVER) in one run: removes unregistered full duplicates,
+' creates missing mail files, replaces cut-off empty files, closes stale batch files that hide users from 02, verifies
+' and requests the cluster replicas. Then 02 + 03 register what is left. Safe to run again at any time.
 '=====================================================================
 '#####################################################################
 ' --- part 1: (Options) ---

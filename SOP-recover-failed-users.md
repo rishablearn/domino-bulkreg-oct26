@@ -1,48 +1,52 @@
 # SOP: Recover failed and missing users
 
-**One rule:** the Domino Directory is the truth. Agent **13 - Recover Users** looks at the directory and the mail servers, works out what is missing, and fixes it. Run it again as often as you like: it only does what is still missing and never overwrites a mail file.
+**One rule:** the Domino Directory is the truth. Agent **13 - Recover Users** compares it with the mail servers and fixes what is wrong in one run: it **removes duplicates, creates missing mail files, replaces cut-off ones, and frees the users that `02 - Build Batch` was silently skipping**. It does not matter which machine or which release (4.5 or older) registered a user. Run it again as often as you like: it only does what is still missing and never overwrites a mail file.
 
-> Agent 13 is **not compiled or run against Domino yet**. Do the pilot (step 3) before the full run.
+> Agent 13 is **not compiled or run against Domino yet**. Do the pilot (step 4) first.
 
-## What happens to each user
+## The five steps
 
-| 13 finds | What it does |
+| # | Do | Result |
+|---|---|---|
+| 1 | **On each mail server** run the listing script, copy the CSV to the BulkReg machine into `C:\BulkReg\maillists\` | Server file lists (read-only, 1 minute) |
+| 2 | `DryRun=1`. Run **13 - Recover Users** | Counts on screen + `RECOVER_<run>_plan.csv` |
+| 3 | Read the plan (`Include=Y` rows are fixed by 13; `MANUAL` rows need a person) | Plan agreed |
+| 4 | **Pilot:** add `RecoverMaxCreates=10`, `DryRun=0`, run 13, type `RECOVER`. Check 2 or 3 users. Then remove `RecoverMaxCreates` and run 13 again | Duplicates removed, mail files created, stale batches closed. If it stops (slow server, time limit), run it again |
+| 5 | Run **02 - Build Batch**, review, **03 - Register Batch** for the users still not registered. Run 13 once more (`DryRun=1`) | 13 says **nothing for this agent to do** |
+
+Finish: hand over initial passwords from `secure\` and delete them. Set `DryRun=1`.
+
+**Listing scripts** (they only list files; nothing is changed):
+
+- Linux: `scripts/linux/bulkreg_list_mailfiles.sh /local/notesdata "DominoADMail/Demo"`
+- Windows: `powershell -ExecutionPolicy Bypass -File BulkReg_ListMailFiles.ps1 -DataDir D:\Domino\Data -Server "DominoADMail2/Demo"`
+
+No list for a server? 13 checks that server live. It works, but it is slower.
+
+## What 13 does with each user
+
+| Finding | Action |
 |---|---|
-| Registered, mail file missing | **Creates it** |
-| Mail file is an empty, cut-off shell | **Replaces it** (needs `RepairRemoveEmptyShells=1`) |
-| Mail file fine | Nothing |
-| Not registered | Lists it only. Register with **02 + 03** |
-| Anything else (no mail item, server down, file with data but no design) | Lists it as `MANUAL` with the reason. You fix it by hand |
+| Unregistered full duplicate of a registered user (same name, short name, Internet address) | **Removed**, after a snapshot (up to `DuplicateMaxDelete`, default 25 per run). Mail files, ID files and the registered user are never touched |
+| Registered, mail file missing | **Created** |
+| Mail file is a tiny, cut-off file | **Replaced** (only with `RepairRemoveEmptyShells=1`, only in a BulkReg mail folder) |
+| Not registered, held back by an old open or stopped batch (older than 24 h) | **Batch closed**, so 02 builds the user |
+| Not registered, nothing holds it back | Counted as **ready for 02** |
+| Anything else (no mail item, server down, file with data but no design, recent open batch, no Internet address, doubtful duplicate) | `MANUAL`: reason in the plan, you fix it |
 
-The list is `RECOVER_<run>_plan.csv`. `Include=Y` rows are fixed by 13. `MANUAL` and `REGISTER` rows are left to you.
-
-## Steps (one machine)
-
-1. **Dry run.** `DryRun=1`. Run **13 - Recover Users**, leave the scope empty. Read the counts and the plan CSV.
-2. **Agree the plan.** Set `Include=N` on rows you do not want touched.
-3. **Pilot.** Add `RecoverMaxCreates=10` to `bulkreg.ini`, set `DryRun=0`, run 13, type `RECOVER`. Check 2 to 3 of the 10 users in Domino Administrator (file exists, mail opens).
-4. **Full run.** Remove `RecoverMaxCreates`, run 13, type `RECOVER`. If it stops (`SLOW`, `STOP.txt`, time limit, error), fix the cause and **run it again**. It continues.
-5. **Proof.** Set `DryRun=1` and run 13. It must say **nothing for this agent to do**. Then register the `NOT_REGISTERED` users with 02 + 03 (if `Detail` names an open batch, use **11 - Batch Manager**: `RESUME <id>`, then 03), and run 13 once more for their mail files.
-
-Finish: hand over initial passwords from `secure\`, then delete them. Set `DryRun=1`.
+**Why 02 "created nothing":** 02 skips every user who is in an open or stopped batch file on that machine, who is a duplicate of a registered user, or who has no Internet address. The plan shows which of these applies to each user, and 13 closes the stale batches. After that, 02 finds the rest.
 
 ## Two machines
 
-Set once: Machine A `PartitionCount=2`, `PartitionIndex=1`. Machine B `PartitionCount=2`, `PartitionIndex=2`. Each machine then handles its own half of the users and never the other's.
+Set once: Machine A `PartitionCount=2`, `PartitionIndex=1`. Machine B `PartitionCount=2`, `PartitionIndex=2`. Each handles its own half of the users.
 
-1. Both machines use the **same** `DirectoryServer` and the same kit.
-2. Dry run on both. **"Directory users scanned" must be the same number.** If not, stop and let the directory replicate.
-3. Pilot, then full run on both at the same time. If you start a second run on the same partition, 13 warns you and asks.
-4. Proof: step 5 on each machine.
-
-If a machine crashed, its run stays "running" in the log database. Start 13 again and answer **Yes** to the warning only if you are sure that run is over. Passwords and ID files stay on the machine that registered the user.
+1. Same kit and same `DirectoryServer` on both.
+2. Dry run on both: **"Directory users scanned" must be the same number**. If not, wait for directory replication.
+3. Run both at the same time. A second run on the same partition is refused (log-database guard); if a machine crashed, answer **Yes** to the warning only when that run is really over.
 
 ## If it is slow or hangs
 
-- 13 writes `RECOVER_<run>_timing.csv`: seconds per create. Look at `SecCreate`.
-- It **stops itself** after 3 creates over 60 s in a row, or after 120 minutes. Run it again later.
-- Likely causes (not confirmed): server busy (backup, indexer, compact), antivirus scanning the mail folders, client far from the server. Run the Notes client next to the servers, outside backup windows, and ask the security owner about excluding the mail folders from on-access scanning.
-- After a hang or closed client: run 13 again. Cut-off files show up as empty shells and are replaced.
+13 writes `RECOVER_<run>_timing.csv` (seconds per create) and stops itself after 3 creates over 60 s in a row or 120 minutes: run it again later. Likely causes (not confirmed): busy server (backup, indexer), antivirus scanning the mail folders, client far from the server. Run the client next to the servers. After a hang just run 13 again: cut-off files are found by size and replaced.
 
 ## Stop and escalate
 
@@ -50,14 +54,34 @@ Create `STOP.txt` in `BatchDir` to stop cleanly. For a suspected security incide
 
 ## Install and roll back
 
-Install: new library `BulkRegRecover` (paste `lotusscript/BulkRegRecover.lss`), new agent `BulkReg\13 - Recover Users` (paste `lotusscript/Agent13_Recover.lss`), re-sign, recompile. Optionally re-paste `BulkRegCommon` (two label lines only). Roll back: delete the agent and the library.
+Install the library `BulkRegRecover` (paste `lotusscript/BulkRegRecover.lss`) and the agent `BulkReg\13 - Recover Users` (`lotusscript/Agent13_Recover.lss`), re-sign, recompile. Re-paste `BulkRegCommon` once (two label lines). Roll back: delete the agent and the library.
 
-Optional ini keys (defaults are built in, you normally set none): `RecoverMaxCreates` (cap per run), `RecoverMaxMinutes` (120), `RecoverCheckReplicas` (0; set 1 once at the end on a cluster to find missing replicas).
+## Git
 
-## Get changes from GitHub (Windows)
+Mac: `scripts/mac/sync_to_github.sh` (commit + push). Windows: `scripts\windows\BulkReg_SyncFromGitHub.ps1 -DryRun`, then without `-DryRun` (safe pull; lists the `.lss` files to paste into Designer).
 
-In PowerShell: `powershell -ExecutionPolicy Bypass -File scripts\windows\BulkReg_SyncFromGitHub.ps1 -DryRun` shows what is new; run it without `-DryRun` to pull. It only fast-forwards, never overwrites local changes, never touches `C:\BulkReg`, and lists the `.lss` files you must paste into Designer afterwards.
+## Appendix: all scripts and code (click to expand, copy)
 
-## Send changes to GitHub (Mac)
+### Listing script, Linux mail server
 
-Run `scripts/mac/sync_to_github.sh` from Terminal. It shows what changed and asks before anything is committed or pushed. Details in the script header.
+<!--include:scripts/linux/bulkreg_list_mailfiles.sh-->
+
+### Listing script, Windows mail server
+
+<!--include:scripts/windows/BulkReg_ListMailFiles.ps1-->
+
+### Agent 13 (paste into the agent `BulkReg\13 - Recover Users`)
+
+<!--include:lotusscript/Agent13_Recover.lss-->
+
+### Library BulkRegRecover (paste into a new script library)
+
+<!--include:lotusscript/BulkRegRecover.lss-->
+
+### Git: Mac push
+
+<!--include:scripts/mac/sync_to_github.sh-->
+
+### Git: Windows pull
+
+<!--include:scripts/windows/BulkReg_SyncFromGitHub.ps1-->

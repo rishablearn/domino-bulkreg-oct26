@@ -95,83 +95,1346 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
 <header class="band"><div class="in">
   <div class="eyebrow">HCL Software &middot; BulkReg 4.5.0</div>
   <h1>SOP: Recover failed and missing users</h1>
-  <p><strong>One rule:</strong> the Domino Directory is the truth. Agent <strong>13 - Recover Users</strong> looks at the directory and the mail servers, works out what is missing, and fixes it. Run it again as often as you like: it only does what is still missing and never overwrites a mail file.</p>
+  <p><strong>One rule:</strong> the Domino Directory is the truth. Agent <strong>13 - Recover Users</strong> compares it with the mail servers and fixes what is wrong in one run: it <strong>removes duplicates, creates missing mail files, replaces cut-off ones, and frees the users that <code>02 - Build Batch</code> was silently skipping</strong>. It does not matter which machine or which release (4.5 or older) registered a user. Run it again as often as you like: it only does what is still missing and never overwrites a mail file.</p>
   <div class="meta"><span>Version 4.5.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
   <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
 </div></header>
 <div class="wrap">
-<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#what-happens-to-each-user">What happens to each user</a></li><li><a href="#steps-one-machine">Steps (one machine)</a></li><li><a href="#two-machines">Two machines</a></li><li><a href="#if-it-is-slow-or-hangs">If it is slow or hangs</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li><li><a href="#install-and-roll-back">Install and roll back</a></li><li><a href="#get-changes-from-github-windows">Get changes from GitHub (Windows)</a></li><li><a href="#send-changes-to-github-mac">Send changes to GitHub (Mac)</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a></div></nav>
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#the-five-steps">The five steps</a></li><li><a href="#what-13-does-with-each-user">What 13 does with each user</a></li><li><a href="#two-machines">Two machines</a></li><li><a href="#if-it-is-slow-or-hangs">If it is slow or hangs</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li><li><a href="#install-and-roll-back">Install and roll back</a></li><li><a href="#git">Git</a></li><li><a href="#appendix-all-scripts-and-code-click-to-expand-copy">Appendix: all scripts and code (click to expand, copy)</a><ul><li><a href="#listing-script-linux-mail-server">Listing script, Linux mail server</a></li><li><a href="#listing-script-windows-mail-server">Listing script, Windows mail server</a></li><li><a href="#agent-13-paste-into-the-agent-bulkreg13-recover-users">Agent 13 (paste into the agent BulkReg\13 - Recover Users)</a></li><li><a href="#library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</a></li><li><a href="#git-mac-push">Git: Mac push</a></li><li><a href="#git-windows-pull">Git: Windows pull</a></li></ul></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a></div></nav>
 <main>
 
 <div class="call"><b class="l">Note</b><div>
-<p>Agent 13 is <strong>not compiled or run against Domino yet</strong>. Do the pilot (step 3) before the full run.</p>
+<p>Agent 13 is <strong>not compiled or run against Domino yet</strong>. Do the pilot (step 4) first.</p>
 </div></div>
-<h2 id="what-happens-to-each-user">What happens to each user</h2>
+<h2 id="the-five-steps">The five steps</h2>
 <div class="tw"><table>
 <thead>
 <tr>
-<th>13 finds</th>
-<th>What it does</th>
+<th>#</th>
+<th>Do</th>
+<th>Result</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Registered, mail file missing</td>
-<td><strong>Creates it</strong></td>
+<td>1</td>
+<td><strong>On each mail server</strong> run the listing script, copy the CSV to the BulkReg machine into <code>C:\BulkReg\maillists\</code></td>
+<td>Server file lists (read-only, 1 minute)</td>
 </tr>
 <tr>
-<td>Mail file is an empty, cut-off shell</td>
-<td><strong>Replaces it</strong> (needs <code>RepairRemoveEmptyShells=1</code>)</td>
+<td>2</td>
+<td><code>DryRun=1</code>. Run <strong>13 - Recover Users</strong></td>
+<td>Counts on screen + <code>RECOVER_&lt;run&gt;_plan.csv</code></td>
 </tr>
 <tr>
-<td>Mail file fine</td>
-<td>Nothing</td>
+<td>3</td>
+<td>Read the plan (<code>Include=Y</code> rows are fixed by 13; <code>MANUAL</code> rows need a person)</td>
+<td>Plan agreed</td>
 </tr>
 <tr>
-<td>Not registered</td>
-<td>Lists it only. Register with <strong>02 + 03</strong></td>
+<td>4</td>
+<td><strong>Pilot:</strong> add <code>RecoverMaxCreates=10</code>, <code>DryRun=0</code>, run 13, type <code>RECOVER</code>. Check 2 or 3 users. Then remove <code>RecoverMaxCreates</code> and run 13 again</td>
+<td>Duplicates removed, mail files created, stale batches closed. If it stops (slow server, time limit), run it again</td>
 </tr>
 <tr>
-<td>Anything else (no mail item, server down, file with data but no design)</td>
-<td>Lists it as <code>MANUAL</code> with the reason. You fix it by hand</td>
+<td>5</td>
+<td>Run <strong>02 - Build Batch</strong>, review, <strong>03 - Register Batch</strong> for the users still not registered. Run 13 once more (<code>DryRun=1</code>)</td>
+<td>13 says <strong>nothing for this agent to do</strong></td>
 </tr>
 </tbody>
 </table></div>
-<p>The list is <code>RECOVER_&lt;run&gt;_plan.csv</code>. <code>Include=Y</code> rows are fixed by 13. <code>MANUAL</code> and <code>REGISTER</code> rows are left to you.</p>
-<h2 id="steps-one-machine">Steps (one machine)</h2>
-<ol>
-<li><strong>Dry run.</strong> <code>DryRun=1</code>. Run <strong>13 - Recover Users</strong>, leave the scope empty. Read the counts and the plan CSV.</li>
-<li><strong>Agree the plan.</strong> Set <code>Include=N</code> on rows you do not want touched.</li>
-<li><strong>Pilot.</strong> Add <code>RecoverMaxCreates=10</code> to <code>bulkreg.ini</code>, set <code>DryRun=0</code>, run 13, type <code>RECOVER</code>. Check 2 to 3 of the 10 users in Domino Administrator (file exists, mail opens).</li>
-<li><strong>Full run.</strong> Remove <code>RecoverMaxCreates</code>, run 13, type <code>RECOVER</code>. If it stops (<code>SLOW</code>, <code>STOP.txt</code>, time limit, error), fix the cause and <strong>run it again</strong>. It continues.</li>
-<li><strong>Proof.</strong> Set <code>DryRun=1</code> and run 13. It must say <strong>nothing for this agent to do</strong>. Then register the <code>NOT_REGISTERED</code> users with 02 + 03 (if <code>Detail</code> names an open batch, use <strong>11 - Batch Manager</strong>: <code>RESUME &lt;id&gt;</code>, then 03), and run 13 once more for their mail files.</li>
-</ol>
-<p>Finish: hand over initial passwords from <code>secure\</code>, then delete them. Set <code>DryRun=1</code>.</p>
-<h2 id="two-machines">Two machines</h2>
-<p>Set once: Machine A <code>PartitionCount=2</code>, <code>PartitionIndex=1</code>. Machine B <code>PartitionCount=2</code>, <code>PartitionIndex=2</code>. Each machine then handles its own half of the users and never the other's.</p>
-<ol>
-<li>Both machines use the <strong>same</strong> <code>DirectoryServer</code> and the same kit.</li>
-<li>Dry run on both. <strong>"Directory users scanned" must be the same number.</strong> If not, stop and let the directory replicate.</li>
-<li>Pilot, then full run on both at the same time. If you start a second run on the same partition, 13 warns you and asks.</li>
-<li>Proof: step 5 on each machine.</li>
-</ol>
-<p>If a machine crashed, its run stays "running" in the log database. Start 13 again and answer <strong>Yes</strong> to the warning only if you are sure that run is over. Passwords and ID files stay on the machine that registered the user.</p>
-<h2 id="if-it-is-slow-or-hangs">If it is slow or hangs</h2>
+<p>Finish: hand over initial passwords from <code>secure\</code> and delete them. Set <code>DryRun=1</code>.</p>
+<p><strong>Listing scripts</strong> (they only list files; nothing is changed):</p>
 <ul>
-<li>13 writes <code>RECOVER_&lt;run&gt;_timing.csv</code>: seconds per create. Look at <code>SecCreate</code>.</li>
-<li>It <strong>stops itself</strong> after 3 creates over 60 s in a row, or after 120 minutes. Run it again later.</li>
-<li>Likely causes (not confirmed): server busy (backup, indexer, compact), antivirus scanning the mail folders, client far from the server. Run the Notes client next to the servers, outside backup windows, and ask the security owner about excluding the mail folders from on-access scanning.</li>
-<li>After a hang or closed client: run 13 again. Cut-off files show up as empty shells and are replaced.</li>
+<li>Linux: <code>scripts/linux/bulkreg_list_mailfiles.sh /local/notesdata "DominoADMail/Demo"</code></li>
+<li>Windows: <code>powershell -ExecutionPolicy Bypass -File BulkReg_ListMailFiles.ps1 -DataDir D:\Domino\Data -Server "DominoADMail2/Demo"</code></li>
 </ul>
+<p>No list for a server? 13 checks that server live. It works, but it is slower.</p>
+<h2 id="what-13-does-with-each-user">What 13 does with each user</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unregistered full duplicate of a registered user (same name, short name, Internet address)</td>
+<td><strong>Removed</strong>, after a snapshot (up to <code>DuplicateMaxDelete</code>, default 25 per run). Mail files, ID files and the registered user are never touched</td>
+</tr>
+<tr>
+<td>Registered, mail file missing</td>
+<td><strong>Created</strong></td>
+</tr>
+<tr>
+<td>Mail file is a tiny, cut-off file</td>
+<td><strong>Replaced</strong> (only with <code>RepairRemoveEmptyShells=1</code>, only in a BulkReg mail folder)</td>
+</tr>
+<tr>
+<td>Not registered, held back by an old open or stopped batch (older than 24 h)</td>
+<td><strong>Batch closed</strong>, so 02 builds the user</td>
+</tr>
+<tr>
+<td>Not registered, nothing holds it back</td>
+<td>Counted as <strong>ready for 02</strong></td>
+</tr>
+<tr>
+<td>Anything else (no mail item, server down, file with data but no design, recent open batch, no Internet address, doubtful duplicate)</td>
+<td><code>MANUAL</code>: reason in the plan, you fix it</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Why 02 "created nothing":</strong> 02 skips every user who is in an open or stopped batch file on that machine, who is a duplicate of a registered user, or who has no Internet address. The plan shows which of these applies to each user, and 13 closes the stale batches. After that, 02 finds the rest.</p>
+<h2 id="two-machines">Two machines</h2>
+<p>Set once: Machine A <code>PartitionCount=2</code>, <code>PartitionIndex=1</code>. Machine B <code>PartitionCount=2</code>, <code>PartitionIndex=2</code>. Each handles its own half of the users.</p>
+<ol>
+<li>Same kit and same <code>DirectoryServer</code> on both.</li>
+<li>Dry run on both: <strong>"Directory users scanned" must be the same number</strong>. If not, wait for directory replication.</li>
+<li>Run both at the same time. A second run on the same partition is refused (log-database guard); if a machine crashed, answer <strong>Yes</strong> to the warning only when that run is really over.</li>
+</ol>
+<h2 id="if-it-is-slow-or-hangs">If it is slow or hangs</h2>
+<p>13 writes <code>RECOVER_&lt;run&gt;_timing.csv</code> (seconds per create) and stops itself after 3 creates over 60 s in a row or 120 minutes: run it again later. Likely causes (not confirmed): busy server (backup, indexer), antivirus scanning the mail folders, client far from the server. Run the client next to the servers. After a hang just run 13 again: cut-off files are found by size and replaced.</p>
 <h2 id="stop-and-escalate">Stop and escalate</h2>
 <p>Create <code>STOP.txt</code> in <code>BatchDir</code> to stop cleanly. For a suspected security incident (unexpected certificates or IDs, a password or ID file outside its folder), do not fix it yourself: create <code>STOP.txt</code> and call the Domino or security owner.</p>
 <h2 id="install-and-roll-back">Install and roll back</h2>
-<p>Install: new library <code>BulkRegRecover</code> (paste <code>lotusscript/BulkRegRecover.lss</code>), new agent <code>BulkReg\13 - Recover Users</code> (paste <code>lotusscript/Agent13_Recover.lss</code>), re-sign, recompile. Optionally re-paste <code>BulkRegCommon</code> (two label lines only). Roll back: delete the agent and the library.</p>
-<p>Optional ini keys (defaults are built in, you normally set none): <code>RecoverMaxCreates</code> (cap per run), <code>RecoverMaxMinutes</code> (120), <code>RecoverCheckReplicas</code> (0; set 1 once at the end on a cluster to find missing replicas).</p>
-<h2 id="get-changes-from-github-windows">Get changes from GitHub (Windows)</h2>
-<p>In PowerShell: <code>powershell -ExecutionPolicy Bypass -File scripts\windows\BulkReg_SyncFromGitHub.ps1 -DryRun</code> shows what is new; run it without <code>-DryRun</code> to pull. It only fast-forwards, never overwrites local changes, never touches <code>C:\BulkReg</code>, and lists the <code>.lss</code> files you must paste into Designer afterwards.</p>
-<h2 id="send-changes-to-github-mac">Send changes to GitHub (Mac)</h2>
-<p>Run <code>scripts/mac/sync_to_github.sh</code> from Terminal. It shows what changed and asks before anything is committed or pushed. Details in the script header.</p>
+<p>Install the library <code>BulkRegRecover</code> (paste <code>lotusscript/BulkRegRecover.lss</code>) and the agent <code>BulkReg\13 - Recover Users</code> (<code>lotusscript/Agent13_Recover.lss</code>), re-sign, recompile. Re-paste <code>BulkRegCommon</code> once (two label lines). Roll back: delete the agent and the library.</p>
+<h2 id="git">Git</h2>
+<p>Mac: <code>scripts/mac/sync_to_github.sh</code> (commit + push). Windows: <code>scripts\windows\BulkReg_SyncFromGitHub.ps1 -DryRun</code>, then without <code>-DryRun</code> (safe pull; lists the <code>.lss</code> files to paste into Designer).</p>
+<h2 id="appendix-all-scripts-and-code-click-to-expand-copy">Appendix: all scripts and code (click to expand, copy)</h2>
+<h3 id="listing-script-linux-mail-server">Listing script, Linux mail server</h3>
+<details class="script"><summary>scripts/linux/bulkreg_list_mailfiles.sh<span>26 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">#!/usr/bin/env bash
+# bulkreg_list_mailfiles.sh - list the mail files of THIS Domino server for BulkReg agent 13 - Recover Users
+#
+# Run on each Linux mail server (read-only; it only lists files):
+#   ./bulkreg_list_mailfiles.sh &lt;data directory&gt; &lt;server name as in Domino&gt; [output.csv]
+#   ./bulkreg_list_mailfiles.sh /local/notesdata &quot;DominoADMail/Demo&quot;
+# Output CSV (UTF-8):  Server,Path,Bytes,Modified     Path is relative to the data directory (mail1/smith.nsf)
+# Then copy the CSV to the machine that runs BulkReg, into its MailListDir (default C:\BulkReg\maillists\).
+# Covers the folder &quot;mail&quot; and &quot;mail&lt;number&gt;&quot; (mail1, mail2 ...). Other folders: set FOLDERS=&quot;mail mail1 mail2 hr&quot;.
+# Not a replacement for Domino&#x27;s own view of the files: it lists what is on disk. A file that is copied or
+# half-written right now may show a small size; agent 13 opens small files to check them.
+set -euo pipefail
+DATA=&quot;${1:-}&quot;; SERVER=&quot;${2:-}&quot;; OUT=&quot;${3:-}&quot;
+[ -d &quot;$DATA&quot; ] &amp;&amp; [ -n &quot;$SERVER&quot; ] || { echo &quot;Usage: $0 &lt;data directory&gt; &lt;server name&gt; [output.csv]&quot; &gt;&amp;2; exit 1; }
+[ -n &quot;$OUT&quot; ] || OUT=&quot;maillist_$(printf &#x27;%s&#x27; &quot;$SERVER&quot; | tr &#x27;/ &#x27; &#x27;--&#x27;)_$(date +%Y%m%d-%H%M%S).csv&quot;
+DATA=&quot;${DATA%/}&quot;
+{
+  printf &#x27;Server,Path,Bytes,Modified\n&#x27;
+  if [ -n &quot;${FOLDERS:-}&quot; ]; then
+    for f in $FOLDERS; do [ -d &quot;$DATA/$f&quot; ] &amp;&amp; find &quot;$DATA/$f&quot; -maxdepth 1 -type f -iname &#x27;*.nsf&#x27; -printf &#x27;%P\t%s\t%TY-%Tm-%Td %TH:%TM\n&#x27; | sed &quot;s|^|$f/|&quot;; done
+  else
+    find &quot;$DATA&quot; -mindepth 2 -maxdepth 2 -type f -iname &#x27;*.nsf&#x27; \( -path &quot;$DATA/mail/*&quot; -o -path &quot;$DATA/mail[0-9]*/*&quot; \) -printf &#x27;%P\t%s\t%TY-%Tm-%Td %TH:%TM\n&#x27;
+  fi | awk -F&#x27;\t&#x27; -v s=&quot;$SERVER&quot; &#x27;{ gsub(/&quot;/,&quot;\&quot;\&quot;&quot;,$1); printf &quot;\&quot;%s\&quot;,\&quot;%s\&quot;,%s,\&quot;%s\&quot;\n&quot;, s, $1, $2, $3 }&#x27;
+} &gt; &quot;$OUT&quot;
+echo &quot;Wrote $OUT ($(($(wc -l &lt; &quot;$OUT&quot;) - 1)) mail files)&quot;
+</code></pre></div></details>
+
+<h3 id="listing-script-windows-mail-server">Listing script, Windows mail server</h3>
+<details class="script"><summary>scripts/windows/BulkReg_ListMailFiles.ps1<span>35 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&lt;#
+.SYNOPSIS
+  Lists the mail files of THIS Windows Domino server for BulkReg agent 13 - Recover Users (read-only).
+.DESCRIPTION
+  Run on each Windows mail server:
+    powershell -ExecutionPolicy Bypass -File .\BulkReg_ListMailFiles.ps1 -DataDir D:\Domino\Data -Server &quot;DominoADMail2/Demo&quot;
+  Writes  maillist_&lt;server&gt;_&lt;time&gt;.csv  (UTF-8, columns Server,Path,Bytes,Modified; Path relative to the data directory).
+  Copy it to the machine that runs BulkReg, into its MailListDir (default C:\BulkReg\maillists\).
+  Covers the folder &quot;mail&quot; and &quot;mail&lt;number&gt;&quot;. Other folders: -Folders mail,mail1,hr
+  Not run by its author on Windows.
+#&gt;
+param(
+    [Parameter(Mandatory)] [string]$DataDir,
+    [Parameter(Mandatory)] [string]$Server,
+    [string]$Out,
+    [string[]]$Folders
+)
+$ErrorActionPreference = &#x27;Stop&#x27;
+if (-not (Test-Path -LiteralPath $DataDir -PathType Container)) { throw &quot;Data directory not found: $DataDir&quot; }
+$DataDir = (Resolve-Path -LiteralPath $DataDir).Path.TrimEnd(&#x27;\&#x27;)
+if (-not $Out) { $Out = &quot;maillist_{0}_{1}.csv&quot; -f ($Server -replace &#x27;[\\/ ]&#x27;, &#x27;-&#x27;), (Get-Date -Format &#x27;yyyyMMdd-HHmmss&#x27;) }
+if (-not $Folders) {
+    $Folders = @(Get-ChildItem -LiteralPath $DataDir -Directory | Where-Object { $_.Name -match &#x27;^mail\d*$&#x27; } | ForEach-Object { $_.Name })
+}
+$rows = foreach ($f in $Folders) {
+    $p = Join-Path $DataDir $f
+    if (Test-Path -LiteralPath $p) {
+        Get-ChildItem -LiteralPath $p -File -Filter *.nsf | ForEach-Object {
+            [pscustomobject]@{ Server = $Server; Path = &quot;$f\$($_.Name)&quot;; Bytes = $_.Length; Modified = $_.LastWriteTime.ToString(&#x27;yyyy-MM-dd HH:mm&#x27;) }
+        }
+    }
+}
+$rows | Export-Csv -LiteralPath $Out -NoTypeInformation -Encoding UTF8
+Write-Host &quot;Wrote $Out ($(@($rows).Count) mail files)&quot;
+</code></pre></div></details>
+
+<h3 id="agent-13-paste-into-the-agent-bulkreg13-recover-users">Agent 13 (paste into the agent <code>BulkReg\13 - Recover Users</code>)</h3>
+<details class="script"><summary>lotusscript/Agent13_Recover.lss<span>33 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&#x27;=====================================================================
+&#x27; Agent name : BulkReg\13 - Recover Users
+&#x27; Version    : 4.5.0 + unreleased addition (see CHANGELOG &quot;Unreleased&quot;; libraries BulkRegCommon + BulkRegAgents + BulkRegRecover)
+&#x27; Code       : ALL logic is in the script library BulkRegRecover (BR_RunRecover).
+&#x27;              This agent only calls it, so it never changes between releases.
+&#x27;
+&#x27; HOW TO INSTALL: first create the library BulkRegRecover (BulkRegRecover.lss). Then open this agent,
+&#x27;              click in the editor, Ctrl+A, Delete, paste this WHOLE file, Ctrl+S.
+&#x27; Designer   : Shared agent, LotusScript
+&#x27;              Runtime: On event &gt; Action menu selection, Target: None
+&#x27;              (NOT &#x27;All selected documents&#x27; - Designer&#x27;s default - or Notes asks for a selected document)
+&#x27;              (backslash in the name = Actions &gt; BulkReg submenu; do NOT use &#x27;|&#x27;)
+&#x27;
+&#x27; What it does (details: BulkRegRecover.lss header and SOP-recover-failed-users.md):
+&#x27;
+&#x27; Checks every user against the Domino Directory (single source of truth) and the mail-file lists of the servers,
+&#x27; writes RECOVER_&lt;run&gt;_plan.csv, and (DryRun=0, type RECOVER) in one run: removes unregistered full duplicates,
+&#x27; creates missing mail files, replaces cut-off empty files, closes stale batch files that hide users from 02, verifies
+&#x27; and requests the cluster replicas. Then 02 + 03 register what is left. Safe to run again at any time.
+&#x27;=====================================================================
+&#x27;#####################################################################
+&#x27; --- part 1: (Options) ---
+&#x27;#####################################################################
+Option Public
+Option Declare
+Use &quot;BulkRegRecover&quot;
+&#x27;#####################################################################
+&#x27; --- part 2: Initialize ---
+&#x27;#####################################################################
+Sub Initialize
+    Call BR_RunRecover()
+End Sub
+</code></pre></div></details>
+
+<h3 id="library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</h3>
+<details class="script"><summary>lotusscript/BulkRegRecover.lss<span>918 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&#x27;=====================================================================
+&#x27; Script Library : BulkRegRecover           (unreleased addition to 4.5.0 - see CHANGELOG &quot;Unreleased&quot;)
+&#x27; Purpose        : Agent  BulkReg\13 - Recover Users  -&gt;  BR_RunRecover
+&#x27;                  ONE agent that checks every user against the Domino Directory (single source of truth) and the
+&#x27;                  mail servers, and repairs what is wrong, in this order:
+&#x27;                    1. DUPLICATES      unregistered full duplicates of a registered user are removed
+&#x27;                    2. MAIL FILES      missing mail files are created, cut-off (empty) files replaced
+&#x27;                    3. STALE BATCHES   old open/stopped batch files that hide users from 02 are closed
+&#x27;                    4. REMAINING USERS counted and explained; 02 + 03 then register them (nothing to configure)
+&#x27;                  It never reads batch/result files to decide what exists, so it does not matter which machine
+&#x27;                  or which release (4.5 or older) registered a user.
+&#x27; Uses           : BulkRegAgents (and through it BulkRegCommon). Nothing in those libraries is changed by this one:
+&#x27;                  agents 00-12 keep running as before.
+&#x27; Runs in        : HCL Domino Administrator client on WINDOWS only (like every BulkReg agent)
+&#x27;
+&#x27; HOW TO INSTALL : Designer &gt; Code &gt; Script Libraries &gt; New LotusScript Library, name it exactly &quot;BulkRegRecover&quot;.
+&#x27;                  Ctrl+A, Delete, paste this WHOLE file, Ctrl+S. Create the one-line agent from Agent13_Recover.lss.
+&#x27;                  Not compiled or run against Domino.
+&#x27;
+&#x27; Mail files on the servers: the agent reads the CSV lists written on each mail server by
+&#x27;   scripts/linux/bulkreg_list_mailfiles.sh  or  scripts/windows/BulkReg_ListMailFiles.ps1
+&#x27; and copied to MailListDir (default &lt;BaseDir&gt;\maillists\). Columns: Server,Path,Bytes,Modified. A list is much faster
+&#x27; than opening every file, and the size shows cut-off files (smaller than RecoverShellMaxBytes) without opening the
+&#x27; large ones. A server without a list is checked live (slower). Existence is ALWAYS confirmed with one live open
+&#x27; before a file is created, so a stale list can never cause an overwrite.
+&#x27;
+&#x27; States (RECOVER_&lt;run&gt;_plan.csv, Include=Y = fixed by this agent):
+&#x27;   MAIL_MISSING -&gt; CREATE_MAIL      EMPTY_SHELL -&gt; REPLACE_SHELL (RepairRemoveEmptyShells=1, BulkReg mail folder only)
+&#x27;   DUPLICATE -&gt; REMOVE_DUPLICATE    BLOCKED_STALE_BATCH -&gt; CLOSE_BATCH
+&#x27;   READY_FOR_02 -&gt; REGISTER (02 + 03)   ACL_TITLE_OFF -&gt; FIX_ACL_TITLE   REPLICAS_MISSING -&gt; REQUEST_REPLICAS
+&#x27;   everything else -&gt; MANUAL with the reason in Detail
+&#x27; Several machines: PartitionCount / PartitionIndex (4.5.0) + a guard in the central log database (RecoverGuard=1).
+&#x27; Idempotent: the plan is rebuilt from the directory each run; after a stop, hang or crash simply run it again.
+&#x27;=====================================================================
+&#x27;#####################################################################
+&#x27; --- part 1: (Options) ---
+&#x27;#####################################################################
+Option Public
+Option Declare
+Use &quot;BulkRegAgents&quot;
+&#x27;#####################################################################
+&#x27; --- part 2: (Declarations) ---
+&#x27;#####################################################################
+Dim gRecSecExists As Double      &#x27; seconds of the last create: existence check
+Dim gRecSecCreate As Double      &#x27; seconds of the last create: CreateFromTemplate (+ title)
+Dim gRecSecAcl As Double         &#x27; seconds of the last create: ACL
+Dim gRecDb As NotesDatabase      &#x27; the directory
+Dim gRecInv List As String       &#x27; mail files per server (from the CSV lists, else a live listing)
+Dim gRecSizes List As Double     &#x27; bytes per mail file (CSV lists only)
+Dim gRecSrvOk List As String     &#x27; server reachability cache
+Dim gRecOpenIds List As String   &#x27; NoteID -&gt; batch file of this machine&#x27;s open / stopped batches
+Dim gRecBatchOf List As String   &#x27; for BR_DupEval
+Dim gRecBatchAge List As String  &#x27; batch file -&gt; &quot;STALE&quot; / &quot;FRESH&quot;
+Dim gRecBatchUsers List As Long  &#x27; batch file -&gt; number of unregistered users it holds back
+Dim gRecDupMethod As String
+Dim gRecDupMust As String
+Dim gRecReqFile As String
+Dim gRecStaleHours As Long
+Dim gRecShellMax As Double
+Dim gRecTrustSize As Boolean
+Dim gRecCheckLevel As Long
+Dim gRecCheckRep As Boolean
+
+&#x27;#####################################################################
+&#x27; --- part 3: Subs and Functions (Designer gives each its own entry) ---
+&#x27;#####################################################################
+Sub BR_RunRecover()
+    On Error GoTo ErrH
+    Dim ws As NotesUIWorkspace, ans As Variant
+    Dim col As NotesDocumentCollection, doc As NotesDocument
+    Dim cnt List As Long, openNames List As String, openCounts List As Long
+    Dim wNid() As String, wAct() As String, wKeep() As String, nW As Long, capW As Long
+    Dim createdNid() As String, nCreated As Long, capC As Long
+    Dim nScanned As Long, nOther As Long, listInfo As String
+    Dim st As String, act As String, detail As String, keeper As String, inc As String, rowTxt As String, bfile As String
+    Dim origReplicas As Boolean, overlap As String
+    Dim planFile As String, timeFile As String, fhPlan As Integer, seq As Long, outDir As String, snapDir As String
+    Dim i As Long, pass As Long, nMade As Long, nFix As Long, nExist As Long, nSkip As Long, nFail As Long, nConsec As Long, nSlowRow As Long, nSlowTotal As Long
+    Dim nDup As Long, nDupBad As Long, nBatchClosed As Long
+    Dim chunk As Long, basePause As Long, pauseSec As Long, pauseMs As Long, maxConsec As Long, maxMin As Long
+    Dim slowSec As Long, maxSlow As Long, maxPer As Long, maxDel As Long, workDone As Long, lastMark As Long
+    Dim tChunk As Double, tRun As Double, tItem As Double
+    Dim res As String, stopReason As String, summary As String, countText As String
+    Dim nActionable As Long, nManual As Long, nReady As Long, nDupPlan As Long, nBatchPlan As Long
+    Dim nid As String, unid As String, why As String, via As String, delName As String, reqId As String, snapErr As String
+    Dim nVerOk As Long, nVerBad As Long, nRepReq As Long, nRepBad As Long
+    Dim dDoc As NotesDocument, bk As String, skipThis As Boolean
+
+    gMode = &quot;&quot;: gStopRun = &quot;&quot;
+    Set gTmplDb = Nothing: gTmplKey = &quot;&quot;
+    If Not BR_Init(&quot;Recover&quot;) Then Exit Sub
+    If CfgB(&quot;DryRun&quot;, True) Then gMode = &quot;DRYRUN&quot; Else gMode = &quot;LIVE&quot;
+    maxConsec = CfgL(&quot;MaxConsecutiveErrors&quot;, 5)
+    pauseMs = CfgL(&quot;PauseMs&quot;, 500)
+    maxPer = CfgL(&quot;RecoverMaxCreates&quot;, 0)              &#x27; 0 = no limit per run (mail files)
+    maxDel = CfgL(&quot;DuplicateMaxDelete&quot;, 25)            &#x27; 0 = no limit (duplicates, same key as agent 12)
+    chunk = CfgL(&quot;MailRepairChunkSize&quot;, 10)
+    basePause = CfgL(&quot;ChunkPauseSec&quot;, 5)
+    If basePause &lt; 0 Then basePause = 0
+    pauseSec = basePause
+    gRecCheckLevel = CfgL(&quot;RecoverCheckExisting&quot;, 1)   &#x27; 0 = exists only | 1 = + completeness | 2 = + title and ACL
+    gRecCheckRep = CfgB(&quot;RecoverCheckReplicas&quot;, False)
+    maxMin = CfgL(&quot;RecoverMaxMinutes&quot;, 120)
+    slowSec = CfgL(&quot;RecoverSlowCreateSec&quot;, 60)
+    maxSlow = CfgL(&quot;RecoverMaxSlowInRow&quot;, 3)
+    gRecStaleHours = CfgL(&quot;RecoverStaleBatchHours&quot;, 24)
+    gRecShellMax = CDbl(CfgL(&quot;RecoverShellMaxBytes&quot;, 1048576))
+    gRecTrustSize = CfgB(&quot;RecoverTrustSize&quot;, True)
+    gRecDupMethod = UCase$(Trim$(CfgS(&quot;DuplicateDeleteMethod&quot;, &quot;ADMINP&quot;)))
+    If gRecDupMethod &lt;&gt; &quot;ADMINP&quot; And gRecDupMethod &lt;&gt; &quot;DIRECT&quot; And gRecDupMethod &lt;&gt; &quot;AUTO&quot; Then Error 8104, &quot;DuplicateDeleteMethod must be ADMINP, DIRECT or AUTO (found: &quot; &amp; gRecDupMethod &amp; &quot;)&quot;
+    gRecDupMust = &quot;,&quot; &amp; LCase$(Replace(Trim$(CfgS(&quot;DuplicateMustMatch&quot;, &quot;name,short,inet,first,last&quot;)), &quot; &quot;, &quot;&quot;)) &amp; &quot;,&quot;
+    origReplicas = CfgB(&quot;CreateClusterReplicas&quot;, True)
+    Erase gRecInv: Erase gRecSizes: Erase gRecSrvOk: Erase gRecOpenIds: Erase gRecBatchOf: Erase gRecBatchAge: Erase gRecBatchUsers
+
+    If Trim$(CfgS(&quot;MailTemplate&quot;, &quot;&quot;)) = &quot;&quot; Then
+        BR_Close &quot;MailTemplate missing&quot;
+        BR_Msg &quot;MailTemplate (e.g. mail145.ntf) is required in bulkreg.ini to create mail files.&quot;, 16
+        Exit Sub
+    End If
+    If Dir$(BR_StopFile()) &lt;&gt; &quot;&quot; Then
+        BR_Close &quot;STOP.txt present&quot;
+        BR_Msg &quot;STOP.txt exists in &quot; &amp; BR_BatchDir() &amp; &quot;. Delete it to run again.&quot;, 48
+        Exit Sub
+    End If
+
+    &#x27; ---------- several machines: record this run&#x27;s partition, refuse an overlapping run ----------
+    Call BRR_RecordPartition()
+    If CfgB(&quot;RecoverGuard&quot;, True) Then
+        overlap = BRR_OtherRunsActive()
+        If overlap &lt;&gt; &quot;&quot; Then
+            Set ws = New NotesUIWorkspace
+            If CInt(ws.Prompt(PROMPT_YESNO, &quot;BulkReg - Recover Users&quot;, &quot;Another Recover run is RUNNING in the log database with an overlapping partition:&quot; &amp; Chr$(10) &amp; Chr$(10) &amp; overlap &amp; Chr$(10) &amp; _
+            &quot;Two runs on the same users can create a mail file twice. This machine: &quot; &amp; BR_PartitionText() &amp; Chr$(10) &amp; Chr$(10) &amp; _
+            &quot;Only continue if that run has ended (crashed client, closed window). Continue anyway?&quot;)) &lt;&gt; 1 Then
+                BR_Close &quot;Cancelled: overlapping run&quot;
+                Exit Sub
+            End If
+            BR_Log LVL_WARN, &quot;Overlapping Recover run ignored by the operator: &quot; &amp; Replace(overlap, Chr$(10), &quot; | &quot;)
+        End If
+    End If
+
+    planFile = BR_BatchDir() &amp; &quot;RECOVER_&quot; &amp; gRunID &amp; &quot;_plan.csv&quot;
+    timeFile = BR_BatchDir() &amp; &quot;RECOVER_&quot; &amp; gRunID &amp; &quot;_timing.csv&quot;
+    gResultsFile = BR_BatchDir() &amp; &quot;RECOVER_&quot; &amp; gRunID &amp; &quot;_results.csv&quot;
+    Call BR_AppendLine(gResultsFile, Uchr$(&amp;HFEFF) &amp; BR_AuditHeader())
+    Call BR_AppendLine(timeFile, Uchr$(&amp;HFEFF) &amp; &quot;Seq,Timestamp,Server,MailFile,Action,Result,SecExists,SecCreate,SecAcl,SecTotal&quot;)
+    fhPlan = BR_CsvOpen(planFile, &quot;Include,Seq,State,Action,MailServer,MailFile,FullName,ShortName,NoteID,UNID,Partition,Detail&quot;)
+
+    &#x27; ---------- 1. SCAN (read only) ----------
+    Set gRecDb = BR_OpenDirectory()
+    BR_Log LVL_INFO, &quot;Directory: &quot; &amp; gRecDb.Server &amp; &quot;!!&quot; &amp; gRecDb.FilePath &amp; &quot; | last modified &quot; &amp; Format$(gRecDb.LastModified, &quot;yyyy-mm-dd hh:nn:ss&quot;) &amp; &quot; | &quot; &amp; BR_PartitionText()
+    listInfo = BRR_LoadMailLists()
+    BR_Log LVL_INFO, &quot;Mail file lists: &quot; &amp; BR_IIfStr(listInfo = &quot;&quot;, &quot;none found in &quot; &amp; BR_CfgDir(&quot;MailListDir&quot;, &quot;maillists&quot;) &amp; &quot; - the servers are checked live (slower)&quot;, listInfo)
+    Call BR_OpenBatchNoteIDs(gRecOpenIds, openNames, openCounts)
+    Call BR_ReconBatchMap(gRecBatchOf)
+    Call BR_DupIndexLoad(gRecDb)
+    outDir = BR_CfgDir(&quot;ReconcileDir&quot;, &quot;reconcile&quot;)
+    On Error Resume Next
+    MkDir Left$(outDir, Len(outDir) - 1)
+    Err = 0
+    On Error GoTo ErrH
+    If Not BR_DirWritable(outDir) Then outDir = gRunDir
+    gRecReqFile = outDir &amp; &quot;DEDUP_requested.txt&quot;
+
+    Set col = BR_GetCandidates(gRecDb, False)
+    Set doc = col.GetFirstDocument()
+    Do While Not (doc Is Nothing)
+        nScanned = nScanned + 1
+        nid = CStr(doc.NoteID): unid = CStr(doc.UniversalID)
+        If BR_NotMyPartition(unid) Then
+            nOther = nOther + 1
+        Else
+            st = BRR_Classify(doc, act, detail, keeper, bfile)
+            If st &lt;&gt; &quot;&quot; Then
+                If IsElement(cnt(st)) Then cnt(st) = cnt(st) + 1 Else cnt(st) = 1
+                If st &lt;&gt; &quot;MAIL_OK&quot; Then
+                    seq = seq + 1
+                    inc = &quot;N&quot;
+                    Select Case act
+                    Case &quot;CREATE_MAIL&quot;, &quot;REPLACE_SHELL&quot;, &quot;FIX_ACL_TITLE&quot;, &quot;REQUEST_REPLICAS&quot;, &quot;REMOVE_DUPLICATE&quot;
+                        inc = &quot;Y&quot;
+                        If nW &gt;= capW Then
+                            capW = capW + 500
+                            ReDim Preserve wNid(capW) As String, wAct(capW) As String, wKeep(capW) As String
+                        End If
+                        wNid(nW) = nid: wAct(nW) = act: wKeep(nW) = keeper
+                        nW = nW + 1
+                        If act = &quot;REMOVE_DUPLICATE&quot; Then nDupPlan = nDupPlan + 1
+                    Case &quot;CLOSE_BATCH&quot;
+                        inc = &quot;Y&quot;
+                    Case &quot;REGISTER&quot;
+                        nReady = nReady + 1
+                    Case &quot;MANUAL&quot;
+                        nManual = nManual + 1
+                    End Select
+                    rowTxt = Q(inc) &amp; &quot;,&quot; &amp; seq &amp; &quot;,&quot; &amp; Q(st) &amp; &quot;,&quot; &amp; Q(act) &amp; &quot;,&quot; &amp; Q(BR_SrvAbbr(BR_Item(doc, &quot;MailServer&quot;))) &amp; &quot;,&quot; &amp; Q(BR_MailPathNorm(BR_Item(doc, &quot;MailFile&quot;))) &amp; &quot;,&quot; &amp; _
+                    Q(BR_Item(doc, &quot;FullName&quot;)) &amp; &quot;,&quot; &amp; Q(BR_PickShortName(doc)) &amp; &quot;,&quot; &amp; Q(nid) &amp; &quot;,&quot; &amp; Q(unid) &amp; &quot;,&quot; &amp; BR_PartitionOf(unid) &amp; &quot;,&quot; &amp; Q(detail)
+                    Print #fhPlan, rowTxt
+                End If
+            End If
+        End If
+        If nScanned Mod 250 = 0 Then Print &quot;BulkReg RECOVER scan: &quot; &amp; nScanned &amp; &quot;/&quot; &amp; col.Count &amp; &quot;  to do=&quot; &amp; nW &amp; &quot; manual=&quot; &amp; nManual
+        Set doc = col.GetNextDocument(doc)
+    Loop
+    Close #fhPlan
+    ForAll bs In gRecBatchAge
+        If bs = &quot;STALE&quot; Then nBatchPlan = nBatchPlan + 1
+    End ForAll
+    nActionable = nW + nBatchPlan
+    ForAll c In cnt
+        countText = countText &amp; &quot;  &quot; &amp; ListTag(c) &amp; &quot;: &quot; &amp; c &amp; Chr$(10)
+    End ForAll
+    BR_Log LVL_INFO, &quot;Scan: scanned &quot; &amp; nScanned &amp; &quot; | other machine&#x27;s users (not touched) &quot; &amp; nOther &amp; &quot; | to do &quot; &amp; nW &amp; &quot; | stale batches to close &quot; &amp; nBatchPlan &amp; &quot; | manual &quot; &amp; nManual &amp; &quot; | ready for 02 &quot; &amp; nReady &amp; &quot; | &quot; &amp; Replace(countText, Chr$(10), &quot; &quot;)
+    countText = &quot;Directory users scanned: &quot; &amp; nScanned &amp; Chr$(10) &amp; &quot;Other machine&#x27;s users (untouched): &quot; &amp; nOther &amp; Chr$(10) &amp; countText &amp; Chr$(10) &amp; _
+    &quot;Fixed by this agent: &quot; &amp; nW &amp; &quot; users&quot; &amp; BR_IIfStr(nDupPlan &gt; 0, &quot; (&quot; &amp; nDupPlan &amp; &quot; duplicates to remove)&quot;, &quot;&quot;) &amp; Chr$(10) &amp; _
+    &quot;Stale batch files to close (they hide users from 02): &quot; &amp; nBatchPlan &amp; Chr$(10) &amp; _
+    &quot;Needs a person (MANUAL): &quot; &amp; nManual &amp; Chr$(10) &amp; &quot;Ready for 02 + 03 (not registered yet): &quot; &amp; nReady &amp; Chr$(10) &amp; &quot;Plan: &quot; &amp; planFile
+
+    If nActionable = 0 Then
+        summary = gMode &amp; &quot; | scanned=&quot; &amp; nScanned &amp; &quot; | nothing for this agent to do | ready for 02=&quot; &amp; nReady &amp; &quot; manual=&quot; &amp; nManual &amp; &quot; | &quot; &amp; BR_PartitionText()
+        BR_Close summary
+        BR_Msg &quot;NOTHING TO DO for this agent.&quot; &amp; Chr$(10) &amp; Chr$(10) &amp; countText &amp; BR_IIfStr(nReady &gt; 0, Chr$(10) &amp; &quot;NEXT: run 02 - Build Batch, review, then 03 - Register Batch.&quot;, &quot;&quot;), 64
+        Exit Sub
+    End If
+
+    &#x27; ---------- confirmation ----------
+    If gMode = &quot;DRYRUN&quot; Then
+        summary = &quot;DRYRUN | scanned=&quot; &amp; nScanned &amp; &quot; to do=&quot; &amp; nW &amp; &quot; stale batches=&quot; &amp; nBatchPlan &amp; &quot; manual=&quot; &amp; nManual &amp; &quot; ready for 02=&quot; &amp; nReady &amp; &quot; | &quot; &amp; BR_PartitionText()
+        BR_Close summary
+        BR_Msg &quot;DRY RUN (DryRun=1): nothing was removed, created or closed.&quot; &amp; Chr$(10) &amp; Chr$(10) &amp; countText &amp; Chr$(10) &amp; &quot;Read the plan, then set DryRun=0 and run again.&quot;, 64
+        Exit Sub
+    End If
+    Set ws = New NotesUIWorkspace
+    ans = ws.Prompt(PROMPT_OKCANCELEDIT, &quot;BulkReg - Recover Users (LIVE)&quot;, _
+    &quot;LIVE (&quot; &amp; BR_PartitionText() &amp; &quot;):&quot; &amp; Chr$(10) &amp; countText &amp; Chr$(10) &amp; _
+    &quot;In this order: remove duplicates (max &quot; &amp; BR_IIfStr(maxDel &gt; 0, CStr(maxDel), &quot;unlimited&quot;) &amp; &quot;, snapshot first, mail files and keepers untouched), create mail files from &quot; &amp; CfgS(&quot;MailTemplate&quot;, &quot;&quot;) &amp; &quot;, close stale batches, verify, request cluster replicas.&quot; &amp; Chr$(10) &amp; _
+    &quot;Limits: &quot; &amp; BR_IIfStr(maxMin &gt; 0, maxMin &amp; &quot; min&quot;, &quot;no time limit&quot;) &amp; &quot;, stops when the server is slow. Create &quot; &amp; BR_StopFile() &amp; &quot; to stop cleanly; run again to continue.&quot; &amp; Chr$(10) &amp; Chr$(10) &amp; &quot;Type RECOVER to approve:&quot;, &quot;&quot;)
+    If IsEmpty(ans) Then ans = &quot;&quot;
+    If CStr(ans) &lt;&gt; &quot;RECOVER&quot; Then
+        BR_Log LVL_WARN, &quot;LIVE recover not approved - aborted&quot;
+        BR_Close &quot;Not approved&quot;
+        Exit Sub
+    End If
+    If nDupPlan &gt; 0 Then
+        snapDir = BR_CfgDir(&quot;PasswordDir&quot;, &quot;secure&quot;) &amp; &quot;DEDUP_&quot; &amp; gRunID &amp; gSep
+        On Error Resume Next
+        MkDir Left$(snapDir, Len(snapDir) - 1)
+        Err = 0
+        On Error GoTo ErrH
+        If Not BR_DirWritable(snapDir) Then Error 8105, &quot;Snapshot folder is not writable (PasswordDir): &quot; &amp; snapDir
+    End If
+
+    &#x27; ---------- 2. ACT. Pass 1 = duplicates, pass 2 = mail files. Replicas are requested in step 3 ----------
+    gCfg(&quot;createclusterreplicas&quot;) = &quot;0&quot;
+    tChunk = Timer
+    tRun = Timer
+    For pass = 1 To 2
+        For i = 0 To nW - 1
+            skipThis = ((wAct(i) = &quot;REMOVE_DUPLICATE&quot;) &lt;&gt; (pass = 1))
+            If Not skipThis Then
+                tItem = Timer
+                Set doc = Nothing
+                On Error Resume Next
+                Set doc = gRecDb.GetDocumentByID(wNid(i))
+                Err = 0
+                On Error GoTo ErrH
+                gRecSecExists = 0: gRecSecCreate = 0: gRecSecAcl = 0
+                Select Case wAct(i)
+                Case &quot;REMOVE_DUPLICATE&quot;
+                    If maxDel &gt; 0 And nDup &gt;= maxDel Then
+                        res = &quot;SKIP:cap&quot;
+                        BR_Log LVL_INFO, &quot;DuplicateMaxDelete (&quot; &amp; maxDel &amp; &quot;) reached - run again for the rest&quot;
+                    Else
+                        res = BRR_RemoveDuplicate(wNid(i), wKeep(i), snapDir)
+                        If Left$(res, 2) = &quot;OK&quot; Then
+                            nDup = nDup + 1
+                        ElseIf Left$(res, 2) = &quot;FA&quot; Then
+                            nDupBad = nDupBad + 1
+                        End If
+                        If pauseMs &gt; 0 And Left$(res, 2) = &quot;OK&quot; Then Sleep pauseMs / 1000
+                    End If
+                Case &quot;CREATE_MAIL&quot;
+                    res = BRR_CreateOne(doc, wNid(i))
+                Case &quot;REPLACE_SHELL&quot;
+                    res = BR_RepairOne(doc, wNid(i), &quot;K&quot;, 1)
+                Case &quot;FIX_ACL_TITLE&quot;
+                    res = BR_RepairOne(doc, wNid(i), &quot;K&quot;, 2)
+                Case &quot;REQUEST_REPLICAS&quot;
+                    res = BRR_ReplicasOne(doc, wNid(i))
+                Case Else
+                    res = &quot;SKIP:action&quot;
+                End Select
+                Select Case Left$(res, 2)
+                Case &quot;OK&quot;
+                    nConsec = 0
+                    If wAct(i) &lt;&gt; &quot;REMOVE_DUPLICATE&quot; Then
+                        nMade = nMade + 1
+                        If wAct(i) &lt;&gt; &quot;REQUEST_REPLICAS&quot; Then
+                            If nCreated &gt;= capC Then
+                                capC = capC + 500
+                                ReDim Preserve createdNid(capC) As String
+                            End If
+                            createdNid(nCreated) = wNid(i)
+                            nCreated = nCreated + 1
+                        End If
+                    End If
+                Case &quot;EX&quot;: nExist = nExist + 1: nConsec = 0
+                Case &quot;FX&quot;: nFix = nFix + 1: nConsec = 0
+                Case &quot;SK&quot;: nSkip = nSkip + 1
+                Case Else: nFail = nFail + 1: nConsec = nConsec + 1
+                End Select
+                If wAct(i) &lt;&gt; &quot;REMOVE_DUPLICATE&quot; Then
+                    Call BR_AppendLine(timeFile, i + 1 &amp; &quot;,&quot; &amp; Q(Format$(Now, &quot;yyyy-mm-dd hh:nn:ss&quot;)) &amp; &quot;,&quot; &amp; Q(BRR_SrvOf(doc)) &amp; &quot;,&quot; &amp; Q(BRR_MailOf(doc)) &amp; &quot;,&quot; &amp; Q(wAct(i)) &amp; &quot;,&quot; &amp; Q(res) &amp; &quot;,&quot; &amp; _
+                    Format$(gRecSecExists, &quot;0.0&quot;) &amp; &quot;,&quot; &amp; Format$(gRecSecCreate, &quot;0.0&quot;) &amp; &quot;,&quot; &amp; Format$(gRecSecAcl, &quot;0.0&quot;) &amp; &quot;,&quot; &amp; Format$(BR_Elapsed(tItem), &quot;0.0&quot;))
+                End If
+                Print &quot;BulkReg RECOVER: &quot; &amp; (i + 1) &amp; &quot;/&quot; &amp; nW &amp; &quot;  duplicates removed=&quot; &amp; nDup &amp; &quot; mail created/replaced=&quot; &amp; nMade &amp; &quot; fixed=&quot; &amp; nFix &amp; &quot; fail=&quot; &amp; nFail &amp; &quot; skip=&quot; &amp; nSkip
+                Set doc = Nothing
+
+                &#x27; slowness: a create that takes very long is the sign of a server in trouble - stop instead of piling up
+                If wAct(i) = &quot;CREATE_MAIL&quot; And Left$(res, 2) = &quot;OK&quot; Then
+                    If slowSec &gt; 0 And gRecSecCreate &gt; slowSec Then
+                        nSlowRow = nSlowRow + 1: nSlowTotal = nSlowTotal + 1
+                        BR_Log LVL_WARN, &quot;Slow create: &quot; &amp; Format$(gRecSecCreate, &quot;0.0&quot;) &amp; &quot; s (limit &quot; &amp; slowSec &amp; &quot; s), &quot; &amp; nSlowRow &amp; &quot; in a row&quot;
+                    Else
+                        nSlowRow = 0
+                    End If
+                    If maxSlow &gt; 0 And nSlowRow &gt;= maxSlow Then
+                        stopReason = &quot;SLOW: &quot; &amp; nSlowRow &amp; &quot; creates in a row took more than &quot; &amp; slowSec &amp; &quot; s. The server is struggling: wait, then run again&quot;
+                        BR_Log LVL_ERROR, stopReason
+                        Exit For
+                    End If
+                End If
+                If nConsec &gt;= maxConsec Then
+                    stopReason = &quot;Circuit breaker: &quot; &amp; nConsec &amp; &quot; consecutive failures&quot;
+                    BR_Log LVL_ERROR, stopReason
+                    Exit For
+                End If
+                If wAct(i) &lt;&gt; &quot;REMOVE_DUPLICATE&quot; And maxPer &gt; 0 And nMade &gt;= maxPer Then
+                    stopReason = &quot;RecoverMaxCreates (&quot; &amp; maxPer &amp; &quot;) reached - run again for the rest&quot;
+                    BR_Log LVL_INFO, stopReason
+                    Exit For
+                End If
+                If maxMin &gt; 0 And BR_Elapsed(tRun) &gt; maxMin * 60 Then
+                    stopReason = &quot;RecoverMaxMinutes (&quot; &amp; maxMin &amp; &quot;) reached - run again, it continues where it stopped&quot;
+                    BR_Log LVL_INFO, stopReason
+                    Exit For
+                End If
+                If wAct(i) &lt;&gt; &quot;REMOVE_DUPLICATE&quot; Then
+                    If pauseMs &gt; 0 And Left$(res, 2) = &quot;OK&quot; Then Sleep pauseMs / 1000
+                    workDone = nMade + nFix
+                    If chunk &gt; 0 And (workDone - lastMark) &gt;= chunk Then
+                        lastMark = workDone
+                        stopReason = BR_ChunkEnd(&quot;Recover&quot;, i + 1, nW, chunk, tChunk, pauseSec, basePause, nMade, nFail)
+                        If stopReason &lt;&gt; &quot;&quot; Then
+                            BR_Log LVL_WARN, stopReason
+                            Exit For
+                        End If
+                        Set gRecDb = BR_OpenDirectory()           &#x27; fresh handle per chunk (like 03 and 08)
+                    End If
+                End If
+            End If
+        Next
+        If stopReason &lt;&gt; &quot;&quot; Then Exit For
+    Next
+    gCfg(&quot;createclusterreplicas&quot;) = BR_IIfStr(origReplicas, &quot;1&quot;, &quot;0&quot;)
+
+    &#x27; ---------- close stale batch files (only when the run was not stopped early) ----------
+    If stopReason = &quot;&quot; Then
+        ForAll bt In gRecBatchAge
+            If bt = &quot;STALE&quot; Then
+                bk = ListTag(bt)
+                If BRR_CloseBatch(bk) Then nBatchClosed = nBatchClosed + 1
+            End If
+        End ForAll
+    End If
+
+    &#x27; ---------- 3. FINISH: verify what was created, then request the cluster replicas ----------
+    Set gRecDb = BR_OpenDirectory()
+    If nCreated &gt; 0 Then Call BRR_FinishCreated(gRecDb, createdNid, nCreated, origReplicas, nVerOk, nVerBad, nRepReq, nRepBad)
+
+    If stopReason = &quot;&quot; Then stopReason = &quot;All planned work processed&quot;
+    Set gTmplDb = Nothing
+    summary = gMode &amp; &quot; | duplicates removed=&quot; &amp; nDup &amp; &quot; failed=&quot; &amp; nDupBad &amp; &quot; | mail created/replaced=&quot; &amp; nMade &amp; &quot; existing=&quot; &amp; nExist &amp; &quot; fixed=&quot; &amp; nFix &amp; &quot; skipped=&quot; &amp; nSkip &amp; &quot; failed=&quot; &amp; nFail &amp; &quot; slow=&quot; &amp; nSlowTotal &amp; _
+    &quot; | verified OK=&quot; &amp; nVerOk &amp; &quot; bad=&quot; &amp; nVerBad &amp; &quot; | replicas requested=&quot; &amp; nRepReq &amp; &quot; failed=&quot; &amp; nRepBad &amp; &quot; | stale batches closed=&quot; &amp; nBatchClosed &amp; &quot; | ready for 02=&quot; &amp; nReady &amp; &quot; manual=&quot; &amp; nManual &amp; &quot; | &quot; &amp; stopReason
+    BR_Close summary
+    BR_Msg summary &amp; Chr$(10) &amp; Chr$(10) &amp; &quot;Results: &quot; &amp; gResultsFile &amp; Chr$(10) &amp; &quot;Timing: &quot; &amp; timeFile &amp; Chr$(10) &amp; &quot;Log: &quot; &amp; gDebugFile &amp; Chr$(10) &amp; Chr$(10) &amp; _
+    BR_IIfStr(nFail &gt; 0 Or nVerBad &gt; 0 Or nDupBad &gt; 0 Or stopReason &lt;&gt; &quot;All planned work processed&quot;, &quot;NOT COMPLETE. Run the agent again (DryRun=1 first) until it reports &#x27;nothing for this agent to do&#x27;.&quot;, &quot;Planned work finished. Run the agent once more with DryRun=1: it must report &#x27;nothing for this agent to do&#x27;.&quot;) &amp; Chr$(10) &amp; _
+    BR_IIfStr(nReady + nBatchClosed &gt; 0, &quot;NEXT: run 02 - Build Batch (it now finds the remaining users), review, then 03 - Register Batch.&quot; &amp; Chr$(10), &quot;&quot;) &amp; _
+    &quot;AdminP creates the replicas and removes duplicates over the next minutes/hours.&quot;, CInt(BR_IIfStr(nFail &gt; 0 Or nVerBad &gt; 0 Or nDupBad &gt; 0, &quot;48&quot;, &quot;64&quot;))
+    Exit Sub
+
+ErrH:
+    On Error Resume Next
+    Close #fhPlan
+    gCfg(&quot;createclusterreplicas&quot;) = BR_IIfStr(origReplicas, &quot;1&quot;, &quot;0&quot;)
+    Set gTmplDb = Nothing
+    BR_Log LVL_ERROR, &quot;Recover aborted: &quot; &amp; Error$ &amp; &quot; (err &quot; &amp; Err &amp; &quot;, line &quot; &amp; Erl &amp; &quot;)&quot;
+    BR_Close &quot;ABORTED&quot;
+    BR_Msg &quot;Recover aborted: &quot; &amp; Error$ &amp; Chr$(10) &amp; &quot;Nothing is lost: the plan is rebuilt from the directory, run the agent again.&quot; &amp; Chr$(10) &amp; &quot;See &quot; &amp; gDebugFile, 16
+    Exit Sub
+End Sub
+
+&#x27; ---------------------------------------------------------------------
+&#x27; Classify ONE Person document. Returns the state (&quot;&quot; = out of scope), act = the action, detail = why,
+&#x27; keeper = NoteID of the registered keeper (duplicates), bfile = batch file that holds the user back.
+&#x27; Read only. Uses the module globals set by BR_RunRecover (directory, inventory, open batches, settings).
+&#x27; ---------------------------------------------------------------------
+Function BRR_Classify(doc As NotesDocument, act As String, detail As String, keeper As String, bfile As String) As String
+    On Error GoTo ErrH
+    Dim srv As String, mf As String, present As Boolean, health As String, folder As String, rr As String, key As String
+    Dim u As BRUser, aRes As String, tRes As String, repl As String, dupTxt As String, p As Long, ev As String, why As String, via As String, delName As String
+    Dim nid As String, ageState As String
+    act = &quot;&quot;: detail = &quot;&quot;: keeper = &quot;&quot;: bfile = &quot;&quot;
+    nid = CStr(doc.NoteID)
+
+    &#x27; ---------- not registered ----------
+    If Not BR_IsRegistered(doc) Then
+        Call BR_ReadUser(doc, u)
+        dupTxt = BR_DupCheck(u)
+        If dupTxt &lt;&gt; &quot;&quot; Then
+            If InStr(dupTxt, &quot;DUPLICATE_REGISTERED&quot;) &gt; 0 Then
+                p = InStr(dupTxt, &quot;NoteID &quot;)
+                If p &gt; 0 Then keeper = StrLeft(Mid$(dupTxt, p + 7), &quot; &quot;)
+                ev = BR_DupEval(gRecDb, nid, keeper, gRecDupMethod, gRecDupMust, gRecBatchOf, gRecReqFile, why, via, delName)
+                If ev = &quot;OK&quot; Then
+                    BRR_Classify = &quot;DUPLICATE&quot;: act = &quot;REMOVE_DUPLICATE&quot;
+                    detail = &quot;Unregistered full duplicate of the registered NoteID &quot; &amp; keeper &amp; &quot;: removed via &quot; &amp; via
+                ElseIf ev = &quot;GONE&quot; Then
+                    BRR_Classify = &quot;&quot;: keeper = &quot;&quot;
+                Else
+                    BRR_Classify = &quot;DUPLICATE_REVIEW&quot;: act = &quot;MANUAL&quot;: keeper = &quot;&quot;
+                    detail = ev &amp; &quot;: &quot; &amp; why
+                End If
+            Else
+                BRR_Classify = &quot;DUPLICATE_OTHER&quot;: act = &quot;MANUAL&quot;
+                detail = Left$(dupTxt, 250)
+            End If
+            Exit Function
+        End If
+        If IsElement(gRecOpenIds(nid)) Then
+            bfile = CStr(gRecOpenIds(nid))
+            ageState = BRR_BatchAgeState(bfile)
+            If ageState = &quot;STALE&quot; Then
+                BRR_Classify = &quot;BLOCKED_STALE_BATCH&quot;: act = &quot;CLOSE_BATCH&quot;
+                detail = bfile &amp; &quot; is open or stopped for more than &quot; &amp; gRecStaleHours &amp; &quot; h and holds this user back from 02: it is closed, then 02 builds the user&quot;
+            Else
+                BRR_Classify = &quot;BLOCKED_RECENT_BATCH&quot;: act = &quot;MANUAL&quot;
+                detail = bfile &amp; &quot; is a recent open batch: run 03 on it, or close it with 11 - Batch Manager (CLOSE), then 02 builds the user&quot;
+            End If
+            Exit Function
+        End If
+        If u.InternetAddress = &quot;&quot; And CfgB(&quot;SkipNoInternetAddress&quot;, True) Then
+            BRR_Classify = &quot;NO_INTERNET_ADDRESS&quot;: act = &quot;MANUAL&quot;
+            detail = &quot;02 skips users without an Internet address: add it in AD (DirSync), or set InternetDomain so it can be constructed&quot;
+            Exit Function
+        End If
+        BRR_Classify = &quot;READY_FOR_02&quot;: act = &quot;REGISTER&quot;
+        detail = &quot;Nothing holds this user back: 02 - Build Batch includes the user, then 03 registers&quot;
+        If CfgS(&quot;BatchServerFilter&quot;, &quot;&quot;) &lt;&gt; &quot;&quot; Then detail = detail &amp; &quot; (BatchServerFilter=&quot; &amp; CfgS(&quot;BatchServerFilter&quot;, &quot;&quot;) &amp; &quot; may hide users of other servers from 02)&quot;
+        Exit Function
+    End If
+
+    &#x27; ---------- registered: mail item ----------
+    srv = BR_SrvAbbr(BR_Item(doc, &quot;MailServer&quot;))
+    mf = BR_MailPathNorm(BR_Item(doc, &quot;MailFile&quot;))
+    If srv = &quot;&quot; Or mf = &quot;&quot; Then
+        BRR_Classify = &quot;NO_MAIL_ITEM&quot;: act = &quot;MANUAL&quot;
+        detail = &quot;Registered, but the Person document has no MailServer/MailFile: set both items, then run again&quot;
+        Exit Function
+    End If
+    If Not BR_HomeServerOK(srv, gRecSrvOk) Then
+        BRR_Classify = &quot;SERVER_UNREACHABLE&quot;: act = &quot;MANUAL&quot;
+        detail = srv &amp; &quot; does not answer: nothing is planned for its users. Fix the server, then run again&quot;
+        Exit Function
+    End If
+
+    &#x27; does the file exist? (CSV list or one directory listing per server; a file missing there is confirmed with one open)
+    Call BR_MailInventory(srv, gRecInv)
+    If BR_InvLoaded(srv, gRecInv) Then
+        present = BR_InvHas(srv, mf, gRecInv)
+        If Not present Then present = BR_MailFileExists(srv, mf)
+    Else
+        present = BR_MailFileExists(srv, mf)
+    End If
+    If Not present Then
+        BRR_Classify = &quot;MAIL_MISSING&quot;: act = &quot;CREATE_MAIL&quot;
+        detail = &quot;Mail file &quot; &amp; srv &amp; &quot;!!&quot; &amp; mf &amp; &quot; does not exist&quot;
+        Exit Function
+    End If
+
+    &#x27; exists: complete? A large file from a CSV list is trusted (a cut-off create leaves a tiny file); a small one is opened
+    If gRecCheckLevel &gt;= 1 Then
+        key = LCase$(BR_SrvAbbr(srv)) &amp; &quot;!!&quot; &amp; LCase$(BR_Path(mf))
+        If gRecTrustSize And IsElement(gRecSizes(key)) Then
+            If gRecSizes(key) &gt;= gRecShellMax Then health = &quot;OK&quot; Else health = BR_MailHealth(srv, mf)
+        Else
+            health = BR_MailHealth(srv, mf)
+        End If
+        If health &lt;&gt; &quot;OK&quot; Then
+            If Left$(health, 9) = &quot;NO_DESIGN&quot; Then
+                folder = &quot;&quot;
+                If InStr(mf, &quot;\&quot;) &gt; 0 Then folder = StrLeftBack(mf, &quot;\&quot;)
+                If InStr(health, &quot;EMPTY&quot;) &gt; 0 Then
+                    BRR_Classify = &quot;EMPTY_SHELL&quot;
+                    If CfgB(&quot;RepairRemoveEmptyShells&quot;, False) And BR_IsNewMailFolder(folder) Then
+                        act = &quot;REPLACE_SHELL&quot;
+                        detail = &quot;File exists without design and without documents (a create that was cut off): removed and recreated&quot;
+                    Else
+                        act = &quot;MANUAL&quot;
+                        detail = &quot;Empty shell: remove it on the server, or set RepairRemoveEmptyShells=1 (only in a BulkReg numbered mail folder)&quot;
+                    End If
+                Else
+                    BRR_Classify = &quot;NO_DESIGN_HAS_DATA&quot;: act = &quot;MANUAL&quot;
+                    detail = &quot;No design but &quot; &amp; health &amp; &quot;: never recreated. Replace the design from &quot; &amp; CfgS(&quot;MailTemplate&quot;, &quot;&quot;) &amp; &quot; in Domino Administrator&quot;
+                End If
+            Else
+                BRR_Classify = &quot;CHECK_ERROR&quot;: act = &quot;MANUAL&quot;
+                detail = &quot;Completeness check failed: &quot; &amp; health
+            End If
+            Exit Function
+        End If
+    End If
+    If gRecCheckLevel &gt;= 2 Then
+        Call BR_LightUser(doc, u)
+        aRes = BR_MailAclFix(srv, mf, u.FullNameAfter, False)
+        tRes = BR_MailTitleFix(srv, mf, BR_MailTitle(u), False, CfgB(&quot;MailFileTitleOverwrite&quot;, False))
+        If InStr(aRes, &quot;ACL_MISSING&quot;) &gt; 0 Or tRes = &quot;TITLE_EMPTY&quot; Then
+            BRR_Classify = &quot;ACL_TITLE_OFF&quot;: act = &quot;FIX_ACL_TITLE&quot;
+            detail = aRes &amp; &quot;; &quot; &amp; tRes
+            Exit Function
+        End If
+    End If
+    If gRecCheckRep Then
+        repl = BR_ReplicaServers(srv, &quot;&quot;)
+        If repl &lt;&gt; &quot;&quot; Then
+            rr = BR_CheckReplicas(srv, mf, repl)
+            If Left$(rr, 16) = &quot;REPLICAS_MISSING&quot; Then
+                BRR_Classify = &quot;REPLICAS_MISSING&quot;: act = &quot;REQUEST_REPLICAS&quot;
+                detail = rr
+                Exit Function
+            End If
+        End If
+    End If
+    BRR_Classify = &quot;MAIL_OK&quot;
+    Exit Function
+ErrH:
+    BRR_Classify = &quot;CHECK_ERROR&quot;: act = &quot;MANUAL&quot;
+    detail = &quot;err &quot; &amp; Err &amp; &quot;: &quot; &amp; Error$
+    Exit Function
+End Function
+
+&#x27; &quot;STALE&quot; / &quot;FRESH&quot; for a batch file that is OPEN or STOPPED on this machine (cached; counts the users it holds back).
+&#x27; STALE = the batch file (or its in-progress flag) was last written more than RecoverStaleBatchHours ago.
+Function BRR_BatchAgeState(bfile As String) As String
+    On Error GoTo ErrH
+    Dim bid As String, f As String, ageH As Double, st As String
+    If IsElement(gRecBatchAge(bfile)) Then
+        If IsElement(gRecBatchUsers(bfile)) Then gRecBatchUsers(bfile) = gRecBatchUsers(bfile) + 1 Else gRecBatchUsers(bfile) = 1
+        BRR_BatchAgeState = gRecBatchAge(bfile)
+        Exit Function
+    End If
+    bid = Left$(bfile, Len(bfile) - 4)
+    f = BR_BatchDir() &amp; bfile
+    If Dir$(BR_BatchFlagFile(bid)) &lt;&gt; &quot;&quot; Then f = BR_BatchFlagFile(bid)
+    ageH = (Now - FileDateTime(f)) * 24
+    If gRecStaleHours &gt; 0 And ageH &gt; gRecStaleHours Then st = &quot;STALE&quot; Else st = &quot;FRESH&quot;
+    gRecBatchAge(bfile) = st
+    gRecBatchUsers(bfile) = 1
+    BR_Log LVL_INFO, &quot;Batch &quot; &amp; bfile &amp; &quot; holds users back from 02: &quot; &amp; st &amp; &quot; (&quot; &amp; Format$(ageH, &quot;0.0&quot;) &amp; &quot; h old)&quot;
+    BRR_BatchAgeState = st
+    Exit Function
+ErrH:
+    gRecBatchAge(bfile) = &quot;FRESH&quot;
+    BRR_BatchAgeState = &quot;FRESH&quot;
+    Exit Function
+End Function
+
+&#x27; Closes a stale OPEN or STOPPED batch file like 11 - Batch Manager CLOSE (STOPPED: flag removed; OPEN: header-only results file).
+&#x27; Users already registered stay registered; the others become eligible for 02. Returns True when closed.
+Function BRR_CloseBatch(bfile As String) As Boolean
+    On Error GoTo ErrH
+    Dim bid As String, flagF As String, resF As String
+    bid = Left$(bfile, Len(bfile) - 4)
+    flagF = BR_BatchFlagFile(bid)
+    resF = BR_BatchDir() &amp; bid &amp; &quot;_results.csv&quot;
+    If Dir$(flagF) &lt;&gt; &quot;&quot; Then
+        Kill flagF
+    ElseIf Dir$(resF) = &quot;&quot; Then
+        Call BR_AppendLine(resF, Uchr$(&amp;HFEFF) &amp; BR_AuditHeader())
+    Else
+        Exit Function
+    End If
+    BR_Log LVL_WARN, &quot;CLOSE (stale batch): &quot; &amp; bid &amp; &quot; closed by Recover &quot; &amp; gRunID &amp; &quot; (&quot; &amp; BR_ListLongText(gRecBatchUsers, bfile) &amp; &quot; unregistered users were held back)&quot;
+    BRR_CloseBatch = True
+    Exit Function
+ErrH:
+    BR_Log LVL_ERROR, &quot;Could not close batch &quot; &amp; bfile &amp; &quot;: &quot; &amp; Error$
+    Exit Function
+End Function
+
+&#x27; ---------------------------------------------------------------------
+&#x27; REMOVE_DUPLICATE: same checks and removal as agent 12 (BR_DupEval, snapshot, BR_DupRemove), live re-check first.
+&#x27; Returns OK / SKIP:... / FAIL:... Mail files, ID files and the keeper are never touched.
+&#x27; ---------------------------------------------------------------------
+Function BRR_RemoveDuplicate(nid As String, keeper As String, snapDir As String) As String
+    On Error GoTo ErrH
+    Dim why As String, via As String, delName As String, res As String, d As NotesDocument, snapErr As String, reqId As String, t0 As Double
+    t0 = Timer
+    res = BR_DupEval(gRecDb, nid, keeper, gRecDupMethod, gRecDupMust, gRecBatchOf, gRecReqFile, why, via, delName)
+    If res &lt;&gt; &quot;OK&quot; Then
+        Call BR_DupAuditRow(gRecDb, nid, &quot;RECOVER&quot;, keeper, res, why, Timer - t0)
+        BRR_RemoveDuplicate = &quot;SKIP:&quot; &amp; res
+        Exit Function
+    End If
+    Set d = gRecDb.GetDocumentByID(nid)
+    snapErr = BR_DupSnapshot(d, snapDir, nid)
+    If snapErr &lt;&gt; &quot;&quot; Then
+        Call BR_DupAuditRow(gRecDb, nid, &quot;RECOVER&quot;, keeper, &quot;FAILED_SNAPSHOT&quot;, &quot;no snapshot, nothing removed: &quot; &amp; snapErr, Timer - t0)
+        BRR_RemoveDuplicate = &quot;FAIL:snapshot&quot;
+        Exit Function
+    End If
+    res = BR_DupRemove(gRecDb, d, nid, via, delName, gRecReqFile, reqId, why)
+    Call BR_DupAuditRow(gRecDb, nid, &quot;RECOVER&quot;, keeper, res, why, Timer - t0)
+    If Left$(res, 6) = &quot;FAILED&quot; Then BRR_RemoveDuplicate = &quot;FAIL:remove&quot; Else BRR_RemoveDuplicate = &quot;OK&quot;
+    Exit Function
+ErrH:
+    BR_Log LVL_ERROR, &quot;Remove duplicate &quot; &amp; nid &amp; &quot; failed: &quot; &amp; Error$ &amp; &quot; (line &quot; &amp; Erl &amp; &quot;)&quot;
+    BRR_RemoveDuplicate = &quot;FAIL:error&quot;
+    Exit Function
+End Function
+
+&#x27; ---------------------------------------------------------------------
+&#x27; Mail file lists written on the mail servers (Server,Path,Bytes,Modified) from MailListDir.
+&#x27; Fills gRecInv (same keys as BR_MailInventory) and gRecSizes. Returns a description, &quot;&quot; = no list found.
+&#x27; ---------------------------------------------------------------------
+Function BRR_LoadMailLists() As String
+    On Error GoTo ErrH
+    Dim dirPath As String, f As String, files List As String, fh As Integer, txt As String, cols List As Integer, delim As String, parts As Variant
+    Dim isFirst As Boolean, sk As String, pth As String, nRows As Long, perSrv List As Long, info As String, ageH As Double, bytes As String
+    dirPath = BR_CfgDir(&quot;MailListDir&quot;, &quot;maillists&quot;)
+    f = Dir$(dirPath &amp; &quot;*.csv&quot;)
+    Do While f &lt;&gt; &quot;&quot;
+        files(f) = f
+        f = Dir$()
+    Loop
+    ForAll lf In files
+        fh = FreeFile()
+        Open dirPath &amp; lf For Input As #fh Charset = &quot;UTF-8&quot;
+        isFirst = True
+        Do Until EOF(fh)
+            Line Input #fh, txt
+            txt = Replace(txt, Uchr$(&amp;HFEFF), &quot;&quot;)
+            If isFirst Then
+                Call BR_CsvHeader(txt, delim, cols)
+                isFirst = False
+                If Not IsElement(cols(&quot;server&quot;)) Or Not IsElement(cols(&quot;path&quot;)) Then
+                    BR_Log LVL_WARN, &quot;Mail list &quot; &amp; lf &amp; &quot; skipped: columns Server and Path are required&quot;
+                    Exit Do
+                End If
+            ElseIf Trim$(txt) &lt;&gt; &quot;&quot; Then
+                parts = BR_CsvSplit(txt, delim)
+                sk = LCase$(BR_SrvAbbr(BR_CsvGet(parts, cols, &quot;Server&quot;)))
+                pth = LCase$(BR_Path(BR_CsvGet(parts, cols, &quot;Path&quot;)))
+                If sk &lt;&gt; &quot;&quot; And pth &lt;&gt; &quot;&quot; Then
+                    gRecInv(sk &amp; &quot;!!&quot; &amp; pth) = &quot;1&quot;
+                    bytes = BR_CsvGet(parts, cols, &quot;Bytes&quot;)
+                    If IsNumeric(bytes) Then gRecSizes(sk &amp; &quot;!!&quot; &amp; pth) = CDbl(bytes)
+                    If IsElement(perSrv(sk)) Then perSrv(sk) = perSrv(sk) + 1 Else perSrv(sk) = 1
+                    nRows = nRows + 1
+                End If
+            End If
+        Loop
+        Close #fh
+        ageH = (Now - FileDateTime(dirPath &amp; lf)) * 24
+        If ageH &gt; CfgL(&quot;RecoverMailListMaxHours&quot;, 48) Then BR_Log LVL_WARN, &quot;Mail list &quot; &amp; lf &amp; &quot; is &quot; &amp; Format$(ageH, &quot;0&quot;) &amp; &quot; h old: write a fresh one on the server (existence is still confirmed live before any create)&quot;
+    End ForAll
+    ForAll ps In perSrv
+        gRecInv(&quot;srv!!&quot; &amp; ListTag(ps)) = CStr(ps)
+        info = info &amp; ListTag(ps) &amp; &quot;=&quot; &amp; ps &amp; &quot; files; &quot;
+    End ForAll
+    If nRows &gt; 0 Then BRR_LoadMailLists = info &amp; &quot;(&quot; &amp; nRows &amp; &quot; rows from &quot; &amp; dirPath &amp; &quot;)&quot;
+    Exit Function
+ErrH:
+    On Error Resume Next
+    Close #fh
+    BR_Log LVL_WARN, &quot;Mail lists could not be read (&quot; &amp; Error$ &amp; &quot;) - servers are checked live&quot;
+    BRR_LoadMailLists = &quot;&quot;
+    Exit Function
+End Function
+
+&#x27; ---------------------------------------------------------------------
+&#x27; CREATE_MAIL for one user, timed in three parts. Replicas are NOT requested here (step 3 does it).
+&#x27; Returns OK / EXISTS / SKIP:... / FAIL:...  (first two letters drive the counters in BR_RunRecover)
+&#x27; Never overwrites: the existence is confirmed again right before the create.
+&#x27; ---------------------------------------------------------------------
+Function BRR_CreateOne(doc As NotesDocument, nid As String) As String
+    Dim u As BRUser, t0 As Double, t1 As Double, srv As String, tRes As String, aRes As String, cr As String
+    t0 = Timer
+    On Error GoTo ErrH
+    If doc Is Nothing Then
+        u.NoteID = nid
+        Call BR_Audit(u, gMode, &quot;RECOVER_MAIL&quot;, &quot;NOT_FOUND&quot;, BR_Elapsed(t0), &quot;Person document no longer exists&quot;)
+        BRR_CreateOne = &quot;SKIP:gone&quot;
+        Exit Function
+    End If
+    Call BR_LightUser(doc, u)
+    srv = u.HomeServer
+    If u.MailFile = &quot;&quot; Or srv = &quot;&quot; Or Not BR_IsRegistered(doc) Then
+        Call BR_Audit(u, gMode, &quot;RECOVER_MAIL&quot;, &quot;SKIPPED&quot;, BR_Elapsed(t0), &quot;No mail item in the Person document, or not registered&quot;)
+        BRR_CreateOne = &quot;SKIP:state&quot;
+        Exit Function
+    End If
+    t1 = Timer
+    If BR_MailFileExists(srv, u.MailFile) Then
+        gRecSecExists = BR_Elapsed(t1)
+        u.MailFileStatus = &quot;MAILFILE_OK&quot;
+        Call BR_Audit(u, gMode, &quot;RECOVER_MAIL&quot;, &quot;MAIL_EXISTS_OK&quot;, BR_Elapsed(t0), &quot;Exists now (created by another run or machine) - not touched&quot;)
+        BRR_CreateOne = &quot;EXISTS&quot;
+        Exit Function
+    End If
+    gRecSecExists = BR_Elapsed(t1)
+    cr = BR_ReplicaServers(srv, &quot;&quot;)
+    u.ClusterReplicas = cr
+    u.MailFileStatus = &quot;MAILFILE_MISSING&quot;
+
+    t1 = Timer
+    tRes = BR_CreateMailFileFast(srv, u.MailFile, CfgS(&quot;MailTemplate&quot;, &quot;&quot;), BR_MailTitle(u))
+    gRecSecCreate = BR_Elapsed(t1)
+    If Left$(tRes, 12) &lt;&gt; &quot;MAIL_CREATED&quot; Then
+        u.ReplicaStatus = &quot;NOT_REQUESTED (mail file not created)&quot;
+        Call BR_Audit(u, gMode, &quot;RECOVER_MAIL&quot;, &quot;FAILED&quot;, BR_Elapsed(t0), tRes)
+        BR_Log LVL_ERROR, &quot;Mail file &quot; &amp; srv &amp; &quot;!!&quot; &amp; u.MailFile &amp; &quot; : &quot; &amp; tRes
+        BRR_CreateOne = &quot;FAIL:create&quot;
+        Exit Function
+    End If
+    u.MailFileStatus = &quot;MAILFILE_OK&quot;
+    t1 = Timer
+    aRes = BR_MailAclFix(srv, u.MailFile, u.FullNameAfter, True)       &#x27; managers + owner (replicas copy the ACL later)
+    gRecSecAcl = BR_Elapsed(t1)
+    u.ReplicaStatus = BR_IIfStr(cr = &quot;&quot;, &quot;NONE&quot;, &quot;PENDING (requested after all mail files exist)&quot;)
+    u.MailFileNote = tRes &amp; &quot;; &quot; &amp; aRes
+    If Left$(aRes, 9) = &quot;ACL_ERROR&quot; Then
+        Call BR_Audit(u, gMode, &quot;RECOVER_MAIL&quot;, &quot;CREATED_PENDING&quot;, BR_Elapsed(t0), u.MailFileNote &amp; &quot; - fix the ACL with 04 - Verify&quot;)
+        BR_Log LVL_WARN, &quot;Mail file created, ACL follow-up needed: &quot; &amp; u.MailFile &amp; &quot; : &quot; &amp; aRes
+    Else
+        Call BR_Audit(u, gMode, &quot;RECOVER_MAIL&quot;, &quot;MAIL_CREATED&quot;, BR_Elapsed(t0), u.MailFileNote &amp; &quot; (create &quot; &amp; Format$(gRecSecCreate, &quot;0.0&quot;) &amp; &quot; s, ACL &quot; &amp; Format$(gRecSecAcl, &quot;0.0&quot;) &amp; &quot; s)&quot;)
+        BR_Log LVL_INFO, &quot;Mail file created &quot; &amp; srv &amp; &quot;!!&quot; &amp; u.MailFile &amp; &quot; (&quot; &amp; Format$(BR_Elapsed(t0), &quot;0.0&quot;) &amp; &quot; s)&quot;
+    End If
+    BRR_CreateOne = &quot;OK&quot;
+    Exit Function
+ErrH:
+    Call BR_Audit(u, gMode, &quot;RECOVER_MAIL&quot;, &quot;FAILED&quot;, BR_Elapsed(t0), &quot;err=&quot; &amp; Err &amp; &quot; &quot; &amp; Error$ &amp; &quot; (line &quot; &amp; Erl &amp; &quot;)&quot;)
+    BR_Log LVL_ERROR, &quot;Recover create FAILED &quot; &amp; u.FullNameBefore &amp; &quot; : &quot; &amp; Error$ &amp; &quot; (line &quot; &amp; Erl &amp; &quot;)&quot;
+    BRR_CreateOne = &quot;FAIL:error&quot;
+    Exit Function
+End Function
+
+&#x27; ---------------------------------------------------------------------
+&#x27; REQUEST_REPLICAS for a file that exists but lacks replicas on some cluster members.
+&#x27; ---------------------------------------------------------------------
+Function BRR_ReplicasOne(doc As NotesDocument, nid As String) As String
+    Dim u As BRUser, t0 As Double, rr As String, miss As String
+    t0 = Timer
+    On Error GoTo ErrH
+    If doc Is Nothing Then
+        BRR_ReplicasOne = &quot;SKIP:gone&quot;
+        Exit Function
+    End If
+    Call BR_LightUser(doc, u)
+    u.ClusterReplicas = BR_ReplicaServers(u.HomeServer, &quot;&quot;)
+    rr = BR_CheckReplicas(u.HomeServer, u.MailFile, u.ClusterReplicas)
+    miss = BRR_MissingList(rr)
+    If miss = &quot;&quot; Then
+        u.ReplicaStatus = rr
+        Call BR_Audit(u, gMode, &quot;RECOVER_REPLICAS&quot;, &quot;REPLICAS_OK&quot;, BR_Elapsed(t0), &quot;Nothing missing: &quot; &amp; rr)
+        BRR_ReplicasOne = &quot;EXISTS&quot;
+        Exit Function
+    End If
+    u.ClusterReplicas = miss
+    u.ReplicaStatus = BR_RequestReplicas(u)
+    If InStr(u.ReplicaStatus, &quot;FAILED&quot;) &gt; 0 Then
+        Call BR_Audit(u, gMode, &quot;RECOVER_REPLICAS&quot;, &quot;FAILED&quot;, BR_Elapsed(t0), u.ReplicaStatus)
+        BRR_ReplicasOne = &quot;FAIL:replicas&quot;
+    Else
+        Call BR_Audit(u, gMode, &quot;RECOVER_REPLICAS&quot;, &quot;REPLICAS_REQUESTED&quot;, BR_Elapsed(t0), u.ReplicaStatus)
+        BRR_ReplicasOne = &quot;OK&quot;
+    End If
+    Exit Function
+ErrH:
+    BRR_ReplicasOne = &quot;FAIL:error&quot;
+    Exit Function
+End Function
+
+&#x27; &quot;(missing: a/Demo, b/Demo)&quot; from BR_CheckReplicas -&gt; &quot;a/Demo,b/Demo&quot; (&quot;&quot; = nothing missing)
+Function BRR_MissingList(rr As String) As String
+    Dim p As Long, s As String, q As Long
+    p = InStr(rr, &quot;(missing: &quot;)
+    If p = 0 Then Exit Function
+    s = Mid$(rr, p + 10)
+    q = InStr(s, &quot;)&quot;)
+    If q &gt; 0 Then s = Left$(s, q - 1)
+    BRR_MissingList = Replace(s, &quot;, &quot;, &quot;,&quot;)
+End Function
+
+&#x27; ---------------------------------------------------------------------
+&#x27; Step 3: one pass over the files created in this run. Complete? Then request the cluster replicas in bursts
+&#x27; (RecoverReplicaChunk, pause ChunkPauseSec) so AdminP and the cluster members are not flooded.
+&#x27; ---------------------------------------------------------------------
+Sub BRR_FinishCreated(db As NotesDatabase, nids() As String, n As Long, wantReplicas As Boolean, nVerOk As Long, nVerBad As Long, nRepReq As Long, nRepBad As Long)
+    On Error GoTo ErrH
+    Dim i As Long, doc As NotesDocument, u As BRUser, health As String, t0 As Double, chunkRep As Long, pause As Long, nSinceChunk As Long
+    chunkRep = CfgL(&quot;RecoverReplicaChunk&quot;, 50)
+    pause = CfgL(&quot;ChunkPauseSec&quot;, 5)
+    For i = 0 To n - 1
+        t0 = Timer
+        Set doc = Nothing
+        On Error Resume Next
+        Set doc = db.GetDocumentByID(nids(i))
+        Err = 0
+        On Error GoTo ErrH
+        If Not (doc Is Nothing) Then
+            Call BR_LightUser(doc, u)
+            health = BR_MailHealth(u.HomeServer, u.MailFile)
+            If health = &quot;OK&quot; Then
+                nVerOk = nVerOk + 1
+                u.MailFileStatus = &quot;MAILFILE_OK&quot;
+                u.ClusterReplicas = BR_ReplicaServers(u.HomeServer, &quot;&quot;)
+                If wantReplicas And u.ClusterReplicas &lt;&gt; &quot;&quot; Then
+                    u.ReplicaStatus = BR_RequestReplicas(u)
+                    If InStr(u.ReplicaStatus, &quot;FAILED&quot;) &gt; 0 Then
+                        nRepBad = nRepBad + 1
+                        Call BR_Audit(u, gMode, &quot;RECOVER_REPLICAS&quot;, &quot;FAILED&quot;, BR_Elapsed(t0), u.ReplicaStatus &amp; &quot; - repeat with RecoverCheckReplicas=1&quot;)
+                    Else
+                        nRepReq = nRepReq + 1
+                        Call BR_Audit(u, gMode, &quot;RECOVER_REPLICAS&quot;, &quot;REPLICAS_REQUESTED&quot;, BR_Elapsed(t0), u.ReplicaStatus)
+                    End If
+                    nSinceChunk = nSinceChunk + 1
+                    If chunkRep &gt; 0 And nSinceChunk &gt;= chunkRep And pause &gt; 0 Then
+                        nSinceChunk = 0
+                        If i &lt; n - 1 Then Sleep pause
+                    End If
+                End If
+            Else
+                nVerBad = nVerBad + 1
+                u.MailFileStatus = &quot;MAILFILE_INCOMPLETE&quot;
+                Call BR_Audit(u, gMode, &quot;RECOVER_VERIFY&quot;, &quot;FAILED&quot;, BR_Elapsed(t0), &quot;Created, but completeness check says &quot; &amp; health &amp; &quot;. Replicas NOT requested. Run the agent again.&quot;)
+                BR_Log LVL_ERROR, &quot;Verify after create failed &quot; &amp; u.HomeServer &amp; &quot;!!&quot; &amp; u.MailFile &amp; &quot; : &quot; &amp; health
+            End If
+        End If
+    Next
+    Exit Sub
+ErrH:
+    BR_Log LVL_ERROR, &quot;Finish pass stopped: &quot; &amp; Error$ &amp; &quot; (err &quot; &amp; Err &amp; &quot;, line &quot; &amp; Erl &amp; &quot;) - run the agent again with RecoverCheckReplicas=1 to request what is missing&quot;
+    Exit Sub
+End Sub
+
+&#x27; ---------------------------------------------------------------------
+&#x27; Several machines
+&#x27; ---------------------------------------------------------------------
+&#x27; Writes this run&#x27;s partition into its Run document of the central log database (visible to every machine).
+Sub BRR_RecordPartition()
+    On Error GoTo ErrH
+    If gRunDoc Is Nothing Then Exit Sub
+    Call gRunDoc.ReplaceItemValue(&quot;PartitionCount&quot;, BR_PartitionCount())
+    Call gRunDoc.ReplaceItemValue(&quot;PartitionIndex&quot;, BR_PartitionIndex())
+    Call gRunDoc.ReplaceItemValue(&quot;PartitionText&quot;, BR_PartitionText())
+    Call gRunDoc.Save(True, False)
+    Exit Sub
+ErrH:
+    BR_Log LVL_WARN, &quot;Could not record the partition in the log database: &quot; &amp; Error$
+    Exit Sub
+End Sub
+
+&#x27; &quot;&quot; = no other Recover run RUNNING in the last 24 hours whose partition overlaps this one.
+&#x27; Overlap = different PartitionCount, or the same PartitionIndex, or partitioning off on either side.
+&#x27; A run that crashed stays RUNNING: the operator is asked (see BR_RunRecover). Failing to read = no block (WARN).
+Function BRR_OtherRunsActive() As String
+    On Error GoTo ErrH
+    Dim col As NotesDocumentCollection, d As NotesDocument, cutoff As NotesDateTime, f As String, s As String
+    Dim oc As Long, oi As Long, myC As Long, myI As Long, other As String
+    If gLogDb Is Nothing Then Exit Function
+    myC = BR_PartitionCount(): myI = BR_PartitionIndex()
+    Set cutoff = New NotesDateTime(&quot;Today&quot;)
+    Call cutoff.AdjustDay(-1)
+    f = |Form = &quot;BRLogEntry&quot; &amp; DocType = &quot;Run&quot; &amp; Tool = &quot;Recover&quot; &amp; Status = &quot;RUNNING&quot;|
+    Set col = gLogDb.Search(f, cutoff, 0)
+    Set d = col.GetFirstDocument()
+    Do While Not (d Is Nothing)
+        other = CStr(d.GetItemValue(&quot;RunID&quot;)(0))
+        If other &lt;&gt; gRunID Then
+            oc = 0: oi = 0
+            If d.HasItem(&quot;PartitionCount&quot;) Then oc = CLng(d.GetItemValue(&quot;PartitionCount&quot;)(0))
+            If d.HasItem(&quot;PartitionIndex&quot;) Then oi = CLng(d.GetItemValue(&quot;PartitionIndex&quot;)(0))
+            If oc &lt;&gt; myC Or oi = myI Or myC &lt;= 1 Or oc &lt;= 1 Then
+                s = s &amp; &quot;  run &quot; &amp; other &amp; &quot; by &quot; &amp; CStr(d.GetItemValue(&quot;Operator&quot;)(0)) &amp; &quot;, started &quot; &amp; CStr(d.GetItemValue(&quot;StartTime&quot;)(0)) &amp; &quot;, &quot; &amp; CStr(d.GetItemValue(&quot;PartitionText&quot;)(0)) &amp; Chr$(10)
+            End If
+        End If
+        Set d = col.GetNextDocument(d)
+    Loop
+    BRR_OtherRunsActive = s
+    Exit Function
+ErrH:
+    BR_Log LVL_WARN, &quot;Could not check for other Recover runs in the log database: &quot; &amp; Error$ &amp; &quot; - continuing without the guard&quot;
+    BRR_OtherRunsActive = &quot;&quot;
+    Exit Function
+End Function
+
+&#x27; Server / mail file of a Person document for the timing file (doc may be Nothing)
+Function BRR_SrvOf(doc As NotesDocument) As String
+    If doc Is Nothing Then Exit Function
+    BRR_SrvOf = BR_SrvAbbr(BR_Item(doc, &quot;MailServer&quot;))
+End Function
+
+Function BRR_MailOf(doc As NotesDocument) As String
+    If doc Is Nothing Then Exit Function
+    BRR_MailOf = BR_MailPathNorm(BR_Item(doc, &quot;MailFile&quot;))
+End Function
+</code></pre></div></details>
+
+<h3 id="git-mac-push">Git: Mac push</h3>
+<details class="script"><summary>scripts/mac/sync_to_github.sh<span>102 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">#!/usr/bin/env bash
+# sync_to_github.sh - send the changes in this kit to GitHub (macOS, also works on Linux)
+#
+# Usage (Terminal):
+#   chmod +x scripts/mac/sync_to_github.sh        # once
+#   scripts/mac/sync_to_github.sh                 # shows changes, asks, then commits and pushes
+#   scripts/mac/sync_to_github.sh &quot;my message&quot;    # same, with your commit message
+#   scripts/mac/sync_to_github.sh --dry-run       # only show what would happen, change nothing
+#
+# What it does, in order (it asks before step 5):
+#   1. finds the repo (the folder above scripts/), checks the remote and branch
+#   2. rebuilds the HTML docs if python3 + &#x27;markdown&#x27; are available (optional)
+#   3. REFUSES to continue if a secret-looking file would be committed (ID files, passwords, secure/, ids/, batches/)
+#   4. shows the changed files
+#   5. asks, then: git pull --rebase --autostash, git add -A, git commit, git push
+# It never uses --force, never deletes branches, never touches files outside this repo.
+# Authentication is whatever git already uses on this Mac (credential helper / SSH key / gh auth).
+# Not run by its author on a Mac: try --dry-run first.
+set -euo pipefail
+
+DRY=0
+MSG=&quot;&quot;
+for a in &quot;$@&quot;; do
+  case &quot;$a&quot; in
+    --dry-run|-n) DRY=1 ;;
+    -h|--help) sed -n &#x27;2,18p&#x27; &quot;$0&quot;; exit 0 ;;
+    *) MSG=&quot;$a&quot; ;;
+  esac
+done
+
+ROOT=&quot;$(cd &quot;$(dirname &quot;${BASH_SOURCE[0]}&quot;)/../..&quot; &amp;&amp; pwd)&quot;
+cd &quot;$ROOT&quot;
+say() { printf &#x27;\n== %s\n&#x27; &quot;$*&quot;; }
+die() { printf &#x27;STOP: %s\n&#x27; &quot;$*&quot; &gt;&amp;2; exit 1; }
+
+command -v git &gt;/dev/null || die &quot;git is not installed (run: xcode-select --install)&quot;
+git rev-parse --is-inside-work-tree &gt;/dev/null 2&gt;&amp;1 || die &quot;$ROOT is not a git repository&quot;
+REMOTE=&quot;${BULKREG_REMOTE:-origin}&quot;
+git remote get-url &quot;$REMOTE&quot; &gt;/dev/null 2&gt;&amp;1 || die &quot;no git remote &#x27;$REMOTE&#x27;. Add it: git remote add origin https://github.com/&lt;org-or-user&gt;/&lt;repo&gt;.git&quot;
+BRANCH=&quot;$(git branch --show-current)&quot;
+[ -n &quot;$BRANCH&quot; ] || die &quot;detached HEAD: check out a branch first (git switch main)&quot;
+LOCK=&quot;$(git rev-parse --git-dir)/index.lock&quot;
+if [ -f &quot;$LOCK&quot; ]; then
+  if pgrep -x git &gt;/dev/null 2&gt;&amp;1; then
+    die &quot;a git process is running, so $LOCK may be in use. Wait for it to finish, then run this again&quot;
+  fi
+  printf &#x27;Found %s and no git process is running: it is a leftover of an interrupted git command.\nDelete it? [y/N] &#x27; &quot;$LOCK&quot;
+  read -r lans
+  case &quot;$lans&quot; in y|Y|yes|YES) rm -f &quot;$LOCK&quot;; echo &quot;Removed $LOCK&quot; ;; *) die &quot;lock file kept. Delete it yourself (rm \&quot;$LOCK\&quot;) and run again&quot; ;; esac
+fi
+
+say &quot;Repo   : $ROOT&quot;
+say &quot;Remote : $REMOTE -&gt; $(git remote get-url &quot;$REMOTE&quot;)   Branch: $BRANCH&quot;
+
+# 2. optional: rebuild the HTML docs from the Markdown sources
+if [ -f scripts/build_docs_html.py ] &amp;&amp; command -v python3 &gt;/dev/null &amp;&amp; python3 -c &#x27;import markdown&#x27; 2&gt;/dev/null; then
+  if [ &quot;$DRY&quot; -eq 0 ]; then say &quot;Rebuilding HTML docs&quot;; python3 scripts/build_docs_html.py | tail -3; else say &quot;(dry run) would rebuild HTML docs&quot;; fi
+else
+  say &quot;HTML docs not rebuilt (python3 with &#x27;markdown&#x27; not found: pip3 install markdown)&quot;
+fi
+
+# 3. secret guard: look at everything that would be added (new, changed, deleted)
+say &quot;Checking for secrets&quot;
+BAD=&quot;$(git status --porcelain --untracked-files=all | sed &#x27;s/^...//&#x27; | grep -Ei &#x27;(\.id$|(^|/)(secure|ids|cert|batches|audit)/|InitialPasswords|_audit\.csv$|_debug\.log$|\.local\.(ini|csv)$|\.pem$|\.key$|\.p12$)&#x27; || true)&quot;
+if [ -n &quot;$BAD&quot; ]; then
+  printf &#x27;%s\n&#x27; &quot;$BAD&quot; &gt;&amp;2
+  die &quot;the files above look like secrets or runtime data. Remove them from the repo folder (or add them to .gitignore). Nothing was committed.&quot;
+fi
+echo &quot;OK: nothing secret-looking.&quot;
+
+# 4. what changed
+say &quot;Changes&quot;
+if [ -z &quot;$(git status --porcelain)&quot; ]; then
+  echo &quot;No local changes.&quot;
+  if [ &quot;$DRY&quot; -eq 1 ]; then exit 0; fi
+else
+  git status --short
+  echo
+  git diff --stat HEAD 2&gt;/dev/null | tail -15 || true
+fi
+[ &quot;$DRY&quot; -eq 1 ] &amp;&amp; { say &quot;Dry run finished: nothing was changed.&quot;; exit 0; }
+
+# 5. confirm, then sync
+[ -n &quot;$MSG&quot; ] || MSG=&quot;Update BulkReg kit $(date &#x27;+%Y-%m-%d %H:%M&#x27;)&quot;
+printf &#x27;\nCommit message: %s\nCommit and push to %s/%s ? [y/N] &#x27; &quot;$MSG&quot; &quot;$REMOTE&quot; &quot;$BRANCH&quot;
+read -r ans
+case &quot;$ans&quot; in y|Y|yes|YES) ;; *) echo &quot;Cancelled. Nothing was changed.&quot;; exit 0 ;; esac
+
+say &quot;Pulling remote changes first&quot;
+git pull --rebase --autostash &quot;$REMOTE&quot; &quot;$BRANCH&quot; || die &quot;pull/rebase had a conflict. Resolve it (git status), then: git rebase --continue, and run this script again&quot;
+
+if [ -n &quot;$(git status --porcelain)&quot; ]; then
+  git add -A
+  git commit -m &quot;$MSG&quot;
+else
+  echo &quot;Nothing new to commit.&quot;
+fi
+
+say &quot;Pushing&quot;
+git push &quot;$REMOTE&quot; &quot;$BRANCH&quot; || die &quot;push failed. Check your GitHub login (gh auth login, or your credential helper / SSH key)&quot;
+say &quot;Done: $(git rev-parse --short HEAD) is on $REMOTE/$BRANCH&quot;
+</code></pre></div></details>
+
+<h3 id="git-windows-pull">Git: Windows pull</h3>
+<details class="script"><summary>scripts/windows/BulkReg_SyncFromGitHub.ps1<span>108 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&lt;#
+.SYNOPSIS
+  Brings the BulkReg kit folder up to date from GitHub (Windows PowerShell 5.1 or later). Never overwrites local work.
+
+.DESCRIPTION
+  1. Finds the kit repo (the folder above scripts\windows) and checks remote, branch and git.
+  2. Refuses to continue when tracked files have local changes (use -Stash to set them aside and bring them back).
+  3. git fetch, then shows the incoming commits and files.
+  4. Asks, then runs  git pull --ff-only  (no merge commit, no overwrite; stops if the histories diverged).
+  5. Tells you what to do next: which LotusScript libraries changed and must be pasted into Designer again.
+  It only touches the kit folder. It never reads or changes C:\BulkReg (config, batches, secure, ids, audit).
+  It does not change bulkreg.nsf: pasting the changed .lss files into Designer stays a manual step.
+
+.PARAMETER DryRun  Fetch and show what would change; change nothing.
+.PARAMETER Yes     Do not ask before pulling.
+.PARAMETER Stash   Stash local changes first and restore them after the pull.
+.PARAMETER Remote  Remote name (default origin).
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File .\BulkReg_SyncFromGitHub.ps1 -DryRun
+  powershell -ExecutionPolicy Bypass -File .\BulkReg_SyncFromGitHub.ps1
+  Not run by its author on Windows: try -DryRun first.
+#&gt;
+[CmdletBinding()]
+param(
+    [switch]$DryRun,
+    [switch]$Yes,
+    [switch]$Stash,
+    [string]$Remote = &#x27;origin&#x27;
+)
+Set-StrictMode -Version 2
+$ErrorActionPreference = &#x27;Stop&#x27;
+
+function Say($m)  { Write-Host &quot;&quot;; Write-Host &quot;== $m&quot; -ForegroundColor Cyan }
+function Stop-Run($m) { Write-Host &quot;STOP: $m&quot; -ForegroundColor Red; exit 1 }
+function Git { &amp; git @args; if ($LASTEXITCODE -ne 0) { throw &quot;git $($args -join &#x27; &#x27;) failed (exit $LASTEXITCODE)&quot; } }
+function GitOut { $o = &amp; git @args 2&gt;&amp;1; if ($LASTEXITCODE -ne 0) { throw &quot;git $($args -join &#x27; &#x27;) failed: $o&quot; }; $o }
+
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Stop-Run &#x27;git is not installed (https://git-scm.com/download/win).&#x27; }
+$root = (Resolve-Path (Join-Path $PSScriptRoot &#x27;..\..&#x27;)).Path
+Set-Location $root
+try { $null = GitOut rev-parse --is-inside-work-tree } catch { Stop-Run &quot;$root is not a git repository. Clone it first: git clone https://github.com/&lt;org-or-user&gt;/&lt;repo&gt;.git&quot; }
+try { $url = (GitOut remote get-url $Remote | Out-String).Trim() } catch { Stop-Run &quot;No git remote &#x27;$Remote&#x27;. Add it: git remote add origin https://github.com/&lt;org-or-user&gt;/&lt;repo&gt;.git&quot; }
+$branch = (GitOut branch --show-current | Out-String).Trim()
+if (-not $branch) { Stop-Run &#x27;Detached HEAD: check out a branch first (git switch main).&#x27; }
+
+$gitDir = (GitOut rev-parse --git-dir | Out-String).Trim()
+$lock = Join-Path $gitDir &#x27;index.lock&#x27;
+if (Test-Path $lock) {
+    if (Get-Process git -ErrorAction SilentlyContinue) { Stop-Run &quot;A git process is running, so $lock may be in use. Wait, then run again.&quot; }
+    $a = Read-Host &quot;Found $lock and no git process is running (leftover of an interrupted command). Delete it? [y/N]&quot;
+    if ($a -match &#x27;^(y|yes)$&#x27;) { Remove-Item -LiteralPath $lock -Force; Write-Host &quot;Removed $lock&quot; } else { Stop-Run &quot;Lock kept. Delete it yourself and run again.&quot; }
+}
+
+Say &quot;Kit folder: $root&quot;
+Say &quot;Remote: $Remote -&gt; $url   Branch: $branch&quot;
+
+# local changes to tracked files would be in the way
+$dirty = (GitOut status --porcelain --untracked-files=no | Out-String).Trim()
+if ($dirty) {
+    Write-Host $dirty
+    if (-not $Stash) { Stop-Run &#x27;Tracked files have local changes (listed above). Commit them, or run again with -Stash.&#x27; }
+}
+
+Say &#x27;Fetching&#x27;
+Git fetch $Remote $branch
+$upstream = &quot;$Remote/$branch&quot;
+$ahead  = [int]((GitOut rev-list --count &quot;$upstream..HEAD&quot; | Out-String).Trim())
+$behind = [int]((GitOut rev-list --count &quot;HEAD..$upstream&quot; | Out-String).Trim())
+Write-Host &quot;Local commits not on GitHub: $ahead   GitHub commits not here: $behind&quot;
+
+if ($behind -eq 0) { Say &#x27;Already up to date.&#x27;; if ($ahead -gt 0) { Write-Host &quot;You have $ahead local commit(s) to push (use scripts/mac/sync_to_github.sh or git push).&quot; }; exit 0 }
+if ($ahead -gt 0) { Stop-Run &quot;Local and GitHub history have both moved ($ahead local, $behind remote). A safe fast-forward is not possible. Ask the repo owner, or use git pull --rebase yourself.&quot; }
+
+Say &#x27;Incoming commits&#x27;
+Git log --oneline &quot;HEAD..$upstream&quot;
+Say &#x27;Incoming files&#x27;
+$files = @(GitOut diff --name-status &quot;HEAD..$upstream&quot;)
+$files | ForEach-Object { Write-Host $_ }
+
+if ($DryRun) { Say &#x27;Dry run finished: nothing was changed.&#x27;; exit 0 }
+
+if (-not $Yes) {
+    $a = Read-Host &quot;Pull these $behind commit(s) into $root ? [y/N]&quot;
+    if ($a -notmatch &#x27;^(y|yes)$&#x27;) { Write-Host &#x27;Cancelled. Nothing was changed.&#x27;; exit 0 }
+}
+
+$stashed = $false
+if ($dirty -and $Stash) { Say &#x27;Stashing local changes&#x27;; Git stash push -m &quot;BulkReg sync $(Get-Date -Format s)&quot;; $stashed = $true }
+try {
+    Say &#x27;Pulling (fast-forward only)&#x27;
+    Git pull --ff-only $Remote $branch
+} finally {
+    if ($stashed) { Say &#x27;Restoring local changes&#x27;; &amp; git stash pop; if ($LASTEXITCODE -ne 0) { Write-Host &#x27;Stash could not be restored cleanly: run  git stash list  and resolve by hand.&#x27; -ForegroundColor Yellow } }
+}
+
+Say &quot;Done: now at $((GitOut rev-parse --short HEAD | Out-String).Trim())&quot;
+$names = @($files | ForEach-Object { ($_ -split &quot;`t&quot;)[-1] })
+$libs = @($names | Where-Object { $_ -like &#x27;lotusscript/*&#x27; -or $_ -like &#x27;lotusscript\*&#x27; })
+if ($libs.Count -gt 0) {
+    Write-Host &#x27;NEXT STEP - paste these into Designer (library or agent), save, sign, Tools &gt; Recompile All LotusScript:&#x27; -ForegroundColor Yellow
+    $libs | ForEach-Object { Write-Host &quot;  $_&quot; }
+    Write-Host &#x27;Order: BulkRegCommon, BulkRegAgents, BulkRegRecover, then changed agents. Keep DryRun=1 until checked.&#x27;
+} else {
+    Write-Host &#x27;No LotusScript files changed: nothing to paste into Designer.&#x27;
+}
+if ($names -contains &#x27;config/bulkreg.ini&#x27;) { Write-Host &#x27;config\bulkreg.ini (the template) changed: run  scripts\windows\bulkreg.cmd IniCompare  then  IniUpgrade -Yes  for your own bulkreg.ini.&#x27; -ForegroundColor Yellow }
+</code></pre></div></details>
 <footer>BulkReg 4.5.0 &middot; SOP: recover failed users &middot; generated from <code>SOP-recover-failed-users.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
 </main>
 </div>

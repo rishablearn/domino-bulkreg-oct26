@@ -1,46 +1,36 @@
 '=====================================================================
 ' Script Library : BulkRegRecover           (unreleased addition to 4.5.0 - see CHANGELOG "Unreleased")
 ' Purpose        : Agent  BulkReg\13 - Recover Users  ->  BR_RunRecover
-'                  ONE agent that brings every registered user to a complete state, working ONLY from the
-'                  Domino Directory (names.nsf = single source of truth) and what really exists on the servers.
-'                  It does not read batch files or results files to decide anything, so it does not matter
-'                  which machine ran which batch, or whether those files still exist.
-' Uses           : BulkRegAgents (and through it BulkRegCommon). NOTHING in those two libraries is changed
-'                  by this library: agents 00-12 keep running exactly as before.
+'                  ONE agent that checks every user against the Domino Directory (single source of truth) and the
+'                  mail servers, and repairs what is wrong, in this order:
+'                    1. DUPLICATES      unregistered full duplicates of a registered user are removed
+'                    2. MAIL FILES      missing mail files are created, cut-off (empty) files replaced
+'                    3. STALE BATCHES   old open/stopped batch files that hide users from 02 are closed
+'                    4. REMAINING USERS counted and explained; 02 + 03 then register them (nothing to configure)
+'                  It never reads batch/result files to decide what exists, so it does not matter which machine
+'                  or which release (4.5 or older) registered a user.
+' Uses           : BulkRegAgents (and through it BulkRegCommon). Nothing in those libraries is changed by this one:
+'                  agents 00-12 keep running as before.
 ' Runs in        : HCL Domino Administrator client on WINDOWS only (like every BulkReg agent)
 '
-' HOW TO INSTALL : Designer > Code > Script Libraries > New LotusScript Library, name it exactly
-'                  "BulkRegRecover". Click in the editor, Ctrl+A, Delete, paste this WHOLE file, Ctrl+S.
-'                  Create the one-line agent from Agent13_Recover.lss. Not compiled or run against Domino.
+' HOW TO INSTALL : Designer > Code > Script Libraries > New LotusScript Library, name it exactly "BulkRegRecover".
+'                  Ctrl+A, Delete, paste this WHOLE file, Ctrl+S. Create the one-line agent from Agent13_Recover.lss.
+'                  Not compiled or run against Domino.
 '
-' What one run does
-'   1. SCAN   (read only)  every DirSync Person document is classified from the directory + the mail servers:
-'               NOT_REGISTERED      -> REGISTER      (listed only: agents 02 + 03 register, see the SOP)
-'               NO_MAIL_ITEM        -> MANUAL        (registered, but the Person document has no mail file item)
-'               MAIL_MISSING        -> CREATE_MAIL   (mail file does not exist on the server)
-'               EMPTY_SHELL         -> REPLACE_SHELL (file exists, no design, no documents: a create that was cut off;
-'                                                     only with RepairRemoveEmptyShells=1 in a BulkReg mail folder)
-'               NO_DESIGN_HAS_DATA  -> MANUAL        (no design but documents: never recreated; replace design by hand)
-'               ACL_TITLE_OFF       -> FIX_ACL_TITLE (RecoverCheckExisting=2)
-'               REPLICAS_MISSING    -> REQUEST_REPLICAS (RecoverCheckReplicas=1)
-'               SERVER_UNREACHABLE  -> MANUAL        (nothing is planned for a server that does not answer)
-'               MAIL_OK             -> nothing
-'             Result: <BatchDir>\RECOVER_<run>_plan.csv (one row per user that is not MAIL_OK) + counts.
-'   2. ACT    (DryRun=0, type RECOVER)  CREATE_MAIL / REPLACE_SHELL / FIX_ACL_TITLE in chunks, then
-'   3. FINISH one pass over what was created: completeness check, then the cluster replica requests (AdminP).
-'             Replicas are requested AFTER all files exist, not during creation (less load while creating).
-'   Idempotent: the plan is rebuilt from the directory every run. A stopped, hung or crashed run is continued
-'   by simply running the agent again: finished users are MAIL_OK and drop out of the plan.
+' Mail files on the servers: the agent reads the CSV lists written on each mail server by
+'   scripts/linux/bulkreg_list_mailfiles.sh  or  scripts/windows/BulkReg_ListMailFiles.ps1
+' and copied to MailListDir (default <BaseDir>\maillists\). Columns: Server,Path,Bytes,Modified. A list is much faster
+' than opening every file, and the size shows cut-off files (smaller than RecoverShellMaxBytes) without opening the
+' large ones. A server without a list is checked live (slower). Existence is ALWAYS confirmed with one live open
+' before a file is created, so a stale list can never cause an overwrite.
 '
-' Several machines (no shared folder): use the partition keys of 4.5.0. Each machine works only on its own
-'   partition (PartitionCount=2, PartitionIndex=1 / 2). In addition each run records its partition in the
-'   central log database and refuses to start while another Recover run with an overlapping partition is
-'   RUNNING there (RecoverGuard=1).
-'
-' Slowness: every create is timed in three parts (existence check, CreateFromTemplate, ACL). The timing file
-'   RECOVER_<run>_timing.csv shows where the time goes. The run stops by itself, cleanly, when
-'   RecoverSlowCreateSec is exceeded RecoverMaxSlowInRow times in a row (server in trouble) or after
-'   RecoverMaxMinutes; run it again later.
+' States (RECOVER_<run>_plan.csv, Include=Y = fixed by this agent):
+'   MAIL_MISSING -> CREATE_MAIL      EMPTY_SHELL -> REPLACE_SHELL (RepairRemoveEmptyShells=1, BulkReg mail folder only)
+'   DUPLICATE -> REMOVE_DUPLICATE    BLOCKED_STALE_BATCH -> CLOSE_BATCH
+'   READY_FOR_02 -> REGISTER (02 + 03)   ACL_TITLE_OFF -> FIX_ACL_TITLE   REPLICAS_MISSING -> REQUEST_REPLICAS
+'   everything else -> MANUAL with the reason in Detail
+' Several machines: PartitionCount / PartitionIndex (4.5.0) + a guard in the central log database (RecoverGuard=1).
+' Idempotent: the plan is rebuilt from the directory each run; after a stop, hang or crash simply run it again.
 '=====================================================================
 '#####################################################################
 ' --- part 1: (Options) ---
@@ -54,6 +44,22 @@ Use "BulkRegAgents"
 Dim gRecSecExists As Double      ' seconds of the last create: existence check
 Dim gRecSecCreate As Double      ' seconds of the last create: CreateFromTemplate (+ title)
 Dim gRecSecAcl As Double         ' seconds of the last create: ACL
+Dim gRecDb As NotesDatabase      ' the directory
+Dim gRecInv List As String       ' mail files per server (from the CSV lists, else a live listing)
+Dim gRecSizes List As Double     ' bytes per mail file (CSV lists only)
+Dim gRecSrvOk List As String     ' server reachability cache
+Dim gRecOpenIds List As String   ' NoteID -> batch file of this machine's open / stopped batches
+Dim gRecBatchOf List As String   ' for BR_DupEval
+Dim gRecBatchAge List As String  ' batch file -> "STALE" / "FRESH"
+Dim gRecBatchUsers List As Long  ' batch file -> number of unregistered users it holds back
+Dim gRecDupMethod As String
+Dim gRecDupMust As String
+Dim gRecReqFile As String
+Dim gRecStaleHours As Long
+Dim gRecShellMax As Double
+Dim gRecTrustSize As Boolean
+Dim gRecCheckLevel As Long
+Dim gRecCheckRep As Boolean
 
 '#####################################################################
 ' --- part 3: Subs and Functions (Designer gives each its own entry) ---
@@ -61,23 +67,24 @@ Dim gRecSecAcl As Double         ' seconds of the last create: ACL
 Sub BR_RunRecover()
 	On Error GoTo ErrH
 	Dim ws As NotesUIWorkspace, ans As Variant
-	Dim db As NotesDatabase, col As NotesDocumentCollection, doc As NotesDocument
-	Dim scope As String, scopeFile As String, scopeSrv As String, scopeLabel As String, bname As String
-	Dim inv List As String, ids List As String, srvOk List As String, cnt List As Long
-	Dim openIds List As String, openNames List As String, openCounts List As Long
-	Dim wNid() As String, wAct() As String, nW As Long, capW As Long
+	Dim col As NotesDocumentCollection, doc As NotesDocument
+	Dim cnt List As Long, openNames List As String, openCounts List As Long
+	Dim wNid() As String, wAct() As String, wKeep() As String, nW As Long, capW As Long
 	Dim createdNid() As String, nCreated As Long, capC As Long
-	Dim nScanned As Long, nOther As Long, nOutScope As Long
-	Dim st As String, act As String, detail As String, inc As String, rowTxt As String
-	Dim checkLevel As Long, checkRep As Boolean, origReplicas As Boolean, overlap As String
-	Dim planFile As String, timeFile As String, fhPlan As Integer, seq As Long
-	Dim i As Long, nMade As Long, nFix As Long, nExist As Long, nSkip As Long, nFail As Long, nConsec As Long, nSlowRow As Long, nSlowTotal As Long
+	Dim nScanned As Long, nOther As Long, listInfo As String
+	Dim st As String, act As String, detail As String, keeper As String, inc As String, rowTxt As String, bfile As String
+	Dim origReplicas As Boolean, overlap As String
+	Dim planFile As String, timeFile As String, fhPlan As Integer, seq As Long, outDir As String, snapDir As String
+	Dim i As Long, pass As Long, nMade As Long, nFix As Long, nExist As Long, nSkip As Long, nFail As Long, nConsec As Long, nSlowRow As Long, nSlowTotal As Long
+	Dim nDup As Long, nDupBad As Long, nBatchClosed As Long
 	Dim chunk As Long, basePause As Long, pauseSec As Long, pauseMs As Long, maxConsec As Long, maxMin As Long
-	Dim slowSec As Long, maxSlow As Long, maxPer As Long, workDone As Long, lastMark As Long
+	Dim slowSec As Long, maxSlow As Long, maxPer As Long, maxDel As Long, workDone As Long, lastMark As Long
 	Dim tChunk As Double, tRun As Double, tItem As Double
-	Dim res As String, stopReason As String, summary As String, countText As String, nActionable As Long, nManual As Long
-	Dim nid As String, unid As String
+	Dim res As String, stopReason As String, summary As String, countText As String
+	Dim nActionable As Long, nManual As Long, nReady As Long, nDupPlan As Long, nBatchPlan As Long
+	Dim nid As String, unid As String, why As String, via As String, delName As String, reqId As String, snapErr As String
 	Dim nVerOk As Long, nVerBad As Long, nRepReq As Long, nRepBad As Long
+	Dim dDoc As NotesDocument, bk As String, skipThis As Boolean
 
 	gMode = "": gStopRun = ""
 	Set gTmplDb = Nothing: gTmplKey = ""
@@ -85,17 +92,25 @@ Sub BR_RunRecover()
 	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
 	maxConsec = CfgL("MaxConsecutiveErrors", 5)
 	pauseMs = CfgL("PauseMs", 500)
-	maxPer = CfgL("RecoverMaxCreates", 0)              ' 0 = no limit per run
-	chunk = CfgL("MailRepairChunkSize", 10)            ' same chunk size as 08
+	maxPer = CfgL("RecoverMaxCreates", 0)              ' 0 = no limit per run (mail files)
+	maxDel = CfgL("DuplicateMaxDelete", 25)            ' 0 = no limit (duplicates, same key as agent 12)
+	chunk = CfgL("MailRepairChunkSize", 10)
 	basePause = CfgL("ChunkPauseSec", 5)
 	If basePause < 0 Then basePause = 0
 	pauseSec = basePause
-	checkLevel = CfgL("RecoverCheckExisting", 1)       ' 0 = exists only | 1 = + completeness ($Inbox) | 2 = + title and ACL
-	checkRep = CfgB("RecoverCheckReplicas", False)     ' 1 = also compare the replicas on the cluster members (slow)
-	maxMin = CfgL("RecoverMaxMinutes", 120)            ' 0 = no time limit
-	slowSec = CfgL("RecoverSlowCreateSec", 60)         ' one create slower than this = "slow"
-	maxSlow = CfgL("RecoverMaxSlowInRow", 3)           ' this many slow creates in a row stop the run (0 = never)
+	gRecCheckLevel = CfgL("RecoverCheckExisting", 1)   ' 0 = exists only | 1 = + completeness | 2 = + title and ACL
+	gRecCheckRep = CfgB("RecoverCheckReplicas", False)
+	maxMin = CfgL("RecoverMaxMinutes", 120)
+	slowSec = CfgL("RecoverSlowCreateSec", 60)
+	maxSlow = CfgL("RecoverMaxSlowInRow", 3)
+	gRecStaleHours = CfgL("RecoverStaleBatchHours", 24)
+	gRecShellMax = CDbl(CfgL("RecoverShellMaxBytes", 1048576))
+	gRecTrustSize = CfgB("RecoverTrustSize", True)
+	gRecDupMethod = UCase$(Trim$(CfgS("DuplicateDeleteMethod", "ADMINP")))
+	If gRecDupMethod <> "ADMINP" And gRecDupMethod <> "DIRECT" And gRecDupMethod <> "AUTO" Then Error 8104, "DuplicateDeleteMethod must be ADMINP, DIRECT or AUTO (found: " & gRecDupMethod & ")"
+	gRecDupMust = "," & LCase$(Replace(Trim$(CfgS("DuplicateMustMatch", "name,short,inet,first,last")), " ", "")) & ","
 	origReplicas = CfgB("CreateClusterReplicas", True)
+	Erase gRecInv: Erase gRecSizes: Erase gRecSrvOk: Erase gRecOpenIds: Erase gRecBatchOf: Erase gRecBatchAge: Erase gRecBatchUsers
 
 	If Trim$(CfgS("MailTemplate", "")) = "" Then
 		BR_Close "MailTemplate missing"
@@ -124,33 +139,6 @@ Sub BR_RunRecover()
 		End If
 	End If
 
-	' ---------- scope ----------
-	Set ws = New NotesUIWorkspace
-	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Recover Users (" & gMode & ")", _
-	"Scope. Leave EMPTY for ALL users of the directory (recommended: this machine's partition only: " & BR_PartitionText() & "), or enter:" & Chr$(10) & _
-	"  - a mail server name: only users on that server" & Chr$(10) & _
-	"  - the path of a RECOVER_<run>_plan.csv (Include=N rows are left out) or RECON_<run>_gaps.csv", "")
-	If IsEmpty(ans) Then
-		BR_Close "Cancelled"
-		Exit Sub
-	End If
-	scope = Trim$(CStr(ans))
-	If LCase$(Right$(scope, 4)) = ".csv" Then
-		scopeFile = BR_LocalPath(scope)
-		If Dir$(scopeFile) = "" Then Error 8101, "Scope file not found: " & scopeFile
-		bname = StrRightBack(scopeFile, gSep)
-		If Not ((Left$(bname, 8) = "RECOVER_" And LCase$(Right$(bname, 9)) = "_plan.csv") Or (Left$(bname, 6) = "RECON_" And LCase$(Right$(bname, 9)) = "_gaps.csv")) Then
-			Error 8102, "Choose RECOVER_<run>_plan.csv or RECON_<run>_gaps.csv: " & bname
-		End If
-		Call BRR_ReadScope(scopeFile, ids)
-		scopeLabel = "FILE"
-	ElseIf scope <> "" Then
-		scopeSrv = BR_SrvAbbr(scope)
-		scopeLabel = "SRV-" & BR_SafeName(scopeSrv)
-	Else
-		scopeLabel = "ALL"
-	End If
-
 	planFile = BR_BatchDir() & "RECOVER_" & gRunID & "_plan.csv"
 	timeFile = BR_BatchDir() & "RECOVER_" & gRunID & "_timing.csv"
 	gResultsFile = BR_BatchDir() & "RECOVER_" & gRunID & "_results.csv"
@@ -159,40 +147,52 @@ Sub BR_RunRecover()
 	fhPlan = BR_CsvOpen(planFile, "Include,Seq,State,Action,MailServer,MailFile,FullName,ShortName,NoteID,UNID,Partition,Detail")
 
 	' ---------- 1. SCAN (read only) ----------
-	Set db = BR_OpenDirectory()
-	BR_Log LVL_INFO, "Directory: " & db.Server & "!!" & db.FilePath & " | last modified " & Format$(db.LastModified, "yyyy-mm-dd hh:nn:ss") & " | scope " & scopeLabel & " | " & BR_PartitionText()
-	Call BR_OpenBatchNoteIDs(openIds, openNames, openCounts)        ' this machine's open batches: information for NOT_REGISTERED rows only
-	Set col = BR_GetCandidates(db, False)
+	Set gRecDb = BR_OpenDirectory()
+	BR_Log LVL_INFO, "Directory: " & gRecDb.Server & "!!" & gRecDb.FilePath & " | last modified " & Format$(gRecDb.LastModified, "yyyy-mm-dd hh:nn:ss") & " | " & BR_PartitionText()
+	listInfo = BRR_LoadMailLists()
+	BR_Log LVL_INFO, "Mail file lists: " & BR_IIfStr(listInfo = "", "none found in " & BR_CfgDir("MailListDir", "maillists") & " - the servers are checked live (slower)", listInfo)
+	Call BR_OpenBatchNoteIDs(gRecOpenIds, openNames, openCounts)
+	Call BR_ReconBatchMap(gRecBatchOf)
+	Call BR_DupIndexLoad(gRecDb)
+	outDir = BR_CfgDir("ReconcileDir", "reconcile")
+	On Error Resume Next
+	MkDir Left$(outDir, Len(outDir) - 1)
+	Err = 0
+	On Error GoTo ErrH
+	If Not BR_DirWritable(outDir) Then outDir = gRunDir
+	gRecReqFile = outDir & "DEDUP_requested.txt"
+
+	Set col = BR_GetCandidates(gRecDb, False)
 	Set doc = col.GetFirstDocument()
 	Do While Not (doc Is Nothing)
 		nScanned = nScanned + 1
 		nid = CStr(doc.NoteID): unid = CStr(doc.UniversalID)
-		If scopeFile <> "" And Not (IsElement(ids("n" & UCase$(nid))) Or IsElement(ids("u" & UCase$(unid)))) Then
-			nOutScope = nOutScope + 1
-		ElseIf BR_NotMyPartition(unid) Then
+		If BR_NotMyPartition(unid) Then
 			nOther = nOther + 1
 		Else
-			st = BRR_Classify(doc, scopeSrv, inv, srvOk, checkLevel, checkRep, act, detail)
+			st = BRR_Classify(doc, act, detail, keeper, bfile)
 			If st <> "" Then
 				If IsElement(cnt(st)) Then cnt(st) = cnt(st) + 1 Else cnt(st) = 1
-				If st = "NOT_REGISTERED" Then
-					If IsElement(openIds(nid)) Then detail = "In open batch " & openIds(nid) & " (this machine): finish it with agent 03 / 11"
-				End If
 				If st <> "MAIL_OK" Then
 					seq = seq + 1
 					inc = "N"
-					If act = "CREATE_MAIL" Or act = "REPLACE_SHELL" Or act = "FIX_ACL_TITLE" Or act = "REQUEST_REPLICAS" Then
+					Select Case act
+					Case "CREATE_MAIL", "REPLACE_SHELL", "FIX_ACL_TITLE", "REQUEST_REPLICAS", "REMOVE_DUPLICATE"
 						inc = "Y"
 						If nW >= capW Then
 							capW = capW + 500
-							ReDim Preserve wNid(capW) As String, wAct(capW) As String
+							ReDim Preserve wNid(capW) As String, wAct(capW) As String, wKeep(capW) As String
 						End If
-						wNid(nW) = nid
-						wAct(nW) = act
+						wNid(nW) = nid: wAct(nW) = act: wKeep(nW) = keeper
 						nW = nW + 1
-					ElseIf act = "MANUAL" Then
+						If act = "REMOVE_DUPLICATE" Then nDupPlan = nDupPlan + 1
+					Case "CLOSE_BATCH"
+						inc = "Y"
+					Case "REGISTER"
+						nReady = nReady + 1
+					Case "MANUAL"
 						nManual = nManual + 1
-					End If
+					End Select
 					rowTxt = Q(inc) & "," & seq & "," & Q(st) & "," & Q(act) & "," & Q(BR_SrvAbbr(BR_Item(doc, "MailServer"))) & "," & Q(BR_MailPathNorm(BR_Item(doc, "MailFile"))) & "," & _
 					Q(BR_Item(doc, "FullName")) & "," & Q(BR_PickShortName(doc)) & "," & Q(nid) & "," & Q(unid) & "," & BR_PartitionOf(unid) & "," & Q(detail)
 					Print #fhPlan, rowTxt
@@ -203,139 +203,190 @@ Sub BR_RunRecover()
 		Set doc = col.GetNextDocument(doc)
 	Loop
 	Close #fhPlan
-	nActionable = nW
+	ForAll bs In gRecBatchAge
+		If bs = "STALE" Then nBatchPlan = nBatchPlan + 1
+	End ForAll
+	nActionable = nW + nBatchPlan
 	ForAll c In cnt
 		countText = countText & "  " & ListTag(c) & ": " & c & Chr$(10)
 	End ForAll
-	BR_Log LVL_INFO, "Scan: scanned " & nScanned & " | other machine's users (not touched) " & nOther & " | outside scope file " & nOutScope & " | to do " & nActionable & " | manual " & nManual & " | " & Replace(countText, Chr$(10), " ")
+	BR_Log LVL_INFO, "Scan: scanned " & nScanned & " | other machine's users (not touched) " & nOther & " | to do " & nW & " | stale batches to close " & nBatchPlan & " | manual " & nManual & " | ready for 02 " & nReady & " | " & Replace(countText, Chr$(10), " ")
 	countText = "Directory users scanned: " & nScanned & Chr$(10) & "Other machine's users (untouched): " & nOther & Chr$(10) & countText & Chr$(10) & _
-	"Done by this agent (Include=Y): " & nActionable & Chr$(10) & "Needs a person (MANUAL): " & nManual & Chr$(10) & "NOT_REGISTERED users are registered with 02 + 03, not here." & Chr$(10) & "Plan: " & planFile
+	"Fixed by this agent: " & nW & " users" & BR_IIfStr(nDupPlan > 0, " (" & nDupPlan & " duplicates to remove)", "") & Chr$(10) & _
+	"Stale batch files to close (they hide users from 02): " & nBatchPlan & Chr$(10) & _
+	"Needs a person (MANUAL): " & nManual & Chr$(10) & "Ready for 02 + 03 (not registered yet): " & nReady & Chr$(10) & "Plan: " & planFile
 
 	If nActionable = 0 Then
-		summary = gMode & " | " & scopeLabel & " | scanned=" & nScanned & " | nothing for this agent to do | manual=" & nManual & " | " & BR_PartitionText()
+		summary = gMode & " | scanned=" & nScanned & " | nothing for this agent to do | ready for 02=" & nReady & " manual=" & nManual & " | " & BR_PartitionText()
 		BR_Close summary
-		BR_Msg "NOTHING TO DO for this agent." & Chr$(10) & Chr$(10) & countText, 64
+		BR_Msg "NOTHING TO DO for this agent." & Chr$(10) & Chr$(10) & countText & BR_IIfStr(nReady > 0, Chr$(10) & "NEXT: run 02 - Build Batch, review, then 03 - Register Batch.", ""), 64
 		Exit Sub
 	End If
 
 	' ---------- confirmation ----------
 	If gMode = "DRYRUN" Then
-		summary = "DRYRUN | " & scopeLabel & " | scanned=" & nScanned & " to do=" & nActionable & " manual=" & nManual & " | " & BR_PartitionText()
+		summary = "DRYRUN | scanned=" & nScanned & " to do=" & nW & " stale batches=" & nBatchPlan & " manual=" & nManual & " ready for 02=" & nReady & " | " & BR_PartitionText()
 		BR_Close summary
-		BR_Msg "DRY RUN (DryRun=1): nothing was created or changed." & Chr$(10) & Chr$(10) & countText & Chr$(10) & "Read the plan, then set DryRun=0 and run again.", 64
+		BR_Msg "DRY RUN (DryRun=1): nothing was removed, created or closed." & Chr$(10) & Chr$(10) & countText & Chr$(10) & "Read the plan, then set DryRun=0 and run again.", 64
 		Exit Sub
 	End If
+	Set ws = New NotesUIWorkspace
 	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Recover Users (LIVE)", _
-	"LIVE: " & nActionable & " user(s) will be recovered from " & CfgS("MailTemplate", "") & " (" & BR_PartitionText() & ")." & Chr$(10) & Chr$(10) & countText & Chr$(10) & _
-	"Chunks of " & BR_IIfStr(chunk > 0, CStr(chunk), "all") & ", pause " & basePause & " s. Limits: " & BR_IIfStr(maxMin > 0, maxMin & " min", "no time limit") & ", stop after " & BR_IIfStr(maxSlow > 0, maxSlow & " creates slower than " & slowSec & " s in a row", "never for slowness") & "." & Chr$(10) & _
-	"Create " & BR_StopFile() & " to stop cleanly. Run again to continue." & Chr$(10) & Chr$(10) & "Type RECOVER to approve:", "")
+	"LIVE (" & BR_PartitionText() & "):" & Chr$(10) & countText & Chr$(10) & _
+	"In this order: remove duplicates (max " & BR_IIfStr(maxDel > 0, CStr(maxDel), "unlimited") & ", snapshot first, mail files and keepers untouched), create mail files from " & CfgS("MailTemplate", "") & ", close stale batches, verify, request cluster replicas." & Chr$(10) & _
+	"Limits: " & BR_IIfStr(maxMin > 0, maxMin & " min", "no time limit") & ", stops when the server is slow. Create " & BR_StopFile() & " to stop cleanly; run again to continue." & Chr$(10) & Chr$(10) & "Type RECOVER to approve:", "")
 	If IsEmpty(ans) Then ans = ""
 	If CStr(ans) <> "RECOVER" Then
 		BR_Log LVL_WARN, "LIVE recover not approved - aborted"
 		BR_Close "Not approved"
 		Exit Sub
 	End If
+	If nDupPlan > 0 Then
+		snapDir = BR_CfgDir("PasswordDir", "secure") & "DEDUP_" & gRunID & gSep
+		On Error Resume Next
+		MkDir Left$(snapDir, Len(snapDir) - 1)
+		Err = 0
+		On Error GoTo ErrH
+		If Not BR_DirWritable(snapDir) Then Error 8105, "Snapshot folder is not writable (PasswordDir): " & snapDir
+	End If
 
-	' ---------- 2. ACT, in chunks. Replicas are switched off while creating and requested in step 3 ----------
+	' ---------- 2. ACT. Pass 1 = duplicates, pass 2 = mail files. Replicas are requested in step 3 ----------
 	gCfg("createclusterreplicas") = "0"
 	tChunk = Timer
 	tRun = Timer
-	For i = 0 To nW - 1
-		tItem = Timer
-		Set doc = Nothing
-		On Error Resume Next
-		Set doc = db.GetDocumentByID(wNid(i))
-		Err = 0
-		On Error GoTo ErrH
-		gRecSecExists = 0: gRecSecCreate = 0: gRecSecAcl = 0
-		Select Case wAct(i)
-		Case "CREATE_MAIL"
-			res = BRR_CreateOne(doc, wNid(i))
-		Case "REPLACE_SHELL"
-			res = BR_RepairOne(doc, wNid(i), "K", 1)
-		Case "FIX_ACL_TITLE"
-			res = BR_RepairOne(doc, wNid(i), "K", 2)
-		Case "REQUEST_REPLICAS"
-			res = BRR_ReplicasOne(doc, wNid(i))
-		Case Else
-			res = "SKIP:action"
-		End Select
-		Select Case Left$(res, 2)
-		Case "OK"
-			nMade = nMade + 1: nConsec = 0
-			If wAct(i) <> "REQUEST_REPLICAS" Then
-				If nCreated >= capC Then
-					capC = capC + 500
-					ReDim Preserve createdNid(capC) As String
+	For pass = 1 To 2
+		For i = 0 To nW - 1
+			skipThis = ((wAct(i) = "REMOVE_DUPLICATE") <> (pass = 1))
+			If Not skipThis Then
+				tItem = Timer
+				Set doc = Nothing
+				On Error Resume Next
+				Set doc = gRecDb.GetDocumentByID(wNid(i))
+				Err = 0
+				On Error GoTo ErrH
+				gRecSecExists = 0: gRecSecCreate = 0: gRecSecAcl = 0
+				Select Case wAct(i)
+				Case "REMOVE_DUPLICATE"
+					If maxDel > 0 And nDup >= maxDel Then
+						res = "SKIP:cap"
+						BR_Log LVL_INFO, "DuplicateMaxDelete (" & maxDel & ") reached - run again for the rest"
+					Else
+						res = BRR_RemoveDuplicate(wNid(i), wKeep(i), snapDir)
+						If Left$(res, 2) = "OK" Then
+							nDup = nDup + 1
+						ElseIf Left$(res, 2) = "FA" Then
+							nDupBad = nDupBad + 1
+						End If
+						If pauseMs > 0 And Left$(res, 2) = "OK" Then Sleep pauseMs / 1000
+					End If
+				Case "CREATE_MAIL"
+					res = BRR_CreateOne(doc, wNid(i))
+				Case "REPLACE_SHELL"
+					res = BR_RepairOne(doc, wNid(i), "K", 1)
+				Case "FIX_ACL_TITLE"
+					res = BR_RepairOne(doc, wNid(i), "K", 2)
+				Case "REQUEST_REPLICAS"
+					res = BRR_ReplicasOne(doc, wNid(i))
+				Case Else
+					res = "SKIP:action"
+				End Select
+				Select Case Left$(res, 2)
+				Case "OK"
+					nConsec = 0
+					If wAct(i) <> "REMOVE_DUPLICATE" Then
+						nMade = nMade + 1
+						If wAct(i) <> "REQUEST_REPLICAS" Then
+							If nCreated >= capC Then
+								capC = capC + 500
+								ReDim Preserve createdNid(capC) As String
+							End If
+							createdNid(nCreated) = wNid(i)
+							nCreated = nCreated + 1
+						End If
+					End If
+				Case "EX": nExist = nExist + 1: nConsec = 0
+				Case "FX": nFix = nFix + 1: nConsec = 0
+				Case "SK": nSkip = nSkip + 1
+				Case Else: nFail = nFail + 1: nConsec = nConsec + 1
+				End Select
+				If wAct(i) <> "REMOVE_DUPLICATE" Then
+					Call BR_AppendLine(timeFile, i + 1 & "," & Q(Format$(Now, "yyyy-mm-dd hh:nn:ss")) & "," & Q(BRR_SrvOf(doc)) & "," & Q(BRR_MailOf(doc)) & "," & Q(wAct(i)) & "," & Q(res) & "," & _
+					Format$(gRecSecExists, "0.0") & "," & Format$(gRecSecCreate, "0.0") & "," & Format$(gRecSecAcl, "0.0") & "," & Format$(BR_Elapsed(tItem), "0.0"))
 				End If
-				createdNid(nCreated) = wNid(i)
-				nCreated = nCreated + 1
-			End If
-		Case "EX": nExist = nExist + 1: nConsec = 0
-		Case "FX": nFix = nFix + 1: nConsec = 0
-		Case "SK": nSkip = nSkip + 1
-		Case Else: nFail = nFail + 1: nConsec = nConsec + 1
-		End Select
-		Call BR_AppendLine(timeFile, i + 1 & "," & Q(Format$(Now, "yyyy-mm-dd hh:nn:ss")) & "," & Q(BRR_SrvOf(doc)) & "," & Q(BRR_MailOf(doc)) & "," & Q(wAct(i)) & "," & Q(res) & "," & _
-		Format$(gRecSecExists, "0.0") & "," & Format$(gRecSecCreate, "0.0") & "," & Format$(gRecSecAcl, "0.0") & "," & Format$(BR_Elapsed(tItem), "0.0"))
-		Print "BulkReg RECOVER: " & (i + 1) & "/" & nW & "  created/fixed=" & nMade & " fixed=" & nFix & " fail=" & nFail & " skip=" & nSkip & "  last create " & Format$(gRecSecCreate, "0.0") & " s"
-		Set doc = Nothing
+				Print "BulkReg RECOVER: " & (i + 1) & "/" & nW & "  duplicates removed=" & nDup & " mail created/replaced=" & nMade & " fixed=" & nFix & " fail=" & nFail & " skip=" & nSkip
+				Set doc = Nothing
 
-		' slowness: a create that takes very long is the sign of a server in trouble - stop instead of piling up
-		If wAct(i) = "CREATE_MAIL" And Left$(res, 2) = "OK" Then
-			If slowSec > 0 And gRecSecCreate > slowSec Then
-				nSlowRow = nSlowRow + 1: nSlowTotal = nSlowTotal + 1
-				BR_Log LVL_WARN, "Slow create: " & Format$(gRecSecCreate, "0.0") & " s (limit " & slowSec & " s), " & nSlowRow & " in a row"
-			Else
-				nSlowRow = 0
+				' slowness: a create that takes very long is the sign of a server in trouble - stop instead of piling up
+				If wAct(i) = "CREATE_MAIL" And Left$(res, 2) = "OK" Then
+					If slowSec > 0 And gRecSecCreate > slowSec Then
+						nSlowRow = nSlowRow + 1: nSlowTotal = nSlowTotal + 1
+						BR_Log LVL_WARN, "Slow create: " & Format$(gRecSecCreate, "0.0") & " s (limit " & slowSec & " s), " & nSlowRow & " in a row"
+					Else
+						nSlowRow = 0
+					End If
+					If maxSlow > 0 And nSlowRow >= maxSlow Then
+						stopReason = "SLOW: " & nSlowRow & " creates in a row took more than " & slowSec & " s. The server is struggling: wait, then run again"
+						BR_Log LVL_ERROR, stopReason
+						Exit For
+					End If
+				End If
+				If nConsec >= maxConsec Then
+					stopReason = "Circuit breaker: " & nConsec & " consecutive failures"
+					BR_Log LVL_ERROR, stopReason
+					Exit For
+				End If
+				If wAct(i) <> "REMOVE_DUPLICATE" And maxPer > 0 And nMade >= maxPer Then
+					stopReason = "RecoverMaxCreates (" & maxPer & ") reached - run again for the rest"
+					BR_Log LVL_INFO, stopReason
+					Exit For
+				End If
+				If maxMin > 0 And BR_Elapsed(tRun) > maxMin * 60 Then
+					stopReason = "RecoverMaxMinutes (" & maxMin & ") reached - run again, it continues where it stopped"
+					BR_Log LVL_INFO, stopReason
+					Exit For
+				End If
+				If wAct(i) <> "REMOVE_DUPLICATE" Then
+					If pauseMs > 0 And Left$(res, 2) = "OK" Then Sleep pauseMs / 1000
+					workDone = nMade + nFix
+					If chunk > 0 And (workDone - lastMark) >= chunk Then
+						lastMark = workDone
+						stopReason = BR_ChunkEnd("Recover", i + 1, nW, chunk, tChunk, pauseSec, basePause, nMade, nFail)
+						If stopReason <> "" Then
+							BR_Log LVL_WARN, stopReason
+							Exit For
+						End If
+						Set gRecDb = BR_OpenDirectory()           ' fresh handle per chunk (like 03 and 08)
+					End If
+				End If
 			End If
-			If maxSlow > 0 And nSlowRow >= maxSlow Then
-				stopReason = "SLOW: " & nSlowRow & " creates in a row took more than " & slowSec & " s. The server is struggling: see SOP 'Slow or hanging', then run again"
-				BR_Log LVL_ERROR, stopReason
-				Exit For
-			End If
-		End If
-		If nConsec >= maxConsec Then
-			stopReason = "Circuit breaker: " & nConsec & " consecutive failures"
-			BR_Log LVL_ERROR, stopReason
-			Exit For
-		End If
-		If maxPer > 0 And nMade >= maxPer Then
-			stopReason = "RecoverMaxCreates (" & maxPer & ") reached - run again for the rest"
-			BR_Log LVL_INFO, stopReason
-			Exit For
-		End If
-		If maxMin > 0 And BR_Elapsed(tRun) > maxMin * 60 Then
-			stopReason = "RecoverMaxMinutes (" & maxMin & ") reached - run again, it continues where it stopped"
-			BR_Log LVL_INFO, stopReason
-			Exit For
-		End If
-		If pauseMs > 0 And Left$(res, 2) = "OK" Then Sleep pauseMs / 1000
-		workDone = nMade + nFix
-		If chunk > 0 And (workDone - lastMark) >= chunk Then
-			lastMark = workDone
-			stopReason = BR_ChunkEnd("Recover", i + 1, nW, chunk, tChunk, pauseSec, basePause, nMade, nFail)
-			If stopReason <> "" Then
-				BR_Log LVL_WARN, stopReason
-				Exit For
-			End If
-			Set db = BR_OpenDirectory()                    ' fresh handle per chunk (like 03 and 08)
-		End If
+		Next
+		If stopReason <> "" Then Exit For
 	Next
 	gCfg("createclusterreplicas") = BR_IIfStr(origReplicas, "1", "0")
 
-	' ---------- 3. FINISH: verify what was created, then request the cluster replicas ----------
-	Set db = BR_OpenDirectory()
-	If nCreated > 0 Then Call BRR_FinishCreated(db, createdNid, nCreated, origReplicas, nVerOk, nVerBad, nRepReq, nRepBad)
+	' ---------- close stale batch files (only when the run was not stopped early) ----------
+	If stopReason = "" Then
+		ForAll bt In gRecBatchAge
+			If bt = "STALE" Then
+				bk = ListTag(bt)
+				If BRR_CloseBatch(bk) Then nBatchClosed = nBatchClosed + 1
+			End If
+		End ForAll
+	End If
 
-	If stopReason = "" Then stopReason = "All planned users processed"
+	' ---------- 3. FINISH: verify what was created, then request the cluster replicas ----------
+	Set gRecDb = BR_OpenDirectory()
+	If nCreated > 0 Then Call BRR_FinishCreated(gRecDb, createdNid, nCreated, origReplicas, nVerOk, nVerBad, nRepReq, nRepBad)
+
+	If stopReason = "" Then stopReason = "All planned work processed"
 	Set gTmplDb = Nothing
-	summary = gMode & " | " & scopeLabel & " | planned=" & nW & " created/replaced=" & nMade & " existing=" & nExist & " fixed=" & nFix & " skipped=" & nSkip & " failed=" & nFail & " slow=" & nSlowTotal & _
-	" | verified OK=" & nVerOk & " bad=" & nVerBad & " | replicas requested=" & nRepReq & " failed=" & nRepBad & " | " & stopReason
+	summary = gMode & " | duplicates removed=" & nDup & " failed=" & nDupBad & " | mail created/replaced=" & nMade & " existing=" & nExist & " fixed=" & nFix & " skipped=" & nSkip & " failed=" & nFail & " slow=" & nSlowTotal & _
+	" | verified OK=" & nVerOk & " bad=" & nVerBad & " | replicas requested=" & nRepReq & " failed=" & nRepBad & " | stale batches closed=" & nBatchClosed & " | ready for 02=" & nReady & " manual=" & nManual & " | " & stopReason
 	BR_Close summary
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Results: " & gResultsFile & Chr$(10) & "Timing: " & timeFile & Chr$(10) & "Log: " & gDebugFile & Chr$(10) & Chr$(10) & _
-	BR_IIfStr(nFail > 0 Or nVerBad > 0 Or nW > nMade + nExist + nFix + nSkip + nFail, "NOT COMPLETE. Run the agent again (DryRun=1 first) until it reports 'nothing for this agent to do'.", "Planned work finished. Run the agent once more with DryRun=1: it must report 'nothing for this agent to do'.") & Chr$(10) & _
-	"AdminP creates the replicas over the next minutes/hours.", CInt(BR_IIfStr(nFail > 0 Or nVerBad > 0, "48", "64"))
+	BR_IIfStr(nFail > 0 Or nVerBad > 0 Or nDupBad > 0 Or stopReason <> "All planned work processed", "NOT COMPLETE. Run the agent again (DryRun=1 first) until it reports 'nothing for this agent to do'.", "Planned work finished. Run the agent once more with DryRun=1: it must report 'nothing for this agent to do'.") & Chr$(10) & _
+	BR_IIfStr(nReady + nBatchClosed > 0, "NEXT: run 02 - Build Batch (it now finds the remaining users), review, then 03 - Register Batch." & Chr$(10), "") & _
+	"AdminP creates the replicas and removes duplicates over the next minutes/hours.", CInt(BR_IIfStr(nFail > 0 Or nVerBad > 0 Or nDupBad > 0, "48", "64"))
 	Exit Sub
 
 ErrH:
@@ -350,41 +401,83 @@ ErrH:
 End Sub
 
 ' ---------------------------------------------------------------------
-' Classify ONE Person document. Returns the state ("" = out of scope), act = the action, detail = why.
-' Read only. Order: registered? -> mail item? -> server answers? -> file exists? -> design complete? -> optional checks.
+' Classify ONE Person document. Returns the state ("" = out of scope), act = the action, detail = why,
+' keeper = NoteID of the registered keeper (duplicates), bfile = batch file that holds the user back.
+' Read only. Uses the module globals set by BR_RunRecover (directory, inventory, open batches, settings).
 ' ---------------------------------------------------------------------
-Function BRR_Classify(doc As NotesDocument, scopeSrv As String, inv List As String, srvOk List As String, checkLevel As Long, checkRep As Boolean, act As String, detail As String) As String
+Function BRR_Classify(doc As NotesDocument, act As String, detail As String, keeper As String, bfile As String) As String
 	On Error GoTo ErrH
-	Dim srv As String, mf As String, present As Boolean, health As String, folder As String, rr As String
-	Dim u As BRUser, aRes As String, tRes As String, repl As String
-	act = "": detail = ""
+	Dim srv As String, mf As String, present As Boolean, health As String, folder As String, rr As String, key As String
+	Dim u As BRUser, aRes As String, tRes As String, repl As String, dupTxt As String, p As Long, ev As String, why As String, via As String, delName As String
+	Dim nid As String, ageState As String
+	act = "": detail = "": keeper = "": bfile = ""
+	nid = CStr(doc.NoteID)
+
+	' ---------- not registered ----------
 	If Not BR_IsRegistered(doc) Then
-		If scopeSrv <> "" Then Exit Function
-		BRR_Classify = "NOT_REGISTERED": act = "REGISTER"
-		detail = "No certificate: register with 02 - Build Batch + 03 - Register Batch (see SOP step 5)"
+		Call BR_ReadUser(doc, u)
+		dupTxt = BR_DupCheck(u)
+		If dupTxt <> "" Then
+			If InStr(dupTxt, "DUPLICATE_REGISTERED") > 0 Then
+				p = InStr(dupTxt, "NoteID ")
+				If p > 0 Then keeper = StrLeft(Mid$(dupTxt, p + 7), " ")
+				ev = BR_DupEval(gRecDb, nid, keeper, gRecDupMethod, gRecDupMust, gRecBatchOf, gRecReqFile, why, via, delName)
+				If ev = "OK" Then
+					BRR_Classify = "DUPLICATE": act = "REMOVE_DUPLICATE"
+					detail = "Unregistered full duplicate of the registered NoteID " & keeper & ": removed via " & via
+				ElseIf ev = "GONE" Then
+					BRR_Classify = "": keeper = ""
+				Else
+					BRR_Classify = "DUPLICATE_REVIEW": act = "MANUAL": keeper = ""
+					detail = ev & ": " & why
+				End If
+			Else
+				BRR_Classify = "DUPLICATE_OTHER": act = "MANUAL"
+				detail = Left$(dupTxt, 250)
+			End If
+			Exit Function
+		End If
+		If IsElement(gRecOpenIds(nid)) Then
+			bfile = CStr(gRecOpenIds(nid))
+			ageState = BRR_BatchAgeState(bfile)
+			If ageState = "STALE" Then
+				BRR_Classify = "BLOCKED_STALE_BATCH": act = "CLOSE_BATCH"
+				detail = bfile & " is open or stopped for more than " & gRecStaleHours & " h and holds this user back from 02: it is closed, then 02 builds the user"
+			Else
+				BRR_Classify = "BLOCKED_RECENT_BATCH": act = "MANUAL"
+				detail = bfile & " is a recent open batch: run 03 on it, or close it with 11 - Batch Manager (CLOSE), then 02 builds the user"
+			End If
+			Exit Function
+		End If
+		If u.InternetAddress = "" And CfgB("SkipNoInternetAddress", True) Then
+			BRR_Classify = "NO_INTERNET_ADDRESS": act = "MANUAL"
+			detail = "02 skips users without an Internet address: add it in AD (DirSync), or set InternetDomain so it can be constructed"
+			Exit Function
+		End If
+		BRR_Classify = "READY_FOR_02": act = "REGISTER"
+		detail = "Nothing holds this user back: 02 - Build Batch includes the user, then 03 registers"
+		If CfgS("BatchServerFilter", "") <> "" Then detail = detail & " (BatchServerFilter=" & CfgS("BatchServerFilter", "") & " may hide users of other servers from 02)"
 		Exit Function
 	End If
+
+	' ---------- registered: mail item ----------
 	srv = BR_SrvAbbr(BR_Item(doc, "MailServer"))
 	mf = BR_MailPathNorm(BR_Item(doc, "MailFile"))
 	If srv = "" Or mf = "" Then
-		If scopeSrv <> "" Then Exit Function
 		BRR_Classify = "NO_MAIL_ITEM": act = "MANUAL"
 		detail = "Registered, but the Person document has no MailServer/MailFile: set both items, then run again"
 		Exit Function
 	End If
-	If scopeSrv <> "" Then
-		If Not BR_SameServer(srv, scopeSrv) Then Exit Function
-	End If
-	If Not BR_HomeServerOK(srv, srvOk) Then
+	If Not BR_HomeServerOK(srv, gRecSrvOk) Then
 		BRR_Classify = "SERVER_UNREACHABLE": act = "MANUAL"
 		detail = srv & " does not answer: nothing is planned for its users. Fix the server, then run again"
 		Exit Function
 	End If
 
-	' does the file exist? (one directory listing per server; a file missing in the list is confirmed with one open)
-	Call BR_MailInventory(srv, inv)
-	If BR_InvLoaded(srv, inv) Then
-		present = BR_InvHas(srv, mf, inv)
+	' does the file exist? (CSV list or one directory listing per server; a file missing there is confirmed with one open)
+	Call BR_MailInventory(srv, gRecInv)
+	If BR_InvLoaded(srv, gRecInv) Then
+		present = BR_InvHas(srv, mf, gRecInv)
 		If Not present Then present = BR_MailFileExists(srv, mf)
 	Else
 		present = BR_MailFileExists(srv, mf)
@@ -395,19 +488,25 @@ Function BRR_Classify(doc As NotesDocument, scopeSrv As String, inv List As Stri
 		Exit Function
 	End If
 
-	' exists: complete?
-	If checkLevel >= 1 Then
-		health = BR_MailHealth(srv, mf)
+	' exists: complete? A large file from a CSV list is trusted (a cut-off create leaves a tiny file); a small one is opened
+	If gRecCheckLevel >= 1 Then
+		key = LCase$(BR_SrvAbbr(srv)) & "!!" & LCase$(BR_Path(mf))
+		If gRecTrustSize And IsElement(gRecSizes(key)) Then
+			If gRecSizes(key) >= gRecShellMax Then health = "OK" Else health = BR_MailHealth(srv, mf)
+		Else
+			health = BR_MailHealth(srv, mf)
+		End If
 		If health <> "OK" Then
 			If Left$(health, 9) = "NO_DESIGN" Then
 				folder = ""
 				If InStr(mf, "\") > 0 Then folder = StrLeftBack(mf, "\")
 				If InStr(health, "EMPTY") > 0 Then
+					BRR_Classify = "EMPTY_SHELL"
 					If CfgB("RepairRemoveEmptyShells", False) And BR_IsNewMailFolder(folder) Then
-						BRR_Classify = "EMPTY_SHELL": act = "REPLACE_SHELL"
+						act = "REPLACE_SHELL"
 						detail = "File exists without design and without documents (a create that was cut off): removed and recreated"
 					Else
-						BRR_Classify = "EMPTY_SHELL": act = "MANUAL"
+						act = "MANUAL"
 						detail = "Empty shell: remove it on the server, or set RepairRemoveEmptyShells=1 (only in a BulkReg numbered mail folder)"
 					End If
 				Else
@@ -421,7 +520,7 @@ Function BRR_Classify(doc As NotesDocument, scopeSrv As String, inv List As Stri
 			Exit Function
 		End If
 	End If
-	If checkLevel >= 2 Then
+	If gRecCheckLevel >= 2 Then
 		Call BR_LightUser(doc, u)
 		aRes = BR_MailAclFix(srv, mf, u.FullNameAfter, False)
 		tRes = BR_MailTitleFix(srv, mf, BR_MailTitle(u), False, CfgB("MailFileTitleOverwrite", False))
@@ -431,7 +530,7 @@ Function BRR_Classify(doc As NotesDocument, scopeSrv As String, inv List As Stri
 			Exit Function
 		End If
 	End If
-	If checkRep Then
+	If gRecCheckRep Then
 		repl = BR_ReplicaServers(srv, "")
 		If repl <> "" Then
 			rr = BR_CheckReplicas(srv, mf, repl)
@@ -447,6 +546,145 @@ Function BRR_Classify(doc As NotesDocument, scopeSrv As String, inv List As Stri
 ErrH:
 	BRR_Classify = "CHECK_ERROR": act = "MANUAL"
 	detail = "err " & Err & ": " & Error$
+	Exit Function
+End Function
+
+' "STALE" / "FRESH" for a batch file that is OPEN or STOPPED on this machine (cached; counts the users it holds back).
+' STALE = the batch file (or its in-progress flag) was last written more than RecoverStaleBatchHours ago.
+Function BRR_BatchAgeState(bfile As String) As String
+	On Error GoTo ErrH
+	Dim bid As String, f As String, ageH As Double, st As String
+	If IsElement(gRecBatchAge(bfile)) Then
+		If IsElement(gRecBatchUsers(bfile)) Then gRecBatchUsers(bfile) = gRecBatchUsers(bfile) + 1 Else gRecBatchUsers(bfile) = 1
+		BRR_BatchAgeState = gRecBatchAge(bfile)
+		Exit Function
+	End If
+	bid = Left$(bfile, Len(bfile) - 4)
+	f = BR_BatchDir() & bfile
+	If Dir$(BR_BatchFlagFile(bid)) <> "" Then f = BR_BatchFlagFile(bid)
+	ageH = (Now - FileDateTime(f)) * 24
+	If gRecStaleHours > 0 And ageH > gRecStaleHours Then st = "STALE" Else st = "FRESH"
+	gRecBatchAge(bfile) = st
+	gRecBatchUsers(bfile) = 1
+	BR_Log LVL_INFO, "Batch " & bfile & " holds users back from 02: " & st & " (" & Format$(ageH, "0.0") & " h old)"
+	BRR_BatchAgeState = st
+	Exit Function
+ErrH:
+	gRecBatchAge(bfile) = "FRESH"
+	BRR_BatchAgeState = "FRESH"
+	Exit Function
+End Function
+
+' Closes a stale OPEN or STOPPED batch file like 11 - Batch Manager CLOSE (STOPPED: flag removed; OPEN: header-only results file).
+' Users already registered stay registered; the others become eligible for 02. Returns True when closed.
+Function BRR_CloseBatch(bfile As String) As Boolean
+	On Error GoTo ErrH
+	Dim bid As String, flagF As String, resF As String
+	bid = Left$(bfile, Len(bfile) - 4)
+	flagF = BR_BatchFlagFile(bid)
+	resF = BR_BatchDir() & bid & "_results.csv"
+	If Dir$(flagF) <> "" Then
+		Kill flagF
+	ElseIf Dir$(resF) = "" Then
+		Call BR_AppendLine(resF, Uchr$(&HFEFF) & BR_AuditHeader())
+	Else
+		Exit Function
+	End If
+	BR_Log LVL_WARN, "CLOSE (stale batch): " & bid & " closed by Recover " & gRunID & " (" & BR_ListLongText(gRecBatchUsers, bfile) & " unregistered users were held back)"
+	BRR_CloseBatch = True
+	Exit Function
+ErrH:
+	BR_Log LVL_ERROR, "Could not close batch " & bfile & ": " & Error$
+	Exit Function
+End Function
+
+' ---------------------------------------------------------------------
+' REMOVE_DUPLICATE: same checks and removal as agent 12 (BR_DupEval, snapshot, BR_DupRemove), live re-check first.
+' Returns OK / SKIP:... / FAIL:... Mail files, ID files and the keeper are never touched.
+' ---------------------------------------------------------------------
+Function BRR_RemoveDuplicate(nid As String, keeper As String, snapDir As String) As String
+	On Error GoTo ErrH
+	Dim why As String, via As String, delName As String, res As String, d As NotesDocument, snapErr As String, reqId As String, t0 As Double
+	t0 = Timer
+	res = BR_DupEval(gRecDb, nid, keeper, gRecDupMethod, gRecDupMust, gRecBatchOf, gRecReqFile, why, via, delName)
+	If res <> "OK" Then
+		Call BR_DupAuditRow(gRecDb, nid, "RECOVER", keeper, res, why, Timer - t0)
+		BRR_RemoveDuplicate = "SKIP:" & res
+		Exit Function
+	End If
+	Set d = gRecDb.GetDocumentByID(nid)
+	snapErr = BR_DupSnapshot(d, snapDir, nid)
+	If snapErr <> "" Then
+		Call BR_DupAuditRow(gRecDb, nid, "RECOVER", keeper, "FAILED_SNAPSHOT", "no snapshot, nothing removed: " & snapErr, Timer - t0)
+		BRR_RemoveDuplicate = "FAIL:snapshot"
+		Exit Function
+	End If
+	res = BR_DupRemove(gRecDb, d, nid, via, delName, gRecReqFile, reqId, why)
+	Call BR_DupAuditRow(gRecDb, nid, "RECOVER", keeper, res, why, Timer - t0)
+	If Left$(res, 6) = "FAILED" Then BRR_RemoveDuplicate = "FAIL:remove" Else BRR_RemoveDuplicate = "OK"
+	Exit Function
+ErrH:
+	BR_Log LVL_ERROR, "Remove duplicate " & nid & " failed: " & Error$ & " (line " & Erl & ")"
+	BRR_RemoveDuplicate = "FAIL:error"
+	Exit Function
+End Function
+
+' ---------------------------------------------------------------------
+' Mail file lists written on the mail servers (Server,Path,Bytes,Modified) from MailListDir.
+' Fills gRecInv (same keys as BR_MailInventory) and gRecSizes. Returns a description, "" = no list found.
+' ---------------------------------------------------------------------
+Function BRR_LoadMailLists() As String
+	On Error GoTo ErrH
+	Dim dirPath As String, f As String, files List As String, fh As Integer, txt As String, cols List As Integer, delim As String, parts As Variant
+	Dim isFirst As Boolean, sk As String, pth As String, nRows As Long, perSrv List As Long, info As String, ageH As Double, bytes As String
+	dirPath = BR_CfgDir("MailListDir", "maillists")
+	f = Dir$(dirPath & "*.csv")
+	Do While f <> ""
+		files(f) = f
+		f = Dir$()
+	Loop
+	ForAll lf In files
+		fh = FreeFile()
+		Open dirPath & lf For Input As #fh Charset = "UTF-8"
+		isFirst = True
+		Do Until EOF(fh)
+			Line Input #fh, txt
+			txt = Replace(txt, Uchr$(&HFEFF), "")
+			If isFirst Then
+				Call BR_CsvHeader(txt, delim, cols)
+				isFirst = False
+				If Not IsElement(cols("server")) Or Not IsElement(cols("path")) Then
+					BR_Log LVL_WARN, "Mail list " & lf & " skipped: columns Server and Path are required"
+					Exit Do
+				End If
+			ElseIf Trim$(txt) <> "" Then
+				parts = BR_CsvSplit(txt, delim)
+				sk = LCase$(BR_SrvAbbr(BR_CsvGet(parts, cols, "Server")))
+				pth = LCase$(BR_Path(BR_CsvGet(parts, cols, "Path")))
+				If sk <> "" And pth <> "" Then
+					gRecInv(sk & "!!" & pth) = "1"
+					bytes = BR_CsvGet(parts, cols, "Bytes")
+					If IsNumeric(bytes) Then gRecSizes(sk & "!!" & pth) = CDbl(bytes)
+					If IsElement(perSrv(sk)) Then perSrv(sk) = perSrv(sk) + 1 Else perSrv(sk) = 1
+					nRows = nRows + 1
+				End If
+			End If
+		Loop
+		Close #fh
+		ageH = (Now - FileDateTime(dirPath & lf)) * 24
+		If ageH > CfgL("RecoverMailListMaxHours", 48) Then BR_Log LVL_WARN, "Mail list " & lf & " is " & Format$(ageH, "0") & " h old: write a fresh one on the server (existence is still confirmed live before any create)"
+	End ForAll
+	ForAll ps In perSrv
+		gRecInv("srv!!" & ListTag(ps)) = CStr(ps)
+		info = info & ListTag(ps) & "=" & ps & " files; "
+	End ForAll
+	If nRows > 0 Then BRR_LoadMailLists = info & "(" & nRows & " rows from " & dirPath & ")"
+	Exit Function
+ErrH:
+	On Error Resume Next
+	Close #fh
+	BR_Log LVL_WARN, "Mail lists could not be read (" & Error$ & ") - servers are checked live"
+	BRR_LoadMailLists = ""
 	Exit Function
 End Function
 
@@ -565,7 +803,7 @@ Function BRR_MissingList(rr As String) As String
 End Function
 
 ' ---------------------------------------------------------------------
-' Step 3: one pass over the files created in this run. Complete? Then request the cluster replicas in chunks
+' Step 3: one pass over the files created in this run. Complete? Then request the cluster replicas in bursts
 ' (RecoverReplicaChunk, pause ChunkPauseSec) so AdminP and the cluster members are not flooded.
 ' ---------------------------------------------------------------------
 Sub BRR_FinishCreated(db As NotesDatabase, nids() As String, n As Long, wantReplicas As Boolean, nVerOk As Long, nVerBad As Long, nRepReq As Long, nRepBad As Long)
@@ -666,36 +904,6 @@ ErrH:
 	BRR_OtherRunsActive = ""
 	Exit Function
 End Function
-
-' NoteIDs / UNIDs of the Include=Y rows of a RECOVER_..._plan.csv or RECON_..._gaps.csv  (keys "n<NOTEID>" / "u<UNID>")
-Sub BRR_ReadScope(path As String, ids List As String)
-	On Error GoTo ErrH
-	Dim fh As Integer, txt As String, cols List As Integer, delim As String, parts As Variant, isFirst As Boolean, nidTxt As String, unidTxt As String
-	fh = FreeFile()
-	Open path For Input As #fh Charset = "UTF-8"
-	isFirst = True
-	Do Until EOF(fh)
-		Line Input #fh, txt
-		If isFirst Then
-			Call BR_CsvHeader(txt, delim, cols)
-			isFirst = False
-		ElseIf Trim$(txt) <> "" Then
-			parts = BR_CsvSplit(txt, delim)
-			If UCase$(BR_CsvGet(parts, cols, "Include")) = "Y" Then
-				nidTxt = BR_CsvGet(parts, cols, "NoteID")
-				unidTxt = BR_CsvGet(parts, cols, "UNID")
-				If nidTxt <> "" Then ids("n" & UCase$(nidTxt)) = "1"
-				If unidTxt <> "" Then ids("u" & UCase$(unidTxt)) = "1"
-			End If
-		End If
-	Loop
-	Close #fh
-	Exit Sub
-ErrH:
-	On Error Resume Next
-	Close #fh
-	Error 8103, "Cannot read the scope file " & path & ": " & Error$
-End Sub
 
 ' Server / mail file of a Person document for the timing file (doc may be Nothing)
 Function BRR_SrvOf(doc As NotesDocument) As String
