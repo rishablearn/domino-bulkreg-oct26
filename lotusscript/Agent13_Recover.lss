@@ -1,0 +1,33 @@
+'=====================================================================
+' Agent name : BulkReg\13 - Recover Users
+' Version    : 4.5.0 + unreleased addition (see CHANGELOG "Unreleased"; libraries BulkRegCommon + BulkRegAgents + BulkRegRecover)
+' Code       : ALL logic is in the script library BulkRegRecover (BR_RunRecover).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: first create the library BulkRegRecover (BulkRegRecover.lss). Then open this agent,
+'              click in the editor, Ctrl+A, Delete, paste this WHOLE file, Ctrl+S.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (NOT 'All selected documents' - Designer's default - or Notes asks for a selected document)
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegRecover.lss header and SOP-recover-failed-users.md):
+'
+' Works ONLY from the Domino Directory (single source of truth) and the mail servers. Classifies every user,
+' writes RECOVER_<run>_plan.csv, and (DryRun=0, type RECOVER) creates the missing mail files, replaces empty
+' shells, then verifies them and requests the cluster replicas. Safe to run again at any time: it recomputes
+' the plan every run and never overwrites a mail file. Registration of NOT_REGISTERED users stays with 02 + 03.
+' Several machines: PartitionCount / PartitionIndex (same as 4.5.0) + a guard in the central log database.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegRecover"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunRecover()
+End Sub
