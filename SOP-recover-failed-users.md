@@ -56,8 +56,20 @@ Set once: Machine A `PartitionCount=2`, `PartitionIndex=1`. Machine B `Partition
 
 - Creates **one mail file at a time and waits until its copy is complete** (poll for the design every 2 s, `RecoverCreateWaitSec`), on the home server with the template opened on the same server. The three timings (`SecExists`, `SecCreate`, `SecAcl`) are in `RECOVER_<run>_timing.csv`.
 - Works in **short sessions**: stops cleanly after **250 mail files** or **60 minutes** (`RecoverMaxCreates`, `RecoverMaxMinutes`), and tells you: *close Notes completely, open it again, run 13 again.* Restarting the client is what releases the handles. A run is never meant to last 8 hours.
-- Releases every database and view object as soon as it is done, and reads the mail-file lists from CSV instead of opening each file.
+- Releases every database and view object as soon as it is done, releases everything it keeps at library level (directory, template database, AdminP, log) before and after every run, and reads the mail-file lists from CSV instead of opening each file.
 - Stops itself when the server is struggling (3 creates over 60 s in a row).
+
+**Handle audit of the code (what was checked, what was found):** `.recycle()` is a Java rule; LotusScript frees a back-end object when its variable goes out of scope or is set to `Nothing`. So the places that can leak are library-level (global) object variables, objects created in a loop and kept, and unclosed files. Result for BulkRegCommon, BulkRegAgents and BulkRegRecover:
+
+| Check | Finding |
+|---|---|
+| Global object variables | Six: `gSession` (one, kept), `gLogDb`, `gRunDoc`, `gAdminP`, `gTmplDb` (all set to `Nothing` when a run closes) and, in the new library, `gRecDb` (**was never released: fixed**, 13 now releases all of them before and after each run) |
+| Objects created per user | Every one (`NotesRegistration`, `NotesDatabase` for mail checks, ACL, views, `NotesName`) is a local of a function that returns after each user, or a variable that is re-`Set` each pass. No object is stored in a list or array |
+| Files | Every `Open` has a `Close`, also on the error path; `BR_AppendLine` opens and closes per line |
+| Whole-run collections | The directory search collection is held for the whole run in the existing agents (one memory block, not a leak); 13 releases it after the scan |
+| **Not found** | **No per-user leak in the existing agents 03 and 08 by reading the code.** I changed none of them. The reading cannot prove there is none: an 8-hour single process can still exhaust Notes' internal tables |
+
+**Prove it with data:** run `scripts\windows\BulkReg_WatchNotes.ps1` before the session. It records the Notes client's handle count every 30 s and prints the change per hour. Handles rising steadily with every mail file = the client leaks, keep sessions short. Flat handles = the cause is elsewhere (send the NSD and the CSV to HCL support).
 
 **For the agents already in use, no code change needed:** set `MailCreateMaxPerRun=250` (08) and `BatchSize=250` (02/03). Each run then ends by itself; close Notes, reopen, run again (03 and 08 resume). Create `STOP.txt` in `BatchDir` to end a run cleanly at any time.
 
@@ -98,6 +110,10 @@ Mac: `scripts/mac/sync_to_github.sh` (commit + push). Windows: `scripts\windows\
 ### Library BulkRegRecover (paste into a new script library)
 
 <!--include:lotusscript/BulkRegRecover.lss-->
+
+### Handle watcher (Windows)
+
+<!--include:scripts/windows/BulkReg_WatchNotes.ps1-->
 
 ### Git: Mac push
 

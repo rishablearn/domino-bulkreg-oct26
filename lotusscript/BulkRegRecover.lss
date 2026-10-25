@@ -64,7 +64,29 @@ Dim gRecCheckRep As Boolean
 '#####################################################################
 ' --- part 3: Subs and Functions (Designer gives each its own entry) ---
 '#####################################################################
+' ---------------------------------------------------------------------
+' Entry point of agent 13. Library-level variables live as long as the Notes client session, not as long as one agent
+' run, so everything that holds a back-end object (directory, template database, AdminP, the lists) is released here,
+' before AND after the run, on every exit path (early Exit Sub, error, normal end).
+' ---------------------------------------------------------------------
 Sub BR_RunRecover()
+	Call BRR_Cleanup()
+	Call BRR_Main()
+	Call BRR_Cleanup()
+End Sub
+
+Sub BRR_Cleanup()
+	On Error Resume Next
+	Set gRecDb = Nothing
+	Set gTmplDb = Nothing
+	gTmplKey = ""
+	Set gAdminP = Nothing
+	Set gRunDoc = Nothing
+	Set gLogDb = Nothing
+	Erase gRecInv: Erase gRecSizes: Erase gRecSrvOk: Erase gRecOpenIds: Erase gRecBatchOf: Erase gRecBatchAge: Erase gRecBatchUsers
+End Sub
+
+Sub BRR_Main()
 	On Error GoTo ErrH
 	Dim ws As NotesUIWorkspace, ans As Variant
 	Dim col As NotesDocumentCollection, doc As NotesDocument
@@ -203,6 +225,8 @@ Sub BR_RunRecover()
 		Set doc = col.GetNextDocument(doc)
 	Loop
 	Close #fhPlan
+	Set doc = Nothing
+	Set col = Nothing                                    ' the scan collection is not needed during the work phase
 	ForAll bs In gRecBatchAge
 		If bs = "STALE" Then nBatchPlan = nBatchPlan + 1
 	End ForAll

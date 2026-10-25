@@ -100,7 +100,7 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
   <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
 </div></header>
 <div class="wrap">
-<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#the-five-steps">The five steps</a></li><li><a href="#what-13-does-with-each-user">What 13 does with each user</a></li><li><a href="#two-machines">Two machines</a></li><li><a href="#if-it-is-slow-or-notes-hangs-after-hours-too-many-handles-in-nsd">If it is slow, or Notes hangs after hours (&quot;too many handles&quot; in NSD)</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li><li><a href="#install-and-roll-back">Install and roll back</a></li><li><a href="#git">Git</a></li><li><a href="#appendix-all-scripts-and-code-click-to-expand-copy">Appendix: all scripts and code (click to expand, copy)</a><ul><li><a href="#listing-script-linux-mail-server">Listing script, Linux mail server</a></li><li><a href="#listing-script-windows-mail-server">Listing script, Windows mail server</a></li><li><a href="#agent-13-paste-into-the-agent-bulkreg13-recover-users">Agent 13 (paste into the agent BulkReg\13 - Recover Users)</a></li><li><a href="#library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</a></li><li><a href="#git-mac-push">Git: Mac push</a></li><li><a href="#git-windows-pull">Git: Windows pull</a></li></ul></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a></div></nav>
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#the-five-steps">The five steps</a></li><li><a href="#what-13-does-with-each-user">What 13 does with each user</a></li><li><a href="#two-machines">Two machines</a></li><li><a href="#if-it-is-slow-or-notes-hangs-after-hours-too-many-handles-in-nsd">If it is slow, or Notes hangs after hours (&quot;too many handles&quot; in NSD)</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li><li><a href="#install-and-roll-back">Install and roll back</a></li><li><a href="#git">Git</a></li><li><a href="#appendix-all-scripts-and-code-click-to-expand-copy">Appendix: all scripts and code (click to expand, copy)</a><ul><li><a href="#listing-script-linux-mail-server">Listing script, Linux mail server</a></li><li><a href="#listing-script-windows-mail-server">Listing script, Windows mail server</a></li><li><a href="#agent-13-paste-into-the-agent-bulkreg13-recover-users">Agent 13 (paste into the agent BulkReg\13 - Recover Users)</a></li><li><a href="#library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</a></li><li><a href="#handle-watcher-windows">Handle watcher (Windows)</a></li><li><a href="#git-mac-push">Git: Mac push</a></li><li><a href="#git-windows-pull">Git: Windows pull</a></li></ul></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a></div></nav>
 <main>
 
 <div class="call"><b class="l">Note</b><div>
@@ -204,9 +204,41 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
 <ul>
 <li>Creates <strong>one mail file at a time and waits until its copy is complete</strong> (poll for the design every 2 s, <code>RecoverCreateWaitSec</code>), on the home server with the template opened on the same server. The three timings (<code>SecExists</code>, <code>SecCreate</code>, <code>SecAcl</code>) are in <code>RECOVER_&lt;run&gt;_timing.csv</code>.</li>
 <li>Works in <strong>short sessions</strong>: stops cleanly after <strong>250 mail files</strong> or <strong>60 minutes</strong> (<code>RecoverMaxCreates</code>, <code>RecoverMaxMinutes</code>), and tells you: <em>close Notes completely, open it again, run 13 again.</em> Restarting the client is what releases the handles. A run is never meant to last 8 hours.</li>
-<li>Releases every database and view object as soon as it is done, and reads the mail-file lists from CSV instead of opening each file.</li>
+<li>Releases every database and view object as soon as it is done, releases everything it keeps at library level (directory, template database, AdminP, log) before and after every run, and reads the mail-file lists from CSV instead of opening each file.</li>
 <li>Stops itself when the server is struggling (3 creates over 60 s in a row).</li>
 </ul>
+<p><strong>Handle audit of the code (what was checked, what was found):</strong> <code>.recycle()</code> is a Java rule; LotusScript frees a back-end object when its variable goes out of scope or is set to <code>Nothing</code>. So the places that can leak are library-level (global) object variables, objects created in a loop and kept, and unclosed files. Result for BulkRegCommon, BulkRegAgents and BulkRegRecover:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Finding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global object variables</td>
+<td>Six: <code>gSession</code> (one, kept), <code>gLogDb</code>, <code>gRunDoc</code>, <code>gAdminP</code>, <code>gTmplDb</code> (all set to <code>Nothing</code> when a run closes) and, in the new library, <code>gRecDb</code> (<strong>was never released: fixed</strong>, 13 now releases all of them before and after each run)</td>
+</tr>
+<tr>
+<td>Objects created per user</td>
+<td>Every one (<code>NotesRegistration</code>, <code>NotesDatabase</code> for mail checks, ACL, views, <code>NotesName</code>) is a local of a function that returns after each user, or a variable that is re-<code>Set</code> each pass. No object is stored in a list or array</td>
+</tr>
+<tr>
+<td>Files</td>
+<td>Every <code>Open</code> has a <code>Close</code>, also on the error path; <code>BR_AppendLine</code> opens and closes per line</td>
+</tr>
+<tr>
+<td>Whole-run collections</td>
+<td>The directory search collection is held for the whole run in the existing agents (one memory block, not a leak); 13 releases it after the scan</td>
+</tr>
+<tr>
+<td><strong>Not found</strong></td>
+<td><strong>No per-user leak in the existing agents 03 and 08 by reading the code.</strong> I changed none of them. The reading cannot prove there is none: an 8-hour single process can still exhaust Notes' internal tables</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Prove it with data:</strong> run <code>scripts\windows\BulkReg_WatchNotes.ps1</code> before the session. It records the Notes client's handle count every 30 s and prints the change per hour. Handles rising steadily with every mail file = the client leaks, keep sessions short. Flat handles = the cause is elsewhere (send the NSD and the CSV to HCL support).</p>
 <p><strong>For the agents already in use, no code change needed:</strong> set <code>MailCreateMaxPerRun=250</code> (08) and <code>BatchSize=250</code> (02/03). Each run then ends by itself; close Notes, reopen, run again (03 and 08 resume). Create <code>STOP.txt</code> in <code>BatchDir</code> to end a run cleanly at any time.</p>
 <p><strong>Confirm it (so we fix the right thing):</strong></p>
 <ol>
@@ -323,7 +355,7 @@ End Sub
 </code></pre></div></details>
 
 <h3 id="library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</h3>
-<details class="script"><summary>lotusscript/BulkRegRecover.lss<span>974 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&#x27;=====================================================================
+<details class="script"><summary>lotusscript/BulkRegRecover.lss<span>998 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&#x27;=====================================================================
 &#x27; Script Library : BulkRegRecover           (unreleased addition to 4.5.0 - see CHANGELOG &quot;Unreleased&quot;)
 &#x27; Purpose        : Agent  BulkReg\13 - Recover Users  -&gt;  BR_RunRecover
 &#x27;                  ONE agent that checks every user against the Domino Directory (single source of truth) and the
@@ -389,7 +421,29 @@ Dim gRecCheckRep As Boolean
 &#x27;#####################################################################
 &#x27; --- part 3: Subs and Functions (Designer gives each its own entry) ---
 &#x27;#####################################################################
+&#x27; ---------------------------------------------------------------------
+&#x27; Entry point of agent 13. Library-level variables live as long as the Notes client session, not as long as one agent
+&#x27; run, so everything that holds a back-end object (directory, template database, AdminP, the lists) is released here,
+&#x27; before AND after the run, on every exit path (early Exit Sub, error, normal end).
+&#x27; ---------------------------------------------------------------------
 Sub BR_RunRecover()
+    Call BRR_Cleanup()
+    Call BRR_Main()
+    Call BRR_Cleanup()
+End Sub
+
+Sub BRR_Cleanup()
+    On Error Resume Next
+    Set gRecDb = Nothing
+    Set gTmplDb = Nothing
+    gTmplKey = &quot;&quot;
+    Set gAdminP = Nothing
+    Set gRunDoc = Nothing
+    Set gLogDb = Nothing
+    Erase gRecInv: Erase gRecSizes: Erase gRecSrvOk: Erase gRecOpenIds: Erase gRecBatchOf: Erase gRecBatchAge: Erase gRecBatchUsers
+End Sub
+
+Sub BRR_Main()
     On Error GoTo ErrH
     Dim ws As NotesUIWorkspace, ans As Variant
     Dim col As NotesDocumentCollection, doc As NotesDocument
@@ -528,6 +582,8 @@ Sub BR_RunRecover()
         Set doc = col.GetNextDocument(doc)
     Loop
     Close #fhPlan
+    Set doc = Nothing
+    Set col = Nothing                                    &#x27; the scan collection is not needed during the work phase
     ForAll bs In gRecBatchAge
         If bs = &quot;STALE&quot; Then nBatchPlan = nBatchPlan + 1
     End ForAll
@@ -1296,6 +1352,56 @@ Function BRR_MailOf(doc As NotesDocument) As String
     If doc Is Nothing Then Exit Function
     BRR_MailOf = BR_MailPathNorm(BR_Item(doc, &quot;MailFile&quot;))
 End Function
+</code></pre></div></details>
+
+<h3 id="handle-watcher-windows">Handle watcher (Windows)</h3>
+<details class="script"><summary>scripts/windows/BulkReg_WatchNotes.ps1<span>48 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&lt;#
+.SYNOPSIS
+  Records the handle count and memory of the Notes client while a BulkReg agent runs (read-only evidence for
+  &quot;too many handles&quot; / &quot;maximum number of memory segments&quot; problems).
+.DESCRIPTION
+  Start it BEFORE the agent, leave it running, press Ctrl+C when the session ends:
+    powershell -ExecutionPolicy Bypass -File .\BulkReg_WatchNotes.ps1
+  Every 30 s it appends  Time,Handles,Threads,WorkingSetMB,PrivateMB  to notes_watch_&lt;time&gt;.csv. At Ctrl+C it prints
+  the change per hour. Compare the timestamps with RECOVER_&lt;run&gt;_timing.csv (or the audit CSV): if Handles climb steadily
+  with every mail file, the client leaks and the sessions must stay short; if they stay flat, the problem is elsewhere.
+  Note: Windows &quot;Handles&quot; counts operating system handles of the process. The Notes-internal handle table named in the
+  NSD message is not visible here: send the NSD and this CSV to HCL support together.
+  Not run by its author on Windows.
+.PARAMETER Name         Process name without .exe (default nlnotes)
+.PARAMETER IntervalSec  Seconds between samples (default 30)
+.PARAMETER Out          Output CSV
+#&gt;
+param(
+    [string]$Name = &#x27;nlnotes&#x27;,
+    [int]$IntervalSec = 30,
+    [string]$Out = (&quot;notes_watch_{0}.csv&quot; -f (Get-Date -Format &#x27;yyyyMMdd-HHmmss&#x27;))
+)
+$ErrorActionPreference = &#x27;Stop&#x27;
+&quot;Time,Handles,Threads,WorkingSetMB,PrivateMB&quot; | Out-File -LiteralPath $Out -Encoding utf8
+Write-Host &quot;Watching &#x27;$Name&#x27; every $IntervalSec s -&gt; $Out   (Ctrl+C to stop)&quot;
+$first = $null; $last = $null
+try {
+    while ($true) {
+        $p = Get-Process -Name $Name -ErrorAction SilentlyContinue | Sort-Object Handles -Descending | Select-Object -First 1
+        if ($p) {
+            $row = [pscustomobject]@{ Time = (Get-Date -Format &#x27;yyyy-MM-dd HH:mm:ss&#x27;); Handles = $p.Handles; Threads = $p.Threads.Count; WS = [math]::Round($p.WorkingSet64 / 1MB, 0); PM = [math]::Round($p.PrivateMemorySize64 / 1MB, 0) }
+            if (-not $first) { $first = $row }; $last = $row
+            (&#x27;{0},{1},{2},{3},{4}&#x27; -f $row.Time, $row.Handles, $row.Threads, $row.WS, $row.PM) | Add-Content -LiteralPath $Out -Encoding utf8
+            Write-Host (&quot;{0}  handles={1}  threads={2}  ws={3} MB  private={4} MB&quot; -f $row.Time, $row.Handles, $row.Threads, $row.WS, $row.PM)
+        } else { Write-Host &quot;$(Get-Date -Format &#x27;HH:mm:ss&#x27;)  process &#x27;$Name&#x27; not running&quot; }
+        Start-Sleep -Seconds $IntervalSec
+    }
+} finally {
+    if ($first -and $last -and $first.Time -ne $last.Time) {
+        $hrs = ([datetime]$last.Time - [datetime]$first.Time).TotalHours
+        if ($hrs -gt 0) {
+            Write-Host &quot;&quot;
+            Write-Host (&quot;Observed {0:N1} h: handles {1} -&gt; {2} ({3:N0} per hour), private memory {4} -&gt; {5} MB&quot; -f $hrs, $first.Handles, $last.Handles, (($last.Handles - $first.Handles) / $hrs), $first.PM, $last.PM)
+        }
+    }
+    Write-Host &quot;Saved $Out&quot;
+}
 </code></pre></div></details>
 
 <h3 id="git-mac-push">Git: Mac push</h3>
