@@ -100,7 +100,7 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
   <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
 </div></header>
 <div class="wrap">
-<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#the-five-steps">The five steps</a></li><li><a href="#what-13-does-with-each-user">What 13 does with each user</a></li><li><a href="#two-machines">Two machines</a></li><li><a href="#if-it-is-slow-or-hangs">If it is slow or hangs</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li><li><a href="#install-and-roll-back">Install and roll back</a></li><li><a href="#git">Git</a></li><li><a href="#appendix-all-scripts-and-code-click-to-expand-copy">Appendix: all scripts and code (click to expand, copy)</a><ul><li><a href="#listing-script-linux-mail-server">Listing script, Linux mail server</a></li><li><a href="#listing-script-windows-mail-server">Listing script, Windows mail server</a></li><li><a href="#agent-13-paste-into-the-agent-bulkreg13-recover-users">Agent 13 (paste into the agent BulkReg\13 - Recover Users)</a></li><li><a href="#library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</a></li><li><a href="#git-mac-push">Git: Mac push</a></li><li><a href="#git-windows-pull">Git: Windows pull</a></li></ul></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a></div></nav>
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#the-five-steps">The five steps</a></li><li><a href="#what-13-does-with-each-user">What 13 does with each user</a></li><li><a href="#two-machines">Two machines</a></li><li><a href="#if-it-is-slow-or-notes-hangs-after-hours-too-many-handles-in-nsd">If it is slow, or Notes hangs after hours (&quot;too many handles&quot; in NSD)</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li><li><a href="#install-and-roll-back">Install and roll back</a></li><li><a href="#git">Git</a></li><li><a href="#appendix-all-scripts-and-code-click-to-expand-copy">Appendix: all scripts and code (click to expand, copy)</a><ul><li><a href="#listing-script-linux-mail-server">Listing script, Linux mail server</a></li><li><a href="#listing-script-windows-mail-server">Listing script, Windows mail server</a></li><li><a href="#agent-13-paste-into-the-agent-bulkreg13-recover-users">Agent 13 (paste into the agent BulkReg\13 - Recover Users)</a></li><li><a href="#library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</a></li><li><a href="#git-mac-push">Git: Mac push</a></li><li><a href="#git-windows-pull">Git: Windows pull</a></li></ul></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a></div></nav>
 <main>
 
 <div class="call"><b class="l">Note</b><div>
@@ -193,8 +193,28 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
 <li>Dry run on both: <strong>"Directory users scanned" must be the same number</strong>. If not, wait for directory replication.</li>
 <li>Run both at the same time. A second run on the same partition is refused (log-database guard); if a machine crashed, answer <strong>Yes</strong> to the warning only when that run is really over.</li>
 </ol>
-<h2 id="if-it-is-slow-or-hangs">If it is slow or hangs</h2>
-<p>13 writes <code>RECOVER_&lt;run&gt;_timing.csv</code> (seconds per create) and stops itself after 3 creates over 60 s in a row or 120 minutes: run it again later. Likely causes (not confirmed): busy server (backup, indexer), antivirus scanning the mail folders, client far from the server. Run the client next to the servers. After a hang just run 13 again: cut-off files are found by size and replaced.</p>
+<h2 id="if-it-is-slow-or-notes-hangs-after-hours-too-many-handles-in-nsd">If it is slow, or Notes hangs after hours ("too many handles" in NSD)</h2>
+<p><strong>What the documentation says (and what it does not):</strong></p>
+<ul>
+<li><code>CreateFromTemplate</code> <strong>returns before a large copy has finished</strong> (<a href="https://help.hcl-software.com/dom_designer/11.0.1/basic/H_CREATEFROMTEMPLATE_METHOD.html">HCL reference</a>). A loop that does not wait lets several big copies pile up on the server, and sets title and ACL on half-copied files.</li>
+<li>There is <strong>no documented LotusScript switch</strong> to let AdminP create the mail file in the background; that exists only in the C API (<a href="https://help.hcl-software.com/dom_designer/14.5.0/basic/H_NOTESREGISTRATION_CLASS.html">NotesRegistration properties</a>). So creating the file "like 03" (registration with <code>CreateMailDb</code>) is also client driven and is <strong>not</strong> expected to be faster. That is why 03 stays fast only with <code>MailFileDeferred=1</code>.</li>
+<li>A single Notes client process that runs for 8 hours holds every handle it opens. Not confirmed from the NSD: the cause. See "Confirm it" below.</li>
+</ul>
+<p><strong>What agent 13 does about it:</strong></p>
+<ul>
+<li>Creates <strong>one mail file at a time and waits until its copy is complete</strong> (poll for the design every 2 s, <code>RecoverCreateWaitSec</code>), on the home server with the template opened on the same server. The three timings (<code>SecExists</code>, <code>SecCreate</code>, <code>SecAcl</code>) are in <code>RECOVER_&lt;run&gt;_timing.csv</code>.</li>
+<li>Works in <strong>short sessions</strong>: stops cleanly after <strong>250 mail files</strong> or <strong>60 minutes</strong> (<code>RecoverMaxCreates</code>, <code>RecoverMaxMinutes</code>), and tells you: <em>close Notes completely, open it again, run 13 again.</em> Restarting the client is what releases the handles. A run is never meant to last 8 hours.</li>
+<li>Releases every database and view object as soon as it is done, and reads the mail-file lists from CSV instead of opening each file.</li>
+<li>Stops itself when the server is struggling (3 creates over 60 s in a row).</li>
+</ul>
+<p><strong>For the agents already in use, no code change needed:</strong> set <code>MailCreateMaxPerRun=250</code> (08) and <code>BatchSize=250</code> (02/03). Each run then ends by itself; close Notes, reopen, run again (03 and 08 resume). Create <code>STOP.txt</code> in <code>BatchDir</code> to end a run cleanly at any time.</p>
+<p><strong>Confirm it (so we fix the right thing):</strong></p>
+<ol>
+<li>Run one session of 13 and open <code>RECOVER_&lt;run&gt;_timing.csv</code>: is <code>SecCreate</code> high? Then the server copy is the slow part (busy server, antivirus scanning the mail folders, backup or indexer running).</li>
+<li>Watch <code>nlnotes.exe</code> in Windows Task Manager (Handles, Memory) during a session. If handles climb steadily per mail file, send the NSD and <code>RECOVER_&lt;run&gt;_timing.csv</code> to HCL support with the Notes client version.</li>
+<li>Server side, run the client next to the servers (same LAN or a VM beside them) and outside backup windows.</li>
+</ol>
+<p><strong>If creating from the client is still too slow:</strong> the next step is a small <strong>server-side worker</strong> (an agent on each mail server that creates the files locally and works through a list in short runs). It needs a database on each mail server, an agent signed by an ID allowed to run unrestricted agents and create databases there, and a decision by the Domino security owner. Tell me if you want it built; it is not part of this release.</p>
 <h2 id="stop-and-escalate">Stop and escalate</h2>
 <p>Create <code>STOP.txt</code> in <code>BatchDir</code> to stop cleanly. For a suspected security incident (unexpected certificates or IDs, a password or ID file outside its folder), do not fix it yourself: create <code>STOP.txt</code> and call the Domino or security owner.</p>
 <h2 id="install-and-roll-back">Install and roll back</h2>
@@ -303,7 +323,7 @@ End Sub
 </code></pre></div></details>
 
 <h3 id="library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</h3>
-<details class="script"><summary>lotusscript/BulkRegRecover.lss<span>918 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&#x27;=====================================================================
+<details class="script"><summary>lotusscript/BulkRegRecover.lss<span>974 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&#x27;=====================================================================
 &#x27; Script Library : BulkRegRecover           (unreleased addition to 4.5.0 - see CHANGELOG &quot;Unreleased&quot;)
 &#x27; Purpose        : Agent  BulkReg\13 - Recover Users  -&gt;  BR_RunRecover
 &#x27;                  ONE agent that checks every user against the Domino Directory (single source of truth) and the
@@ -397,7 +417,7 @@ Sub BR_RunRecover()
     If CfgB(&quot;DryRun&quot;, True) Then gMode = &quot;DRYRUN&quot; Else gMode = &quot;LIVE&quot;
     maxConsec = CfgL(&quot;MaxConsecutiveErrors&quot;, 5)
     pauseMs = CfgL(&quot;PauseMs&quot;, 500)
-    maxPer = CfgL(&quot;RecoverMaxCreates&quot;, 0)              &#x27; 0 = no limit per run (mail files)
+    maxPer = CfgL(&quot;RecoverMaxCreates&quot;, 250)            &#x27; mail files per session; then close Notes and run again (0 = no limit)
     maxDel = CfgL(&quot;DuplicateMaxDelete&quot;, 25)            &#x27; 0 = no limit (duplicates, same key as agent 12)
     chunk = CfgL(&quot;MailRepairChunkSize&quot;, 10)
     basePause = CfgL(&quot;ChunkPauseSec&quot;, 5)
@@ -405,7 +425,7 @@ Sub BR_RunRecover()
     pauseSec = basePause
     gRecCheckLevel = CfgL(&quot;RecoverCheckExisting&quot;, 1)   &#x27; 0 = exists only | 1 = + completeness | 2 = + title and ACL
     gRecCheckRep = CfgB(&quot;RecoverCheckReplicas&quot;, False)
-    maxMin = CfgL(&quot;RecoverMaxMinutes&quot;, 120)
+    maxMin = CfgL(&quot;RecoverMaxMinutes&quot;, 60)
     slowSec = CfgL(&quot;RecoverSlowCreateSec&quot;, 60)
     maxSlow = CfgL(&quot;RecoverMaxSlowInRow&quot;, 3)
     gRecStaleHours = CfgL(&quot;RecoverStaleBatchHours&quot;, 24)
@@ -691,6 +711,7 @@ Sub BR_RunRecover()
     BR_Msg summary &amp; Chr$(10) &amp; Chr$(10) &amp; &quot;Results: &quot; &amp; gResultsFile &amp; Chr$(10) &amp; &quot;Timing: &quot; &amp; timeFile &amp; Chr$(10) &amp; &quot;Log: &quot; &amp; gDebugFile &amp; Chr$(10) &amp; Chr$(10) &amp; _
     BR_IIfStr(nFail &gt; 0 Or nVerBad &gt; 0 Or nDupBad &gt; 0 Or stopReason &lt;&gt; &quot;All planned work processed&quot;, &quot;NOT COMPLETE. Run the agent again (DryRun=1 first) until it reports &#x27;nothing for this agent to do&#x27;.&quot;, &quot;Planned work finished. Run the agent once more with DryRun=1: it must report &#x27;nothing for this agent to do&#x27;.&quot;) &amp; Chr$(10) &amp; _
     BR_IIfStr(nReady + nBatchClosed &gt; 0, &quot;NEXT: run 02 - Build Batch (it now finds the remaining users), review, then 03 - Register Batch.&quot; &amp; Chr$(10), &quot;&quot;) &amp; _
+    BR_IIfStr(InStr(stopReason, &quot;reached&quot;) &gt; 0 Or Left$(stopReason, 4) = &quot;SLOW&quot;, &quot;SESSION LIMIT: close Notes completely, open it again, then run the agent again (this releases every client handle).&quot; &amp; Chr$(10), &quot;&quot;) &amp; _
     &quot;AdminP creates the replicas and removes duplicates over the next minutes/hours.&quot;, CInt(BR_IIfStr(nFail &gt; 0 Or nVerBad &gt; 0 Or nDupBad &gt; 0, &quot;48&quot;, &quot;64&quot;))
     Exit Sub
 
@@ -1029,7 +1050,7 @@ Function BRR_CreateOne(doc As NotesDocument, nid As String) As String
     u.MailFileStatus = &quot;MAILFILE_MISSING&quot;
 
     t1 = Timer
-    tRes = BR_CreateMailFileFast(srv, u.MailFile, CfgS(&quot;MailTemplate&quot;, &quot;&quot;), BR_MailTitle(u))
+    tRes = BRR_CreateFile(srv, u.MailFile, CfgS(&quot;MailTemplate&quot;, &quot;&quot;), BR_MailTitle(u))
     gRecSecCreate = BR_Elapsed(t1)
     If Left$(tRes, 12) &lt;&gt; &quot;MAIL_CREATED&quot; Then
         u.ReplicaStatus = &quot;NOT_REQUESTED (mail file not created)&quot;
@@ -1057,6 +1078,61 @@ ErrH:
     Call BR_Audit(u, gMode, &quot;RECOVER_MAIL&quot;, &quot;FAILED&quot;, BR_Elapsed(t0), &quot;err=&quot; &amp; Err &amp; &quot; &quot; &amp; Error$ &amp; &quot; (line &quot; &amp; Erl &amp; &quot;)&quot;)
     BR_Log LVL_ERROR, &quot;Recover create FAILED &quot; &amp; u.FullNameBefore &amp; &quot; : &quot; &amp; Error$ &amp; &quot; (line &quot; &amp; Erl &amp; &quot;)&quot;
     BRR_CreateOne = &quot;FAIL:error&quot;
+    Exit Function
+End Function
+
+&#x27; ---------------------------------------------------------------------
+&#x27; Creates the mail file from the template ON THE HOME SERVER (template opened once per server, same server = no template
+&#x27; data through the client) and WAITS until the copy is complete. HCL documents that CreateFromTemplate returns before a
+&#x27; large copy has finished: without the wait the next steps (title, ACL, the next user) run against a half-copied file and
+&#x27; several big copies pile up on the server. The wait is a poll for the ($Inbox) view every 2 s, up to RecoverCreateWaitSec.
+&#x27; All object references are released before returning (the client has a limited number of handles).
+&#x27; ---------------------------------------------------------------------
+Function BRR_CreateFile(server As String, path As String, tmplName As String, title As String) As String
+    On Error GoTo ErrH
+    Dim mdb As NotesDatabase, v As NotesView, k As String, waited As Long, maxWait As Long, ready As Boolean
+    k = LCase$(server &amp; &quot;!!&quot; &amp; tmplName)
+    If gTmplDb Is Nothing Or gTmplKey &lt;&gt; k Then
+        Set gTmplDb = gSession.GetDatabase(server, tmplName, False)
+        If Not gTmplDb.IsOpen Then Call gTmplDb.Open(&quot;&quot;, &quot;&quot;)
+        If Not gTmplDb.IsOpen Then
+            Set gTmplDb = Nothing
+            gTmplKey = &quot;&quot;
+            BRR_CreateFile = &quot;MAIL_CREATE_ERROR(template &quot; &amp; tmplName &amp; &quot; not found on &quot; &amp; server &amp; &quot;)&quot;
+            Exit Function
+        End If
+        gTmplKey = k
+    End If
+    Set mdb = gTmplDb.CreateFromTemplate(server, BR_SrvPathFor(server, path), CfgB(&quot;MailInheritTemplate&quot;, True))
+    maxWait = CfgL(&quot;RecoverCreateWaitSec&quot;, 120)
+    Do
+        Set v = Nothing
+        On Error Resume Next
+        Set v = mdb.GetView(&quot;($Inbox)&quot;)
+        Err = 0
+        On Error GoTo ErrH
+        If Not (v Is Nothing) Then
+            ready = True
+            Exit Do
+        End If
+        If waited &gt;= maxWait Then Exit Do
+        Sleep 2
+        waited = waited + 2
+    Loop
+    Set v = Nothing
+    If Not ready Then
+        Set mdb = Nothing
+        BRR_CreateFile = &quot;MAIL_CREATE_ERROR(copy not complete after &quot; &amp; maxWait &amp; &quot; s: no ($Inbox) view yet - the file may still be copying, run the agent again later)&quot;
+        Exit Function
+    End If
+    If title &lt;&gt; &quot;&quot; Then mdb.Title = title
+    Set mdb = Nothing
+    BRR_CreateFile = &quot;MAIL_CREATED&quot;
+    Exit Function
+ErrH:
+    Set v = Nothing
+    Set mdb = Nothing
+    BRR_CreateFile = &quot;MAIL_CREATE_ERROR(&quot; &amp; Error$ &amp; &quot; err &quot; &amp; Err &amp; &quot;)&quot;
     Exit Function
 End Function
 

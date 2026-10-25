@@ -92,7 +92,7 @@ Sub BR_RunRecover()
 	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
 	maxConsec = CfgL("MaxConsecutiveErrors", 5)
 	pauseMs = CfgL("PauseMs", 500)
-	maxPer = CfgL("RecoverMaxCreates", 0)              ' 0 = no limit per run (mail files)
+	maxPer = CfgL("RecoverMaxCreates", 250)            ' mail files per session; then close Notes and run again (0 = no limit)
 	maxDel = CfgL("DuplicateMaxDelete", 25)            ' 0 = no limit (duplicates, same key as agent 12)
 	chunk = CfgL("MailRepairChunkSize", 10)
 	basePause = CfgL("ChunkPauseSec", 5)
@@ -100,7 +100,7 @@ Sub BR_RunRecover()
 	pauseSec = basePause
 	gRecCheckLevel = CfgL("RecoverCheckExisting", 1)   ' 0 = exists only | 1 = + completeness | 2 = + title and ACL
 	gRecCheckRep = CfgB("RecoverCheckReplicas", False)
-	maxMin = CfgL("RecoverMaxMinutes", 120)
+	maxMin = CfgL("RecoverMaxMinutes", 60)
 	slowSec = CfgL("RecoverSlowCreateSec", 60)
 	maxSlow = CfgL("RecoverMaxSlowInRow", 3)
 	gRecStaleHours = CfgL("RecoverStaleBatchHours", 24)
@@ -386,6 +386,7 @@ Sub BR_RunRecover()
 	BR_Msg summary & Chr$(10) & Chr$(10) & "Results: " & gResultsFile & Chr$(10) & "Timing: " & timeFile & Chr$(10) & "Log: " & gDebugFile & Chr$(10) & Chr$(10) & _
 	BR_IIfStr(nFail > 0 Or nVerBad > 0 Or nDupBad > 0 Or stopReason <> "All planned work processed", "NOT COMPLETE. Run the agent again (DryRun=1 first) until it reports 'nothing for this agent to do'.", "Planned work finished. Run the agent once more with DryRun=1: it must report 'nothing for this agent to do'.") & Chr$(10) & _
 	BR_IIfStr(nReady + nBatchClosed > 0, "NEXT: run 02 - Build Batch (it now finds the remaining users), review, then 03 - Register Batch." & Chr$(10), "") & _
+	BR_IIfStr(InStr(stopReason, "reached") > 0 Or Left$(stopReason, 4) = "SLOW", "SESSION LIMIT: close Notes completely, open it again, then run the agent again (this releases every client handle)." & Chr$(10), "") & _
 	"AdminP creates the replicas and removes duplicates over the next minutes/hours.", CInt(BR_IIfStr(nFail > 0 Or nVerBad > 0 Or nDupBad > 0, "48", "64"))
 	Exit Sub
 
@@ -724,7 +725,7 @@ Function BRR_CreateOne(doc As NotesDocument, nid As String) As String
 	u.MailFileStatus = "MAILFILE_MISSING"
 
 	t1 = Timer
-	tRes = BR_CreateMailFileFast(srv, u.MailFile, CfgS("MailTemplate", ""), BR_MailTitle(u))
+	tRes = BRR_CreateFile(srv, u.MailFile, CfgS("MailTemplate", ""), BR_MailTitle(u))
 	gRecSecCreate = BR_Elapsed(t1)
 	If Left$(tRes, 12) <> "MAIL_CREATED" Then
 		u.ReplicaStatus = "NOT_REQUESTED (mail file not created)"
@@ -752,6 +753,61 @@ ErrH:
 	Call BR_Audit(u, gMode, "RECOVER_MAIL", "FAILED", BR_Elapsed(t0), "err=" & Err & " " & Error$ & " (line " & Erl & ")")
 	BR_Log LVL_ERROR, "Recover create FAILED " & u.FullNameBefore & " : " & Error$ & " (line " & Erl & ")"
 	BRR_CreateOne = "FAIL:error"
+	Exit Function
+End Function
+
+' ---------------------------------------------------------------------
+' Creates the mail file from the template ON THE HOME SERVER (template opened once per server, same server = no template
+' data through the client) and WAITS until the copy is complete. HCL documents that CreateFromTemplate returns before a
+' large copy has finished: without the wait the next steps (title, ACL, the next user) run against a half-copied file and
+' several big copies pile up on the server. The wait is a poll for the ($Inbox) view every 2 s, up to RecoverCreateWaitSec.
+' All object references are released before returning (the client has a limited number of handles).
+' ---------------------------------------------------------------------
+Function BRR_CreateFile(server As String, path As String, tmplName As String, title As String) As String
+	On Error GoTo ErrH
+	Dim mdb As NotesDatabase, v As NotesView, k As String, waited As Long, maxWait As Long, ready As Boolean
+	k = LCase$(server & "!!" & tmplName)
+	If gTmplDb Is Nothing Or gTmplKey <> k Then
+		Set gTmplDb = gSession.GetDatabase(server, tmplName, False)
+		If Not gTmplDb.IsOpen Then Call gTmplDb.Open("", "")
+		If Not gTmplDb.IsOpen Then
+			Set gTmplDb = Nothing
+			gTmplKey = ""
+			BRR_CreateFile = "MAIL_CREATE_ERROR(template " & tmplName & " not found on " & server & ")"
+			Exit Function
+		End If
+		gTmplKey = k
+	End If
+	Set mdb = gTmplDb.CreateFromTemplate(server, BR_SrvPathFor(server, path), CfgB("MailInheritTemplate", True))
+	maxWait = CfgL("RecoverCreateWaitSec", 120)
+	Do
+		Set v = Nothing
+		On Error Resume Next
+		Set v = mdb.GetView("($Inbox)")
+		Err = 0
+		On Error GoTo ErrH
+		If Not (v Is Nothing) Then
+			ready = True
+			Exit Do
+		End If
+		If waited >= maxWait Then Exit Do
+		Sleep 2
+		waited = waited + 2
+	Loop
+	Set v = Nothing
+	If Not ready Then
+		Set mdb = Nothing
+		BRR_CreateFile = "MAIL_CREATE_ERROR(copy not complete after " & maxWait & " s: no ($Inbox) view yet - the file may still be copying, run the agent again later)"
+		Exit Function
+	End If
+	If title <> "" Then mdb.Title = title
+	Set mdb = Nothing
+	BRR_CreateFile = "MAIL_CREATED"
+	Exit Function
+ErrH:
+	Set v = Nothing
+	Set mdb = Nothing
+	BRR_CreateFile = "MAIL_CREATE_ERROR(" & Error$ & " err " & Err & ")"
 	Exit Function
 End Function
 

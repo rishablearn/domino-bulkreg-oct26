@@ -44,9 +44,30 @@ Set once: Machine A `PartitionCount=2`, `PartitionIndex=1`. Machine B `Partition
 2. Dry run on both: **"Directory users scanned" must be the same number**. If not, wait for directory replication.
 3. Run both at the same time. A second run on the same partition is refused (log-database guard); if a machine crashed, answer **Yes** to the warning only when that run is really over.
 
-## If it is slow or hangs
+## If it is slow, or Notes hangs after hours ("too many handles" in NSD)
 
-13 writes `RECOVER_<run>_timing.csv` (seconds per create) and stops itself after 3 creates over 60 s in a row or 120 minutes: run it again later. Likely causes (not confirmed): busy server (backup, indexer), antivirus scanning the mail folders, client far from the server. Run the client next to the servers. After a hang just run 13 again: cut-off files are found by size and replaced.
+**What the documentation says (and what it does not):**
+
+- `CreateFromTemplate` **returns before a large copy has finished** ([HCL reference](https://help.hcl-software.com/dom_designer/11.0.1/basic/H_CREATEFROMTEMPLATE_METHOD.html)). A loop that does not wait lets several big copies pile up on the server, and sets title and ACL on half-copied files.
+- There is **no documented LotusScript switch** to let AdminP create the mail file in the background; that exists only in the C API ([NotesRegistration properties](https://help.hcl-software.com/dom_designer/14.5.0/basic/H_NOTESREGISTRATION_CLASS.html)). So creating the file "like 03" (registration with `CreateMailDb`) is also client driven and is **not** expected to be faster. That is why 03 stays fast only with `MailFileDeferred=1`.
+- A single Notes client process that runs for 8 hours holds every handle it opens. Not confirmed from the NSD: the cause. See "Confirm it" below.
+
+**What agent 13 does about it:**
+
+- Creates **one mail file at a time and waits until its copy is complete** (poll for the design every 2 s, `RecoverCreateWaitSec`), on the home server with the template opened on the same server. The three timings (`SecExists`, `SecCreate`, `SecAcl`) are in `RECOVER_<run>_timing.csv`.
+- Works in **short sessions**: stops cleanly after **250 mail files** or **60 minutes** (`RecoverMaxCreates`, `RecoverMaxMinutes`), and tells you: *close Notes completely, open it again, run 13 again.* Restarting the client is what releases the handles. A run is never meant to last 8 hours.
+- Releases every database and view object as soon as it is done, and reads the mail-file lists from CSV instead of opening each file.
+- Stops itself when the server is struggling (3 creates over 60 s in a row).
+
+**For the agents already in use, no code change needed:** set `MailCreateMaxPerRun=250` (08) and `BatchSize=250` (02/03). Each run then ends by itself; close Notes, reopen, run again (03 and 08 resume). Create `STOP.txt` in `BatchDir` to end a run cleanly at any time.
+
+**Confirm it (so we fix the right thing):**
+
+1. Run one session of 13 and open `RECOVER_<run>_timing.csv`: is `SecCreate` high? Then the server copy is the slow part (busy server, antivirus scanning the mail folders, backup or indexer running).
+2. Watch `nlnotes.exe` in Windows Task Manager (Handles, Memory) during a session. If handles climb steadily per mail file, send the NSD and `RECOVER_<run>_timing.csv` to HCL support with the Notes client version.
+3. Server side, run the client next to the servers (same LAN or a VM beside them) and outside backup windows.
+
+**If creating from the client is still too slow:** the next step is a small **server-side worker** (an agent on each mail server that creates the files locally and works through a list in short runs). It needs a database on each mail server, an agent signed by an ID allowed to run unrestricted agents and create databases there, and a decision by the Domino security owner. Tell me if you want it built; it is not part of this release.
 
 ## Stop and escalate
 
