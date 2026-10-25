@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BulkReg Deployment steps 4.6.0 4.6.0</title>
+<style>
+:root{
+  --bg:#F7F7FC; --surface:#FFFFFF; --fg:#14142B; --muted:#5B6275; --line:#DCE6F0;
+  --teal:#17707F; --teal2:#2EC0CB; --blue:#0F5FDC; --thead:#17707F; --thead-fg:#FFFFFF; --alt:#F4F7FA;
+  --code-bg:#ECF3F8; --code-fg:#0B3D7A; --note-bg:#E8F6F7; --warn-bg:#FFF4E0; --warn:#9A5B00;
+  --band:linear-gradient(135deg,#0B1D3A 0%,#17707F 55%,#2EC0CB 100%);
+  --font:Arial,"Helvetica Neue",Helvetica,sans-serif; --mono:ui-monospace,Consolas,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F141C; --surface:#161D27; --fg:#E7ECF3; --muted:#9AA6B8; --line:#2A3544;
+  --teal:#4FC3CF; --teal2:#36D6D9; --blue:#7FB0FF; --alt:#1A222E;
+  --code-bg:#1C2633; --code-fg:#9CC8FF; --note-bg:#132B30; --warn-bg:#2E2412; --warn:#F0B04A; color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--font);margin:0}
+.band{background:var(--band);color:#fff;padding:28px 16px 26px}
+.band .in{max-width:1180px;margin:0 auto}
+.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;opacity:.85;font-weight:700}
+.band h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 8px;text-wrap:balance}
+.band p{margin:0;max-width:76ch;opacity:.94}
+.band a{color:#fff}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.meta span{font-size:12.5px;border:1px solid rgba(255,255,255,.45);border-radius:20px;padding:3px 10px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;display:grid;grid-template-columns:270px minmax(0,1fr);gap:40px}
+nav.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding-block:24px}
+.toc input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);font:inherit;font-size:14px;margin-bottom:12px}
+.toc ul{list-style:none;margin:0;padding:0}
+.toc>ul>li{margin:2px 0}
+.toc a{display:block;color:var(--fg);text-decoration:none;font-size:13.5px;padding:4px 8px;border-radius:5px;border-left:3px solid transparent}
+.toc a:hover,.toc a:focus-visible{background:var(--alt);outline:none}
+.toc a.on{border-left-color:var(--teal2);color:var(--teal);font-weight:700}
+.toc li ul a{font-size:12.5px;color:var(--muted);padding-left:20px}
+.toc .other{margin-top:14px;font-size:13px}
+.toc .other a{display:inline;padding:0;border:0;color:var(--blue)}
+main{min-width:0;padding-block:24px 64px;max-width:900px}
+h2{font-size:24px;color:var(--teal);margin:34px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--teal2);text-wrap:balance;scroll-margin-top:12px}
+h3{font-size:18px;color:var(--teal);margin:26px 0 8px;scroll-margin-top:12px}
+h4{font-size:15px;color:var(--blue);margin:20px 0 6px}
+p,li{max-width:80ch}
+ul,ol{padding-left:22px}
+li{margin:4px 0}
+a{color:var(--blue)}
+code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.cb{margin:12px 0}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:6px;padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.45;margin:0}
+pre code{background:none;padding:0;color:var(--fg);overflow-wrap:normal;white-space:pre}
+.cp{display:block;margin:0 0 4px auto;font:600 12px var(--font);background:var(--surface);color:var(--teal);border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer}
+.cp:hover,.cp:focus-visible{border-color:var(--teal2);outline:none}
+.cp.ok{color:#1A7F37;border-color:#1A7F37}
+details.script{border:1px solid var(--line);border-radius:6px;background:var(--surface);margin:12px 0}
+details.script>summary{cursor:pointer;padding:10px 14px;font-weight:700;color:var(--teal);list-style-position:inside}
+details.script>summary span{font-weight:400;color:var(--muted);font-size:12.5px;margin-left:8px}
+details.script .cb{margin:0;padding:0 10px 10px}
+.tw{overflow-x:auto;margin:10px 0 18px;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;background:var(--surface)}
+th{background:var(--thead);color:var(--thead-fg);text-align:left;padding:8px 10px;font-weight:700}
+td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top}
+tbody tr:nth-child(even) td{background:var(--alt)}
+.call{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:12px 14px;border-radius:6px;margin:14px 0;border-left:4px solid var(--teal2);background:var(--note-bg)}
+.call b.l{color:var(--teal);font-size:12px;text-transform:uppercase;letter-spacing:.08em;padding-top:2px}
+.call.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+.call.warn b.l{color:var(--warn)}
+.call p{margin:0 0 6px}
+.call p:last-child{margin:0}
+.tools{display:flex;gap:8px;margin-top:16px}
+.tools button,.menu{font:inherit;font-size:13px;color:#fff;background:transparent;border:1px solid rgba(255,255,255,.6);border-radius:6px;padding:5px 12px;cursor:pointer}
+.menu{display:none}
+footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px;margin-top:30px;max-width:900px}
+@media (max-width:860px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:0}
+  nav.toc{position:static;max-height:none;padding-block:12px 0}
+  .menu{display:inline-block}
+  nav.toc.closed ul,nav.toc.closed input{display:none}
+}
+@media print{
+  .band{background:#fff;color:#000;padding:0 0 10px}.band *{color:#000!important;border-color:#999!important}
+  nav.toc,.tools,.cp,.menu{display:none!important}.wrap{display:block}
+  details.script{display:block}details.script>*{display:block}
+  pre{white-space:pre-wrap}h2{break-after:avoid}.tw,pre,.call{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<header class="band"><div class="in">
+  <div class="eyebrow">HCL Software &middot; BulkReg 4.6.0</div>
+  <h1>BulkReg 4.6.0 - upgrade from 4.5.0 (or older)</h1>
+  <p>4.6.0 adds agent <strong>12 - Remove Duplicates</strong>, agent <strong>13 - Recover Users</strong> (new library <code>BulkRegRecover</code>) and helper scripts. Agents 00-11 behave as before. Do this on <strong>every machine that runs BulkReg</strong>, so all machines report the same version.</p>
+  <div class="meta"><span>Version 4.6.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
+  <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
+</div></header>
+<div class="wrap">
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a> &middot; <a href="BulkReg_SOP_Recover_Failed_Users.html">SOP: recover failed users</a></div></nav>
+<main>
+
+<div class="call"><b class="l">Note</b><div>
+<p>Not compiled or run against Domino. Keep <code>DryRun=1</code> until the pilot in <a href="BulkReg_SOP_Recover_Failed_Users.html"><code>SOP-recover-failed-users.md</code></a> has passed.</p>
+</div></div>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Do</th>
+<th>Check</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Pull the kit: Mac <code>scripts/mac/sync_to_github.sh</code>, Windows <code>scripts\windows\BulkReg_SyncFromGitHub.ps1</code> (or copy the folder)</td>
+<td><code>VERSION</code> says 4.6.0</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Designer: paste <strong><code>BulkRegCommon.lss</code></strong>, then <strong><code>BulkRegAgents.lss</code></strong> (Ctrl+A, Delete, paste, Ctrl+S)</td>
+<td>Both save without error</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Designer: new script library <strong><code>BulkRegRecover</code></strong>, paste <code>lotusscript/BulkRegRecover.lss</code></td>
+<td>Saves</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Agents: <code>BulkReg\12 - Remove Duplicates</code> (if not there yet) and new <code>BulkReg\13 - Recover Users</code>: paste <code>Agent12_RemoveDuplicates.lss</code>, <code>Agent13_Recover.lss</code>. Shared agents, Action menu selection, Target None</td>
+<td>Names appear under Actions &gt; BulkReg</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Tools &gt; Recompile All LotusScript</strong>, re-sign the database</td>
+<td>No compile errors. Fix any, do not run</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>scripts\windows\bulkreg.cmd IniCompare</code>, then <code>IniUpgrade -Yes</code></td>
+<td>Your <code>bulkreg.ini</code> gains the new keys; your values are untouched</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>scripts\windows\bulkreg.cmd Versions</code></td>
+<td>Every line PASS (the Admin Guide HTML still shows 4.4.0: known)</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Run any agent with <code>DryRun=1</code>, open the debug log</td>
+<td>First line shows <code>==== BulkReg 4.6.0</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Roll back: delete agents 12/13 and the library <code>BulkRegRecover</code>, paste the 4.5.0 versions of the two libraries.</p>
+<footer>BulkReg 4.6.0 &middot; Deployment steps 4.6.0 &middot; generated from <code>DEPLOY-4.6.0.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
+</main>
+</div>
+<script>
+(function(){
+  // copy buttons on every code block
+  document.querySelectorAll('.cb').forEach(function(box){
+    var b=document.createElement('button'); b.type='button'; b.className='cp'; b.textContent='Copy';
+    b.addEventListener('click',function(){
+      var t=box.querySelector('code').innerText;
+      var done=function(){b.textContent='Copied'; b.classList.add('ok'); setTimeout(function(){b.textContent='Copy'; b.classList.remove('ok');},1600);};
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,fallback);} else {fallback();}
+      function fallback(){var a=document.createElement('textarea'); a.value=t; document.body.appendChild(a); a.select(); try{document.execCommand('copy'); done();}catch(e){b.textContent='Select + Ctrl+C';} document.body.removeChild(a);}
+    });
+    box.insertBefore(b,box.firstChild);
+  });
+  // contents: filter + current section
+  var toc=document.querySelector('nav.toc'), q=toc.querySelector('input'), links=[].slice.call(toc.querySelectorAll('li a[href^="#"]'));
+  q.addEventListener('input',function(){var v=q.value.toLowerCase(); links.forEach(function(a){a.parentNode.style.display=(!v||a.textContent.toLowerCase().indexOf(v)>-1)?'':'none';});});
+  var map={}; links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a;});
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){links.forEach(function(a){a.classList.remove('on');}); var a=map[e.target.id]; if(a){a.classList.add('on');}}});},{rootMargin:'0px 0px -75% 0px'});
+    document.querySelectorAll('main h2[id],main h3[id]').forEach(function(h){io.observe(h);});
+  }
+  var m=document.querySelector('.menu'); if(m){m.addEventListener('click',function(){toc.classList.toggle('closed');}); if(window.innerWidth<=860){toc.classList.add('closed');}}
+  var pr=document.getElementById('print'); if(pr){pr.addEventListener('click',function(){document.querySelectorAll('details.script').forEach(function(d){d.open=true;}); window.print();});}
+})();
+</script>
+</body>
+</html>

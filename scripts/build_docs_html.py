@@ -25,6 +25,7 @@ DOCS = [
     ("DEPLOY-4.5.0.md", "docs/BulkReg_Deploy_4.5.0.html", "Deployment steps"),
     ("GUIDE-merge-to-single-machine.md", "docs/BulkReg_Guide_Merge_To_Single_Machine.html", "Guide: merge to one machine"),
     ("GUIDE-reconcile-duplicates.md", "docs/BulkReg_Guide_Reconcile_Duplicates.html", "Guide: reconcile and duplicates"),
+    ("DEPLOY-4.6.0.md", "docs/BulkReg_Deploy_4.6.0.html", "Deployment steps 4.6.0"),
     ("SOP-recover-failed-users.md", "docs/BulkReg_SOP_Recover_Failed_Users.html", "SOP: recover failed users"),
 ]
 LINKS = {  # file names mentioned in the text -> the HTML version next to it
@@ -32,6 +33,7 @@ LINKS = {  # file names mentioned in the text -> the HTML version next to it
     "DEPLOY-4.5.0.md": "BulkReg_Deploy_4.5.0.html",
     "GUIDE-merge-to-single-machine.md": "BulkReg_Guide_Merge_To_Single_Machine.html",
     "GUIDE-reconcile-duplicates.md": "BulkReg_Guide_Reconcile_Duplicates.html",
+    "DEPLOY-4.6.0.md": "BulkReg_Deploy_4.6.0.html",
     "SOP-recover-failed-users.md": "BulkReg_SOP_Recover_Failed_Users.html",
 }
 

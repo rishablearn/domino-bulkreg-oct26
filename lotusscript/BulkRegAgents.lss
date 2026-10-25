@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegAgents            Version 4.5.0
+' Script Library : BulkRegAgents            Version 4.6.0
 ' Purpose        : The code of the BulkReg agents (00 - 11). Each agent in bulkreg.nsf
 '                  only calls one Sub of this library:
 '                    BulkReg\00 - Set Up Log Database            -> BR_RunSetupLog
@@ -2547,7 +2547,7 @@ Sub BR_ReconDupIdRow(fhDid As Integer, fhGap As Integer, nid As String, unid As 
 End Sub
 
 '=====================================================================
-' 12 - REMOVE DUPLICATES  (added after 4.5.0 - see CHANGELOG "Unreleased")
+' 12 - REMOVE DUPLICATES  (added in 4.6.0)
 '
 ' Input : RECON_<run>_duplicates.csv written by 09 - Reconcile. Only rows recommended DO_NOT_REGISTER (an UNREGISTERED
 '         Person document that duplicates a REGISTERED keeper) are ever candidates. REVIEW rows (a second REGISTERED

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BulkReg Guide: reconcile and duplicates 4.5.0</title>
+<title>BulkReg Guide: reconcile and duplicates 4.6.0</title>
 <style>
 :root{
   --bg:#F7F7FC; --surface:#FFFFFF; --fg:#14142B; --muted:#5B6275; --line:#DCE6F0;
@@ -93,14 +93,14 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
 </head>
 <body>
 <header class="band"><div class="in">
-  <div class="eyebrow">HCL Software &middot; BulkReg 4.5.0</div>
+  <div class="eyebrow">HCL Software &middot; BulkReg 4.6.0</div>
   <h1>Reconcile and remove duplicates (one machine)</h1>
   <p>Run this on machine A after the merge. Order: <strong>check, reconcile, review, duplicates, repair mail, check again.</strong> Keep <code>DryRun=1</code> except for the live steps.</p>
-  <div class="meta"><span>Version 4.5.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
+  <div class="meta"><span>Version 4.6.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
   <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
 </div></header>
 <div class="wrap">
-<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#before-you-start">Before you start</a></li><li><a href="#step-1-read-only-baseline">Step 1: read-only baseline</a></li><li><a href="#step-2-fix-each-state-from-recover">Step 2: fix each state from RECOVER</a></li><li><a href="#step-3-duplicates">Step 3: duplicates</a></li><li><a href="#step-4-registered-but-no-mail-file">Step 4: registered but no mail file</a></li><li><a href="#step-5-close-out">Step 5: close out</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_SOP_Recover_Failed_Users.html">SOP: recover failed users</a></div></nav>
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#before-you-start">Before you start</a></li><li><a href="#step-1-read-only-baseline">Step 1: read-only baseline</a></li><li><a href="#step-2-fix-each-state-from-recover">Step 2: fix each state from RECOVER</a></li><li><a href="#step-3-duplicates">Step 3: duplicates</a></li><li><a href="#step-4-registered-but-no-mail-file">Step 4: registered but no mail file</a></li><li><a href="#step-5-close-out">Step 5: close out</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Deploy_4.6.0.html">Deployment steps 4.6.0</a> &middot; <a href="BulkReg_SOP_Recover_Failed_Users.html">SOP: recover failed users</a></div></nav>
 <main>
 
 <div class="call warn"><b class="l">Read first</b><div>
@@ -274,7 +274,7 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
 </ol>
 <h2 id="stop-and-escalate">Stop and escalate</h2>
 <p>On a suspected security incident (unexpected certificates or IDs, a password or ID file outside its folder, vault inconsistencies across many users), do not self-remediate. Create <code>STOP.txt</code> in <code>BatchDir</code> and contact the Domino or security owner.</p>
-<footer>BulkReg 4.5.0 &middot; Guide: reconcile and duplicates &middot; generated from <code>GUIDE-reconcile-duplicates.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
+<footer>BulkReg 4.6.0 &middot; Guide: reconcile and duplicates &middot; generated from <code>GUIDE-reconcile-duplicates.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
 </main>
 </div>
 <script>

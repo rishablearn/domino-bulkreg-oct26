@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BulkReg Deployment steps 4.5.0</title>
+<title>BulkReg Deployment steps 4.6.0</title>
 <style>
 :root{
   --bg:#F7F7FC; --surface:#FFFFFF; --fg:#14142B; --muted:#5B6275; --line:#DCE6F0;
@@ -93,14 +93,14 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
 </head>
 <body>
 <header class="band"><div class="in">
-  <div class="eyebrow">HCL Software &middot; BulkReg 4.5.0</div>
+  <div class="eyebrow">HCL Software &middot; BulkReg 4.6.0</div>
   <h1>BulkReg 4.5.0 – Deployment steps (several machines)</h1>
   <p>Upgrade from 4.4.0 (or any release covered by <code>DEPLOY-4.4.0.md</code>; do those steps first when coming from older than 4.4.0). Only the two script libraries change: <code>BulkRegCommon</code> first, then <code>BulkRegAgents</code>. No new agent; the agent files only changed their version comment. Replace <code>bulkreg.ps1</code> and <code>bulkreg.cmd</code>, add the two new helper scripts, keep your own <code>bulkreg.ini</code> and <code>server_mapping.csv</code>.</p>
-  <div class="meta"><span>Version 4.5.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
+  <div class="meta"><span>Version 4.6.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
   <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
 </div></header>
 <div class="wrap">
-<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#1-get-exactly-the-same-kit-onto-every-machine">1. Get exactly the same kit onto every machine</a></li><li><a href="#2-before-you-change-anything-each-machine">2. Before you change anything (each machine)</a></li><li><a href="#3-paste-the-libraries-designer-each-machine">3. Paste the libraries (Designer, each machine)</a></li><li><a href="#4-configuration-each-machine">4. Configuration (each machine)</a></li><li><a href="#5-switch-partitioning-on-only-when-no-old-batch-is-still-open">5. Switch partitioning on (only when no old batch is still open)</a></li><li><a href="#6-check-that-both-machines-match">6. Check that both machines match</a></li><li><a href="#status-and-rollback">Status and rollback</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a> &middot; <a href="BulkReg_SOP_Recover_Failed_Users.html">SOP: recover failed users</a></div></nav>
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#1-get-exactly-the-same-kit-onto-every-machine">1. Get exactly the same kit onto every machine</a></li><li><a href="#2-before-you-change-anything-each-machine">2. Before you change anything (each machine)</a></li><li><a href="#3-paste-the-libraries-designer-each-machine">3. Paste the libraries (Designer, each machine)</a></li><li><a href="#4-configuration-each-machine">4. Configuration (each machine)</a></li><li><a href="#5-switch-partitioning-on-only-when-no-old-batch-is-still-open">5. Switch partitioning on (only when no old batch is still open)</a></li><li><a href="#6-check-that-both-machines-match">6. Check that both machines match</a></li><li><a href="#status-and-rollback">Status and rollback</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a> &middot; <a href="BulkReg_Deploy_4.6.0.html">Deployment steps 4.6.0</a> &middot; <a href="BulkReg_SOP_Recover_Failed_Users.html">SOP: recover failed users</a></div></nav>
 <main>
 
 <p>Do this <strong>on every machine</strong> that runs BulkReg (each has its own local <code>bulkreg.nsf</code> and <code>bulkreg.ini</code>). <code>&lt;KIT&gt;</code> is the folder holding the 4.5.0 kit (<code>lotusscript\</code>, <code>config\</code>, <code>scripts\</code>). Run PowerShell in a normal (non-elevated) window. Full background and the data list: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html"><code>PLAYBOOK-post-deploy-4.5.0.md</code></a>.</p>
@@ -182,7 +182,7 @@ Expand-Archive '&lt;path&gt;\bulkreg-kit-4.5.0.zip' -DestinationPath '&lt;KIT&gt
 <h2 id="status-and-rollback">Status and rollback</h2>
 <p>Not tested against Domino; the helper scripts were written without PowerShell available to run them. The code was checked for block balance, and the partition rule was simulated outside Domino (20,000 random UNIDs: each in exactly one partition, 50/50 within 1 % for 2 machines). Treat step 5.4 as the acceptance test.</p>
 <p>Rollback: set <code>PartitionCount=1</code> on all machines (behaviour of 4.4.0), or paste the 4.4.0 libraries from git.</p>
-<footer>BulkReg 4.5.0 &middot; Deployment steps &middot; generated from <code>DEPLOY-4.5.0.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
+<footer>BulkReg 4.6.0 &middot; Deployment steps &middot; generated from <code>DEPLOY-4.5.0.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
 </main>
 </div>
 <script>

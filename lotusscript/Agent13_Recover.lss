@@ -1,6 +1,6 @@
 '=====================================================================
 ' Agent name : BulkReg\13 - Recover Users
-' Version    : 4.5.0 + unreleased addition (see CHANGELOG "Unreleased"; libraries BulkRegCommon + BulkRegAgents + BulkRegRecover)
+' Version    : 4.6.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents + BulkRegRecover 4.6.0)
 ' Code       : ALL logic is in the script library BulkRegRecover (BR_RunRecover).
 '              This agent only calls it, so it never changes between releases.
 '

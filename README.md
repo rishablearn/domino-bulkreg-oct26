@@ -1,10 +1,10 @@
 # BulkReg – Bulk registration of DirSync users in HCL Domino (ID Vault)
 
-BulkReg 4.5.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
+BulkReg 4.6.0 · run from the **HCL Domino Administrator client on Windows** · Domino 14.x
 **Full step-by-step guide (start here):** `docs/BulkReg_Admin_Guide.html`, same version as the kit (4.4.0). It assumes nothing exists and walks through every click: directory roles, CA/RA, ID Vault, Security Settings, explicit policy, folders, config, bulkreg.nsf, library, agents, signing, then each batch.
 
-## Unreleased (after 4.5.0): 13 - Recover Users
-- **One agent that checks everything against the Domino Directory and the mail servers and repairs it in one run:** removes unregistered duplicates, creates missing mail files, replaces cut-off ones, closes stale batch files that make 02 build nothing, verifies and requests cluster replicas. Mail servers are read from CSV lists (`scripts/linux/bulkreg_list_mailfiles.sh`, `scripts/windows/BulkReg_ListMailFiles.ps1`). Safe to run again after any stop or hang; works the same for users registered by 4.5 or older. Several machines: `PartitionCount`/`PartitionIndex` + a log-database guard. Procedure: **`SOP-recover-failed-users.md`** (HTML: `docs/BulkReg_SOP_Recover_Failed_Users.html`). Library `lotusscript/BulkRegRecover.lss`, agent `lotusscript/Agent13_Recover.lss`. Agents 00-12 unchanged. Git helpers: `scripts/mac/sync_to_github.sh`, `scripts/windows/BulkReg_SyncFromGitHub.ps1`. Not compiled or run against Domino.
+## What changed in 4.6.0: 12 - Remove Duplicates and 13 - Recover Users
+- **One agent that checks everything against the Domino Directory and the mail servers and repairs it in one run:** removes unregistered duplicates, creates missing mail files, replaces cut-off ones, closes stale batch files that make 02 build nothing, verifies and requests cluster replicas. Mail servers are read from CSV lists (`scripts/linux/bulkreg_list_mailfiles.sh`, `scripts/windows/BulkReg_ListMailFiles.ps1`). Safe to run again after any stop or hang; works the same for users registered by 4.5 or older. Several machines: `PartitionCount`/`PartitionIndex` + a log-database guard. Procedure: **`SOP-recover-failed-users.md`** (HTML: `docs/BulkReg_SOP_Recover_Failed_Users.html`). Library `lotusscript/BulkRegRecover.lss`, agent `lotusscript/Agent13_Recover.lss`. Agents 00-11 unchanged (12 is new in this release too). Upgrade: `DEPLOY-4.6.0.md`. Git helpers: `scripts/mac/sync_to_github.sh`, `scripts/windows/BulkReg_SyncFromGitHub.ps1`. Not compiled or run against Domino.
 
 ## What changed in 4.5.0
 - **Several machines in parallel:** `PartitionCount=2` on both machines, `PartitionIndex=1` on one and `2` on the other. Every user belongs to exactly one partition (hash of the Person UNID); 01/02 build only this machine's users, 08 repairs only them, 03 refuses a batch with users of another partition (`PartitionOverride=1` = deliberate take-over). Batch IDs carry the machine tag (`BATCH-<run>-<MachineId>-01`). No shared folder needed. Procedure: `PLAYBOOK-post-deploy-4.5.0.md` (HTML: `docs/BulkReg_PostDeploy_Playbook_4.5.0.html`), including the data to collect from each machine and how to copy it. Upgrade: `DEPLOY-4.5.0.md` (HTML: `docs/BulkReg_Deploy_4.5.0.html`). Helpers: `scripts/windows/BulkReg_CollectEvidence.ps1` and `BulkReg_CompareMachines.ps1` (read-only). HTML is rebuilt from the Markdown with `python3 scripts/build_docs_html.py`. Not compiled or run against Domino; the helpers were not run either.
@@ -21,7 +21,7 @@ BulkReg 4.5.0 · run from the **HCL Domino Administrator client on Windows** · 
 - **09 - Reconcile:** CSV files (`RECON_<run>_all / _missing_users / _missing_mail / _orphan_mail / _gaps / _duplicates`) for missing users, registered-but-no-mailbox, orphan mail files and stray blanks in names.
 - **10 - Audit Log Maintenance:** archive to CSV, verify, then purge old log documents; deletes old debug logs. `LogDbLevel=WARN` / `LogDbAudit=CHANGES` stop the log database growing. Retention periods are defaults: agree them with audit/compliance.
 - **11 - Batch Manager (4.3.0):** state of every batch, resume stopped or hung runs (run 03 again; RESUME / REMAINDER / CLOSE for batches that finished incomplete), CSV report. `bulkreg Stop` / `Unstop` for a clean stop. The `FullNameAfter` of the reviewed batch row is the name the user is created with.
-- **12 - Remove Duplicates (unreleased, after 4.5.0):** removes unregistered Person documents that are full duplicates (name, ops number / short name, Internet address, first and last name) of a registered user. Input: `RECON_<run>_duplicates.csv` of 09 (only `DO_NOT_REGISTER` rows). DryRun first (`DEDUP_DRYRUN_<run>.csv`), then DryRun=0 and type `REMOVE`; method `DuplicateDeleteMethod` = ADMINP / DIRECT / AUTO; DXL snapshot before each removal; never deletes mail files, ID files or the keeper. Run 09 again afterwards.
+- **12 - Remove Duplicates (since 4.6.0):** removes unregistered Person documents that are full duplicates (name, ops number / short name, Internet address, first and last name) of a registered user. Input: `RECON_<run>_duplicates.csv` of 09 (only `DO_NOT_REGISTER` rows). DryRun first (`DEDUP_DRYRUN_<run>.csv`), then DryRun=0 and type `REMOVE`; method `DuplicateDeleteMethod` = ADMINP / DIRECT / AUTO; DXL snapshot before each removal; never deletes mail files, ID files or the keeper. Run 09 again afterwards.
 - **4.3.0 - gaps, duplicates, aborted batches:** 09 writes `_gaps.csv` (not registered / no mail / no vault / duplicate) that 08 accepts as scope; `DuplicateGuard=1` stops a second identity being registered (`SKIPPED_DUPLICATE`), `_duplicates.csv` lists them for manual resolution; Agent 11 `RECOVER <batch id>` analyses an aborted batch (read-only).
 
 ## What changed in 4.1.0
@@ -171,7 +171,7 @@ Department;Sales*;DominoADMail/Demo;Sales;-;BR-Sales;;
 
 ## Kit contents
 ```
-VERSION      current release (4.5.0)   ·   CHANGELOG.md   release history
+VERSION      current release (4.6.0)   ·   CHANGELOG.md   release history
 config/      bulkreg.ini, server_mapping.csv (templates – no secrets)
 lotusscript/ BulkRegCommon.lss + BulkRegAgents.lss    (the code of the manual agents)
              Agent00_SetUpLogDatabase, Agent01_Preflight ... Agent05_ExportToBatchRegFile,

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BulkReg SOP: recover failed users 4.5.0</title>
+<title>BulkReg SOP: recover failed users 4.6.0</title>
 <style>
 :root{
   --bg:#F7F7FC; --surface:#FFFFFF; --fg:#14142B; --muted:#5B6275; --line:#DCE6F0;
@@ -93,16 +93,17 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
 </head>
 <body>
 <header class="band"><div class="in">
-  <div class="eyebrow">HCL Software &middot; BulkReg 4.5.0</div>
+  <div class="eyebrow">HCL Software &middot; BulkReg 4.6.0</div>
   <h1>SOP: Recover failed and missing users</h1>
-  <p><strong>One rule:</strong> the Domino Directory is the truth. Agent <strong>13 - Recover Users</strong> compares it with the mail servers and fixes what is wrong in one run: it <strong>removes duplicates, creates missing mail files, replaces cut-off ones, and frees the users that <code>02 - Build Batch</code> was silently skipping</strong>. It does not matter which machine or which release (4.5 or older) registered a user. Run it again as often as you like: it only does what is still missing and never overwrites a mail file.</p>
-  <div class="meta"><span>Version 4.5.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
+  <p>Applies to BulkReg <strong>4.6.0</strong> (upgrade steps: <code>DEPLOY-4.6.0.md</code>).</p>
+  <div class="meta"><span>Version 4.6.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
   <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
 </div></header>
 <div class="wrap">
-<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#the-five-steps">The five steps</a></li><li><a href="#what-13-does-with-each-user">What 13 does with each user</a></li><li><a href="#two-machines">Two machines</a></li><li><a href="#if-it-is-slow-or-notes-hangs-after-hours-too-many-handles-in-nsd">If it is slow, or Notes hangs after hours (&quot;too many handles&quot; in NSD)</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li><li><a href="#install-and-roll-back">Install and roll back</a></li><li><a href="#git">Git</a></li><li><a href="#appendix-all-scripts-and-code-click-to-expand-copy">Appendix: all scripts and code (click to expand, copy)</a><ul><li><a href="#listing-script-linux-mail-server">Listing script, Linux mail server</a></li><li><a href="#listing-script-windows-mail-server">Listing script, Windows mail server</a></li><li><a href="#agent-13-paste-into-the-agent-bulkreg13-recover-users">Agent 13 (paste into the agent BulkReg\13 - Recover Users)</a></li><li><a href="#library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</a></li><li><a href="#handle-watcher-windows">Handle watcher (Windows)</a></li><li><a href="#git-mac-push">Git: Mac push</a></li><li><a href="#git-windows-pull">Git: Windows pull</a></li></ul></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a></div></nav>
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#the-five-steps">The five steps</a></li><li><a href="#what-13-does-with-each-user">What 13 does with each user</a></li><li><a href="#two-machines">Two machines</a></li><li><a href="#if-it-is-slow-or-notes-hangs-after-hours-too-many-handles-in-nsd">If it is slow, or Notes hangs after hours (&quot;too many handles&quot; in NSD)</a></li><li><a href="#stop-and-escalate">Stop and escalate</a></li><li><a href="#install-and-roll-back">Install and roll back</a></li><li><a href="#git">Git</a></li><li><a href="#appendix-all-scripts-and-code-click-to-expand-copy">Appendix: all scripts and code (click to expand, copy)</a><ul><li><a href="#listing-script-linux-mail-server">Listing script, Linux mail server</a></li><li><a href="#listing-script-windows-mail-server">Listing script, Windows mail server</a></li><li><a href="#agent-13-paste-into-the-agent-bulkreg13-recover-users">Agent 13 (paste into the agent BulkReg\13 - Recover Users)</a></li><li><a href="#library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</a></li><li><a href="#handle-watcher-windows">Handle watcher (Windows)</a></li><li><a href="#git-mac-push">Git: Mac push</a></li><li><a href="#git-windows-pull">Git: Windows pull</a></li></ul></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Merge_To_Single_Machine.html">Guide: merge to one machine</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a> &middot; <a href="BulkReg_Deploy_4.6.0.html">Deployment steps 4.6.0</a></div></nav>
 <main>
 
+<p><strong>One rule:</strong> the Domino Directory is the truth. Agent <strong>13 - Recover Users</strong> compares it with the mail servers and fixes what is wrong in one run: it <strong>removes duplicates, creates missing mail files, replaces cut-off ones, and frees the users that <code>02 - Build Batch</code> was silently skipping</strong>. It does not matter which machine or which release (4.5 or older) registered a user. Run it again as often as you like: it only does what is still missing and never overwrites a mail file.</p>
 <div class="call"><b class="l">Note</b><div>
 <p>Agent 13 is <strong>not compiled or run against Domino yet</strong>. Do the pilot (step 4) first.</p>
 </div></div>
@@ -322,7 +323,7 @@ Write-Host &quot;Wrote $Out ($(@($rows).Count) mail files)&quot;
 <h3 id="agent-13-paste-into-the-agent-bulkreg13-recover-users">Agent 13 (paste into the agent <code>BulkReg\13 - Recover Users</code>)</h3>
 <details class="script"><summary>lotusscript/Agent13_Recover.lss<span>33 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&#x27;=====================================================================
 &#x27; Agent name : BulkReg\13 - Recover Users
-&#x27; Version    : 4.5.0 + unreleased addition (see CHANGELOG &quot;Unreleased&quot;; libraries BulkRegCommon + BulkRegAgents + BulkRegRecover)
+&#x27; Version    : 4.6.0  (BulkReg release; libraries BulkRegCommon + BulkRegAgents + BulkRegRecover 4.6.0)
 &#x27; Code       : ALL logic is in the script library BulkRegRecover (BR_RunRecover).
 &#x27;              This agent only calls it, so it never changes between releases.
 &#x27;
@@ -356,7 +357,7 @@ End Sub
 
 <h3 id="library-bulkregrecover-paste-into-a-new-script-library">Library BulkRegRecover (paste into a new script library)</h3>
 <details class="script"><summary>lotusscript/BulkRegRecover.lss<span>998 lines - click to open, then Copy</span></summary><div class="cb"><pre><code class="language-powershell">&#x27;=====================================================================
-&#x27; Script Library : BulkRegRecover           (unreleased addition to 4.5.0 - see CHANGELOG &quot;Unreleased&quot;)
+&#x27; Script Library : BulkRegRecover           Version 4.6.0
 &#x27; Purpose        : Agent  BulkReg\13 - Recover Users  -&gt;  BR_RunRecover
 &#x27;                  ONE agent that checks every user against the Domino Directory (single source of truth) and the
 &#x27;                  mail servers, and repairs what is wrong, in this order:
@@ -1617,7 +1618,7 @@ if ($libs.Count -gt 0) {
 }
 if ($names -contains &#x27;config/bulkreg.ini&#x27;) { Write-Host &#x27;config\bulkreg.ini (the template) changed: run  scripts\windows\bulkreg.cmd IniCompare  then  IniUpgrade -Yes  for your own bulkreg.ini.&#x27; -ForegroundColor Yellow }
 </code></pre></div></details>
-<footer>BulkReg 4.5.0 &middot; SOP: recover failed users &middot; generated from <code>SOP-recover-failed-users.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
+<footer>BulkReg 4.6.0 &middot; SOP: recover failed users &middot; generated from <code>SOP-recover-failed-users.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
 </main>
 </div>
 <script>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BulkReg Guide: merge to one machine 4.5.0</title>
+<title>BulkReg Guide: merge to one machine 4.6.0</title>
 <style>
 :root{
   --bg:#F7F7FC; --surface:#FFFFFF; --fg:#14142B; --muted:#5B6275; --line:#DCE6F0;
@@ -93,14 +93,14 @@ footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padd
 </head>
 <body>
 <header class="band"><div class="in">
-  <div class="eyebrow">HCL Software &middot; BulkReg 4.5.0</div>
+  <div class="eyebrow">HCL Software &middot; BulkReg 4.6.0</div>
   <h1>Merge machine B into machine A (then work from one machine only)</h1>
   <p>Machine <strong>A</strong> is the one you keep. Machine <strong>B</strong> is retired. Copy B's folders into A, check, then never run BulkReg on B again. Nothing is deleted or overwritten by the merge.</p>
-  <div class="meta"><span>Version 4.5.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
+  <div class="meta"><span>Version 4.6.0</span><span>October 2026</span><span>Internal &ndash; confidential</span><span>Not yet tested against Domino</span></div>
   <div class="tools"><button type="button" class="menu">Contents</button><button type="button" id="print">Print / save as PDF</button></div>
 </div></header>
 <div class="wrap">
-<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#what-gets-merged">What gets merged</a></li><li><a href="#steps">Steps</a></li><li><a href="#manual-merge-without-the-script">Manual merge (without the script)</a></li><li><a href="#rules-from-now-on">Rules from now on</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a> &middot; <a href="BulkReg_SOP_Recover_Failed_Users.html">SOP: recover failed users</a></div></nav>
+<nav class="toc" aria-label="Contents"><input type="search" placeholder="Filter contents" aria-label="Filter contents"><ul><li><a href="#what-gets-merged">What gets merged</a></li><li><a href="#steps">Steps</a></li><li><a href="#manual-merge-without-the-script">Manual merge (without the script)</a></li><li><a href="#rules-from-now-on">Rules from now on</a></li></ul><div class="other">Also: <a href="BulkReg_PostDeploy_Playbook_4.5.0.html">Post-deploy playbook</a> &middot; <a href="BulkReg_Deploy_4.5.0.html">Deployment steps</a> &middot; <a href="BulkReg_Guide_Reconcile_Duplicates.html">Guide: reconcile and duplicates</a> &middot; <a href="BulkReg_Deploy_4.6.0.html">Deployment steps 4.6.0</a> &middot; <a href="BulkReg_SOP_Recover_Failed_Users.html">SOP: recover failed users</a></div></nav>
 <main>
 
 <div class="call warn"><b class="l">Read first</b><div>
@@ -230,7 +230,7 @@ foreach ($d in 'batches','audit','reconcile','secure','ids') {
 <li>New batch IDs have no machine tag (<code>MachineId</code> empty).</li>
 <li>If a password or ID file turns up outside <code>secure\</code> or <code>ids\</code>, rotate it and tell the security owner.</li>
 </ul>
-<footer>BulkReg 4.5.0 &middot; Guide: merge to one machine &middot; generated from <code>GUIDE-merge-to-single-machine.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
+<footer>BulkReg 4.6.0 &middot; Guide: merge to one machine &middot; generated from <code>GUIDE-merge-to-single-machine.md</code> by <code>scripts/build_docs_html.py</code>. Edit the Markdown file and rebuild. Contains internal procedures: keep on approved internal storage.</footer>
 </main>
 </div>
 <script>

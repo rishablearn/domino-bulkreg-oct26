@@ -1,5 +1,7 @@
 # SOP: Recover failed and missing users
 
+Applies to BulkReg **4.6.0** (upgrade steps: `DEPLOY-4.6.0.md`).
+
 **One rule:** the Domino Directory is the truth. Agent **13 - Recover Users** compares it with the mail servers and fixes what is wrong in one run: it **removes duplicates, creates missing mail files, replaces cut-off ones, and frees the users that `02 - Build Batch` was silently skipping**. It does not matter which machine or which release (4.5 or older) registered a user. Run it again as often as you like: it only does what is still missing and never overwrites a mail file.
 
 > Agent 13 is **not compiled or run against Domino yet**. Do the pilot (step 4) first.

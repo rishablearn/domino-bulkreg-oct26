@@ -1,5 +1,5 @@
 '=====================================================================
-' Script Library : BulkRegRecover           (unreleased addition to 4.5.0 - see CHANGELOG "Unreleased")
+' Script Library : BulkRegRecover           Version 4.6.0
 ' Purpose        : Agent  BulkReg\13 - Recover Users  ->  BR_RunRecover
 '                  ONE agent that checks every user against the Domino Directory (single source of truth) and the
 '                  mail servers, and repairs what is wrong, in this order:
