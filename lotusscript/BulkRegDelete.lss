@@ -1,0 +1,465 @@
+'=====================================================================
+' Script Library : BulkRegDelete           Version 4.7.0 (DRAFT - not compiled, not run against Domino)
+' Purpose        : Agent  BulkReg\14 - Delete Users  ->  BR_RunDeleteUsers
+'                  Wipes FAILED (unregistered) Person documents that YOU list in a CSV, through AdminP DeleteUser,
+'                  including their mail file (all replicas) when it is safe to do so. Registered users are NEVER deleted.
+' Uses           : BulkRegAgents (and through it BulkRegCommon). Nothing in those libraries is changed by this one.
+' Runs in        : HCL Domino Administrator client on WINDOWS only (like every BulkReg agent)
+'
+' HOW TO INSTALL : Designer > Code > Script Libraries > New LotusScript Library, name it exactly "BulkRegDelete".
+'                  Ctrl+A, Delete, paste this WHOLE file, Ctrl+S. Create the one-line agent from Agent14_DeleteUsers.lss.
+'
+' INPUT          : a CSV with the columns NoteID and Include (any other columns are ignored, so a plan or gaps file from
+'                  09 / 13 can be edited and used). Only rows with Include=Y are considered. There is no default list:
+'                  nothing is deleted that you did not put in the file.
+'
+' EVERY row is re-checked LIVE against the directory. A row is deleted only when ALL hold:
+'   - the Person document still exists and has NO certificate (not registered)         else SKIP_REGISTERED
+'   - it is not in an OPEN batch file of this machine                                  else SKIP_IN_OPEN_BATCH
+'   - no ID file for it exists in IDFileDir (DuplicateCheckIDFile=1)                   else SKIP_HAS_IDFILE
+'   - it was not already sent to AdminP by an earlier run (DELETE_requested.txt)       else SKIP_ALREADY_REQUESTED
+'   - its FullName is hierarchical (Name/Org)                                          else SKIP_NEEDS_HIERARCHICAL_NAME
+'   - that name exists ONCE in ($Users): AdminP deletes BY NAME, so a name shared with another person could hit
+'     that person                                                                      else SKIP_AMBIGUOUS_NAME
+'       (a duplicate that shares its name with a registered user is handled by agent 12 - Remove Duplicates, DIRECT)
+'   - when DeleteUserMailAction > 0 (delete the mail file), the mail file is checked too:
+'       its path is used by NO other Person document                                   else SKIP_MAIL_SHARED
+'       it holds at most DeleteUserMailMaxDocs documents (default 10)                  else SKIP_MAIL_HAS_DATA
+'       it can be checked at all                                                       else SKIP_MAIL_NOT_CHECKED
+'     (a mail file that does not exist is fine: there is nothing to delete)
+'
+' Safety: DryRun=1 (default) only writes the plan (WOULD_DELETE / SKIP_*). LIVE needs DryRun=0 and typing DELETEUSERS.
+'   A DXL snapshot of each Person document is written to <PasswordDir>\DELETE_<run>\ BEFORE the request (no snapshot =
+'   no delete). At most DeleteUserMaxPerRun per run. STOP.txt in BatchDir stops after the current chunk. Every row goes
+'   to the audit CSV and the central log. The ID vault entry is RETAINED (idvaultaction VAULT_RETAIN = 2).
+'
+' AdminP DeleteUser(username, immediate, mailfileaction, denygroup, deletewindowsuser, idvaultaction), HCL reference:
+'   mailfileaction : MAILFILE_DELETE_NONE 0, MAILFILE_DELETE_HOME 1, MAILFILE_DELETE_ALL 2
+'   idvaultaction  : IDVAULT_MARK_DELETE_AS_INACTIVE 0, VAULT_DELETE 1, VAULT_RETAIN 2 (default)
+'
+' Config (bulkreg.ini, all optional):
+'   DeleteUserMailAction=2        0 keep mail file, 1 delete on home server, 2 delete on home server and all replicas
+'   DeleteUserMailMaxDocs=10      a mail file with more documents than this is NOT deleted (row is skipped)
+'   DeleteUserMaxPerRun=25        0 = no limit
+'   DeleteUserDenyGroup=          name of an existing Deny Access group to add the name to (empty = none)
+'   DeleteUserChunkSize=5         pause after this many requests (uses ChunkPauseSec)
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegAgents"
+'#####################################################################
+' --- part 2: (Declarations) ---
+'#####################################################################
+Dim gDelDb As NotesDatabase            ' the directory
+Dim gDelMailIdx List As Long           ' normalised mail path -> number of Person documents that use it
+Dim gDelMailIdxOk As Boolean           ' index built successfully
+Dim gDelMailIdxTried As Boolean
+Dim gDelBatchOf List As String
+
+'#####################################################################
+' --- part 3: Subs and Functions ---
+'#####################################################################
+' Entry point. Library-level objects live as long as the Notes client session, so everything is released before AND
+' after the run, on every exit path.
+Sub BR_RunDeleteUsers()
+	Call BRD_Cleanup()
+	Call BRD_Main()
+	Call BRD_Cleanup()
+End Sub
+
+Sub BRD_Cleanup()
+	On Error Resume Next
+	Set gDelDb = Nothing
+	Set gAdminP = Nothing
+	Set gRunDoc = Nothing
+	Set gLogDb = Nothing
+	Erase gDelMailIdx: Erase gDelBatchOf
+	gDelMailIdxOk = False: gDelMailIdxTried = False
+End Sub
+
+Sub BRD_Main()
+	On Error GoTo ErrH
+	Dim ws As NotesUIWorkspace, ans As Variant
+	Dim db As NotesDatabase, dDoc As NotesDocument
+	Dim inFile As String, outDir As String, snapDir As String, reqFile As String
+	Dim fh As Integer, txt As String, isFirst As Boolean, cols List As Integer, delim As String, parts As Variant
+	Dim seen List As String
+	Dim cNid() As String, cRes() As String, cWhy() As String, cName() As String, cMail() As Integer
+	Dim nC As Long, capC As Long
+	Dim mailAct As Integer, maxDocs As Long, maxDel As Long, chunk As Long, basePause As Long, pauseSec As Long
+	Dim pauseMs As Long, maxConsec As Long, tChunk As Double, denyGrp As String
+	Dim i As Long, nOk As Long, nSkip As Long, nGone As Long, nDone As Long, nFail As Long, nConsec As Long, nDeferred As Long, sinceChunk As Long
+	Dim res As String, why As String, delName As String, reqId As String, snapErr As String, tWhy As String, tName As String
+	Dim summary As String, stopReason As String, nid As String, t1 As Double, tMail As Integer, mailTxt As String
+
+	If Not BR_Init("DeleteUsers") Then Exit Sub
+	If CfgB("DryRun", True) Then gMode = "DRYRUN" Else gMode = "LIVE"
+	mailAct = CfgL("DeleteUserMailAction", 2)
+	If mailAct < 0 Or mailAct > 2 Then Error 14001, "DeleteUserMailAction must be 0, 1 or 2 (found: " & mailAct & ")"
+	maxDocs = CfgL("DeleteUserMailMaxDocs", 10)
+	maxDel = CfgL("DeleteUserMaxPerRun", 25)              ' 0 = no limit
+	chunk = CfgL("DeleteUserChunkSize", 5)
+	denyGrp = Trim$(CfgS("DeleteUserDenyGroup", ""))
+	basePause = CfgL("ChunkPauseSec", 5)
+	If basePause < 0 Then basePause = 0
+	pauseSec = basePause
+	pauseMs = CfgL("PauseMs", 500)
+	maxConsec = CfgL("MaxConsecutiveErrors", 5)
+	mailTxt = Choose(mailAct + 1, "mail file KEPT", "mail file DELETED on the home server", "mail file DELETED on the home server and ALL replicas")
+	If Dir$(BR_StopFile()) <> "" Then
+		BR_Close "STOP.txt present"
+		BR_Msg "STOP.txt exists in " & BR_BatchDir() & ". Delete it to run again.", 48
+		Exit Sub
+	End If
+
+	' ---------- input: the CSV you prepared ----------
+	Set ws = New NotesUIWorkspace
+	ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Delete Users (" & gMode & ")", _
+	"Path of the CSV with the columns NoteID and Include (rows with Include=Y are considered)." & Chr$(10) & _
+	"Only UNREGISTERED Person documents can be deleted; every row is re-checked live.", "")
+	If IsEmpty(ans) Then
+		BR_Close "Cancelled"
+		Exit Sub
+	End If
+	inFile = BR_LocalPath(Trim$(CStr(ans)))
+	If Dir$(inFile) = "" Then Error 14004, "File not found: " & inFile
+
+	capC = 200
+	ReDim cNid(capC), cRes(capC), cWhy(capC), cName(capC), cMail(capC)
+	fh = FreeFile()
+	Open inFile For Input As #fh Charset = "UTF-8"
+	isFirst = True
+	Do Until EOF(fh)
+		Line Input #fh, txt
+		txt = Replace(txt, Uchr$(&HFEFF), "")
+		If isFirst Then
+			Call BR_CsvHeader(txt, delim, cols)
+			isFirst = False
+			If Not IsElement(cols("noteid")) Or Not IsElement(cols("include")) Then Error 14005, "The CSV needs the columns NoteID and Include: " & inFile
+		ElseIf Trim$(txt) <> "" Then
+			parts = BR_CsvSplit(txt, delim)
+			If UCase$(Trim$(BR_CsvGet(parts, cols, "Include"))) = "Y" Then
+				nid = Trim$(BR_CsvGet(parts, cols, "NoteID"))
+				If nid <> "" Then
+					If Not IsElement(seen(UCase$(nid))) Then
+						seen(UCase$(nid)) = "1"
+						If nC >= capC Then
+							capC = capC * 2
+							ReDim Preserve cNid(capC), cRes(capC), cWhy(capC), cName(capC), cMail(capC)
+						End If
+						cNid(nC) = nid: nC = nC + 1
+					End If
+				End If
+			End If
+		End If
+	Loop
+	Close #fh
+	If nC = 0 Then
+		BR_Close "No Include=Y rows"
+		BR_Msg "No Include=Y rows in " & inFile & ". Nothing to do.", 64
+		Exit Sub
+	End If
+
+	' ---------- directory, open batches, ID files, results file ----------
+	Set db = BR_OpenDirectory()
+	Set gDelDb = db
+	Call BR_ReconBatchMap(gDelBatchOf)
+	Erase gIdFileIdx
+	If CfgB("DuplicateCheckIDFile", True) Then Call BR_DupIdFileLoad()
+	outDir = BR_CfgDir("ReconcileDir", "reconcile")
+	On Error Resume Next
+	MkDir Left$(outDir, Len(outDir) - 1)
+	Err = 0
+	On Error GoTo ErrH
+	If Not BR_DirWritable(outDir) Then outDir = gRunDir
+	reqFile = outDir & "DELETE_requested.txt"
+	gResultsFile = outDir & "DELETE_" & gMode & "_" & gRunID & ".csv"
+	Call BR_AppendLine(gResultsFile, Uchr$(&HFEFF) & BR_AuditHeader())
+
+	' ---------- pass 1: live verification of every row (read-only) ----------
+	For i = 0 To nC - 1
+		cRes(i) = BRD_Eval(db, cNid(i), reqFile, mailAct, maxDocs, tWhy, tName, tMail)
+		cWhy(i) = tWhy: cName(i) = tName: cMail(i) = tMail
+		If cRes(i) = "OK" Then nOk = nOk + 1
+	Next
+
+	' ---------- LIVE: explicit confirmation ----------
+	If gMode = "LIVE" And nOk > 0 Then
+		ans = ws.Prompt(PROMPT_OKCANCELEDIT, "BulkReg - Delete Users (LIVE)", _
+		nOk & " unregistered Person document(s) pass every check and WILL BE DELETED through AdminP" & _
+		BR_IIfStr(maxDel > 0 And nOk > maxDel, " (this run: the first " & maxDel & ", DeleteUserMaxPerRun)", "") & "." & Chr$(10) & _
+		"Mail: " & mailTxt & " (only where the checks passed). ID vault entry: retained." & _
+		BR_IIfStr(denyGrp <> "", Chr$(10) & "Deny group: " & denyGrp, "") & Chr$(10) & _
+		"A DXL snapshot of each document is written to the secure folder first. This cannot be undone." & Chr$(10) & _
+		"Take a names.nsf backup, run DryRun=1 first, and read the plan." & Chr$(10) & Chr$(10) & _
+		"Type DELETEUSERS to continue:", "")
+		If IsEmpty(ans) Then ans = ""
+		If CStr(ans) <> "DELETEUSERS" Then
+			BR_Close "Cancelled (DELETEUSERS not typed)"
+			Exit Sub
+		End If
+		snapDir = BR_CfgDir("PasswordDir", "secure") & "DELETE_" & gRunID & gSep
+		On Error Resume Next
+		MkDir Left$(snapDir, Len(snapDir) - 1)
+		Err = 0
+		On Error GoTo ErrH
+		If Not BR_DirWritable(snapDir) Then Error 14006, "Snapshot folder is not writable (PasswordDir): " & snapDir
+	End If
+
+	' ---------- pass 2: plan rows (DRYRUN) or delete requests (LIVE) ----------
+	tChunk = Timer
+	For i = 0 To nC - 1
+		t1 = Timer
+		res = cRes(i): why = cWhy(i)
+		If res = "OK" Then
+			If gMode = "DRYRUN" Then
+				res = "WOULD_DELETE": why = cName(i) & " | " & BRD_MailWord(cMail(i)) & " | vault retained"
+			ElseIf stopReason <> "" Then
+				res = "NOT_PROCESSED_STOPPED": why = stopReason: nDeferred = nDeferred + 1
+			ElseIf maxDel > 0 And (nDone + nFail) >= maxDel Then
+				res = "NOT_PROCESSED_CAP": why = "DeleteUserMaxPerRun=" & maxDel & " reached: run again": nDeferred = nDeferred + 1
+			Else
+				' LIVE: verify once more immediately before deleting (the directory may have changed since pass 1)
+				res = BRD_Eval(db, cNid(i), reqFile, mailAct, maxDocs, why, tName, tMail)
+				cName(i) = tName: cMail(i) = tMail
+				If res = "OK" Then
+					Set dDoc = db.GetDocumentByID(cNid(i))
+					snapErr = BR_DupSnapshot(dDoc, snapDir, cNid(i))
+					If snapErr <> "" Then
+						res = "FAILED_SNAPSHOT": why = "no snapshot, nothing deleted: " & snapErr
+						nFail = nFail + 1: nConsec = nConsec + 1
+					Else
+						res = BRD_Request(cNid(i), cName(i), cMail(i), denyGrp, reqFile, reqId, why)
+						If Left$(res, 6) = "FAILED" Then
+							nFail = nFail + 1: nConsec = nConsec + 1
+						Else
+							nDone = nDone + 1: nConsec = 0
+						End If
+					End If
+					Set dDoc = Nothing
+					sinceChunk = sinceChunk + 1
+					If pauseMs > 0 Then Sleep pauseMs / 1000
+				End If
+			End If
+		End If
+		If res = "GONE" Then nGone = nGone + 1
+		If Left$(res, 4) = "SKIP" Then nSkip = nSkip + 1
+		Call BRD_AuditRow(db, cNid(i), res, why, Timer - t1)
+		If gMode = "LIVE" And stopReason = "" Then
+			If Dir$(BR_StopFile()) <> "" Then
+				stopReason = "STOP.txt found - run stopped"
+			ElseIf maxConsec > 0 And nConsec >= maxConsec Then
+				stopReason = nConsec & " consecutive failures (MaxConsecutiveErrors) - run stopped"
+			ElseIf chunk > 0 And sinceChunk >= chunk Then
+				stopReason = BR_ChunkEnd("DeleteUsers", nDone + nFail, nOk, chunk, tChunk, pauseSec, basePause, nDone, nFail)
+				sinceChunk = 0
+			End If
+		End If
+	Next
+
+	summary = "DELETEUSERS " & gMode & " | rows=" & nC & " pass=" & nOk & " requested=" & nDone & " failed=" & nFail & " skipped=" & nSkip & " gone=" & nGone & " not processed=" & nDeferred
+	BR_Log LVL_WARN, summary
+	BR_Close summary
+	BR_Msg summary & Chr$(10) & Chr$(10) & "Report: " & gResultsFile & Chr$(10) & _
+	BR_IIfStr(gMode = "DRYRUN", "Dry run: nothing was changed. Read the WOULD_DELETE and SKIP_* rows, then set DryRun=0 and run again.", _
+	"AdminP needs a few minutes: check the Administration Requests database (admin4.nsf). Request IDs: " & reqFile & Chr$(10) & "Snapshots: " & snapDir) & _
+	BR_IIfStr(stopReason <> "", Chr$(10) & stopReason, ""), 64
+	Exit Sub
+ErrH:
+	On Error Resume Next
+	Close #fh
+	BR_Log LVL_ERROR, "Delete Users aborted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Close "ABORTED"
+	BR_Msg "Delete Users aborted: " & Error$ & Chr$(10) & "See " & gDebugFile, 16
+	Exit Sub
+End Sub
+
+Function BRD_MailWord(act As Integer) As String
+	Select Case act
+	Case 2: BRD_MailWord = "mail file: delete home + all replicas"
+	Case 1: BRD_MailWord = "mail file: delete home server"
+	Case Else: BRD_MailWord = "mail file: kept"
+	End Select
+End Function
+
+' ---------------------------------------------------------------------
+' Live verification of ONE row. Returns "OK" or a status (GONE, SKIP_*). Reads only: changes nothing.
+' why = reason, delName = hierarchical name for the AdminP request, mailAct = effective mail file action.
+' ---------------------------------------------------------------------
+Function BRD_Eval(db As NotesDatabase, nid As String, reqFile As String, wantMail As Integer, maxDocs As Long, why As String, delName As String, mailAct As Integer) As String
+	On Error GoTo ErrH
+	Dim d As NotesDocument, v As Variant, i As Integer, nm As Long, su As BRUser, idb As String
+	Dim msrv As String, mpath As String, mkey As String, nDocs As Long
+	why = "": delName = "": mailAct = 0
+	On Error Resume Next
+	Set d = db.GetDocumentByID(nid)
+	Err = 0
+	On Error GoTo ErrH
+	If d Is Nothing Then
+		BRD_Eval = "GONE": why = "no document with this NoteID": Exit Function
+	End If
+	If d.IsDeleted Then
+		BRD_Eval = "GONE": why = "document no longer exists": Exit Function
+	End If
+	If BR_Item(d, "Form") <> "Person" Then
+		BRD_Eval = "SKIP_NOT_PERSON": why = "not a Person document": Exit Function
+	End If
+	If BR_IsRegistered(d) Then
+		BRD_Eval = "SKIP_REGISTERED": why = "has a certificate: registered users are never deleted by this agent": Exit Function
+	End If
+	If IsElement(gDelBatchOf("n" & UCase$(nid))) Then
+		If InStr(gDelBatchOf("n" & UCase$(nid)), "(OPEN)") > 0 Then
+			BRD_Eval = "SKIP_IN_OPEN_BATCH": why = "in " & gDelBatchOf("n" & UCase$(nid)) & ": close or rebuild that batch first (11 - Batch Manager)": Exit Function
+		End If
+	End If
+	If CfgB("DuplicateCheckIDFile", True) Then
+		Call BR_ClearUser(su)
+		su.ShortName = BR_PickShortName(d): su.NoteID = nid
+		idb = LCase$(BR_SafeFile(su))
+		If IsElement(gIdFileIdx(idb)) Then
+			BRD_Eval = "SKIP_HAS_IDFILE": why = "ID file " & gIdFileIdx(idb) & " exists: check the registration log and the vault first": Exit Function
+		End If
+	End If
+	If BR_DupWasRequested(reqFile, nid) Then
+		BRD_Eval = "SKIP_ALREADY_REQUESTED": why = "a delete request was already sent for this NoteID (see " & reqFile & "); remove its line there only if the document still exists after AdminP ran": Exit Function
+	End If
+	If d.HasItem("FullName") Then
+		v = d.GetItemValue("FullName")
+		For i = 0 To UBound(v)
+			If delName = "" And InStr(CStr(v(i)), "/") > 0 Then delName = Trim$(CStr(v(i)))
+		Next
+	End If
+	If delName = "" Then
+		BRD_Eval = "SKIP_NEEDS_HIERARCHICAL_NAME": why = "FullName is flat (no /Org): AdminP DeleteUser needs a hierarchical name; review by hand": Exit Function
+	End If
+	nm = BR_DupNameCount(db, delName)
+	If nm <> 1 Then
+		BRD_Eval = "SKIP_AMBIGUOUS_NAME": why = "the name " & delName & " is found " & nm & " time(s) in ($Users) (-1 = cannot check): AdminP deletes by name and could hit another person. Use 12 - Remove Duplicates (DIRECT) or review by hand": Exit Function
+	End If
+
+	' ---- mail file: only deleted when it is provably this user's own, nearly empty file ----
+	If wantMail > 0 Then
+		msrv = BR_SrvAbbr(BR_Item(d, "MailServer")): mpath = BR_MailPathNorm(BR_Item(d, "MailFile"))
+		If msrv <> "" And mpath <> "" Then
+			mkey = BRD_MailKey(mpath)
+			If Not gDelMailIdxTried Then Call BRD_BuildMailIdx(db)
+			If Not gDelMailIdxOk Then
+				BRD_Eval = "SKIP_MAIL_NOT_CHECKED": why = "could not build the mail path index of the directory, so sharing cannot be ruled out": Exit Function
+			End If
+			If IsElement(gDelMailIdx(mkey)) Then
+				If gDelMailIdx(mkey) > 1 Then
+					BRD_Eval = "SKIP_MAIL_SHARED": why = "mail path " & mpath & " is used by " & gDelMailIdx(mkey) & " Person documents: deleting it could destroy another user's mail": Exit Function
+				End If
+			End If
+			If BR_MailFileExists(msrv, mpath) Then
+				nDocs = BRD_MailDocCount(BR_Item(d, "MailServer"), mpath)
+				If nDocs < 0 Then
+					BRD_Eval = "SKIP_MAIL_NOT_CHECKED": why = "mail file " & msrv & "!!" & mpath & " exists but could not be opened to count its documents": Exit Function
+				End If
+				If nDocs > maxDocs Then
+					BRD_Eval = "SKIP_MAIL_HAS_DATA": why = "mail file " & msrv & "!!" & mpath & " holds " & nDocs & " documents (limit DeleteUserMailMaxDocs=" & maxDocs & "): decide by hand": Exit Function
+				End If
+			End If
+			mailAct = wantMail
+		End If
+	End If
+	BRD_Eval = "OK": why = delName
+	Exit Function
+ErrH:
+	BRD_Eval = "SKIP_CHECK_ERROR": why = "check failed, nothing deleted: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	Exit Function
+End Function
+
+' Sends ONE AdminP DeleteUser request and records its request ID. idvaultaction 2 = VAULT_RETAIN (HCL reference).
+Function BRD_Request(nid As String, delName As String, mailAct As Integer, denyGrp As String, reqFile As String, reqId As String, why As String) As String
+	On Error GoTo ErrH
+	reqId = ""
+	If gAdminP Is Nothing Then Set gAdminP = gSession.CreateAdministrationProcess(CfgS("RegistrationServer", ""))
+	reqId = gAdminP.DeleteUser(delName, False, mailAct, denyGrp, False, 2)
+	Call BR_AppendLine(reqFile, nid & "," & Format$(Now, "yyyy-mm-dd hh:nn:ss") & "," & gRunID & "," & reqId & "," & delName & "," & mailAct)
+	BRD_Request = "ADMINP_REQUESTED"
+	why = "AdminP DeleteUser request " & reqId & " for " & delName & " (" & BRD_MailWord(mailAct) & ", vault retained); the document disappears when AdminP has processed it"
+	Exit Function
+ErrH:
+	BRD_Request = "FAILED_REQUEST"
+	why = Error$ & " (err " & Err & ", line " & Erl & ")"
+	BR_Log LVL_ERROR, "Delete Users: " & nid & " failed: " & why
+	Exit Function
+End Function
+
+Function BRD_MailKey(p As String) As String
+	Dim s As String
+	s = LCase$(Trim$(Replace(p, "/", "\")))
+	If Right$(s, 4) = ".nsf" Then s = Left$(s, Len(s) - 4)
+	BRD_MailKey = s
+End Function
+
+' One pass over the Person documents: how many use each mail path (built once, only when a mail file is to be deleted).
+Sub BRD_BuildMailIdx(db As NotesDatabase)
+	On Error GoTo ErrH
+	Dim col As NotesDocumentCollection, d As NotesDocument, k As String
+	gDelMailIdxTried = True
+	gDelMailIdxOk = False
+	Erase gDelMailIdx
+	Set col = db.Search(|Form = "Person" & MailFile != ""|, Nothing, 0)
+	Set d = col.GetFirstDocument()
+	Do While Not (d Is Nothing)
+		k = BRD_MailKey(BR_Item(d, "MailFile"))
+		If k <> "" Then
+			If IsElement(gDelMailIdx(k)) Then gDelMailIdx(k) = gDelMailIdx(k) + 1 Else gDelMailIdx(k) = 1
+		End If
+		Set d = col.GetNextDocument(d)
+	Loop
+	gDelMailIdxOk = True
+	Exit Sub
+ErrH:
+	gDelMailIdxOk = False
+	BR_Log LVL_ERROR, "Delete Users: mail path index failed: " & Error$ & " (err " & Err & ", line " & Erl & ")"
+	Exit Sub
+End Sub
+
+' Number of documents (design not counted) in a mail file; -1 when it cannot be opened. The object is released at once.
+Function BRD_MailDocCount(server As String, path As String) As Long
+	On Error GoTo ErrH
+	Dim mdb As NotesDatabase
+	BRD_MailDocCount = -1
+	Set mdb = New NotesDatabase("", "")
+	If Not mdb.Open(server, path) Then Exit Function
+	BRD_MailDocCount = mdb.AllDocuments.Count
+	Set mdb = Nothing
+	Exit Function
+ErrH:
+	BRD_MailDocCount = -1
+	Set mdb = Nothing
+	Exit Function
+End Function
+
+' One audit row (results CSV of the run + audit CSV + central log) per row of the input
+Sub BRD_AuditRow(db As NotesDatabase, nid As String, res As String, why As String, dur As Double)
+	On Error GoTo ErrH
+	Dim d As NotesDocument, u As BRUser
+	Call BR_ClearUser(u)
+	u.NoteID = nid
+	On Error Resume Next
+	Set d = db.GetDocumentByID(nid)
+	Err = 0
+	On Error GoTo ErrH
+	If Not (d Is Nothing) Then
+		If Not d.IsDeleted Then
+			u.UNID = d.UniversalID
+			u.GUID = BR_Item(d, "objectGUID")
+			u.FullNameBefore = BR_Item(d, "FullName")
+			u.ShortName = BR_PickShortName(d)
+			u.InternetAddress = BR_Item(d, "InternetAddress")
+		End If
+	End If
+	If dur < 0 Then dur = 0
+	Call BR_Audit(u, gMode, "DELETE_USER", res, dur, why)
+	Exit Sub
+ErrH:
+	BR_Log LVL_WARN, "Audit row for " & nid & " failed: " & Error$
+	Exit Sub
+End Sub

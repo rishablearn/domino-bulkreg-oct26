@@ -1,0 +1,32 @@
+'=====================================================================
+' Agent name : BulkReg\14 - Delete Users
+' Version    : 4.7.0 DRAFT  (libraries BulkRegCommon + BulkRegAgents + BulkRegDelete)
+' Code       : ALL logic is in the script library BulkRegDelete (BR_RunDeleteUsers).
+'              This agent only calls it, so it never changes between releases.
+'
+' HOW TO INSTALL: first create the library BulkRegDelete (BulkRegDelete.lss). Then open this agent,
+'              click in the editor, Ctrl+A, Delete, paste this WHOLE file, Ctrl+S.
+' Designer   : Shared agent, LotusScript
+'              Runtime: On event > Action menu selection, Target: None
+'              (NOT 'All selected documents' - Designer's default - or Notes asks for a selected document)
+'              (backslash in the name = Actions > BulkReg submenu; do NOT use '|')
+'
+' What it does (details: BulkRegDelete.lss header and SOP-delete-failed-users.md):
+'
+' Deletes the UNREGISTERED Person documents listed in a CSV (columns NoteID, Include=Y) through AdminP DeleteUser,
+' including the mail file (all replicas) when it is provably the user's own and nearly empty. Registered users are never
+' deleted. DryRun=1 (default) writes the plan only. DryRun=0 needs the word DELETEUSERS and writes a DXL snapshot of
+' each Person document first. Not compiled or run against Domino: pilot with 3 to 5 test users.
+'=====================================================================
+'#####################################################################
+' --- part 1: (Options) ---
+'#####################################################################
+Option Public
+Option Declare
+Use "BulkRegDelete"
+'#####################################################################
+' --- part 2: Initialize ---
+'#####################################################################
+Sub Initialize
+	Call BR_RunDeleteUsers()
+End Sub
